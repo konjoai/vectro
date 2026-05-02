@@ -1,0 +1,25 @@
+# Per-target rustflags — Wave 0 of the v5.0.0 perf plan.
+#
+# `target-cpu=apple-m1` is the right choice for M1/M2/M3 alike.  LLVM treats
+# all three as "apple-mN" tunings; M2/M3 inherit the M1 schedule plus all
+# subsequent feature sets that LLVM auto-promotes (NEON, AES, SHA, FP16, BF16).
+# When the M4 SME2 target tuning lands in a future LLVM release, swap the
+# value to `apple-m4` and the dispatch in encode_fast_into already routes.
+#
+# `x86-64-v3` is the AVX2 / BMI2 / FMA microarchitecture level — the lowest
+# common denominator that matches the runtime AVX2 fast path.
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "target-cpu=apple-m1"]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3", "-C", "link-arg=-Wl,--gc-sections"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=neoverse-v1"]

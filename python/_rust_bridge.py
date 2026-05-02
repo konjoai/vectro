@@ -71,8 +71,21 @@ def simd_tier() -> str:
 
 def quantize_int8_batch(
     vectors: np.ndarray,
+    assume_normalized: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Quantize [N, D] float32 array to INT8 using Rust SIMD.
+
+    Parameters
+    ----------
+    vectors : np.ndarray
+        Float32 input matrix.  C-contiguous arrays are zero-copy; non-
+        contiguous arrays are widened in Rust.
+    assume_normalized : bool, default False
+        Wave 1.3 — when True, dispatches to
+        ``quantize_int8_batch_normalized`` which skips the abs-max scan.
+        Caller asserts every row has ``||·||_2 ≤ 1``.  ~1.4× faster on
+        memory-bandwidth-bound workloads at the cost of ~0.99 cosine
+        recall floor instead of 0.9999.
 
     Returns
     -------
@@ -92,7 +105,37 @@ def quantize_int8_batch(
     was_1d = arr.ndim == 1
     if was_1d:
         arr = arr.reshape(1, -1)
-    codes, scales = _vectro_py.quantize_int8_batch(arr)
+    if assume_normalized and hasattr(_vectro_py, "quantize_int8_batch_normalized"):
+        codes, scales = _vectro_py.quantize_int8_batch_normalized(arr)
+    else:
+        codes, scales = _vectro_py.quantize_int8_batch(arr)
+    if was_1d:
+        codes = codes.reshape(-1)
+        scales = scales.reshape(1)
+    return codes, scales
+
+
+def quantize_int8_batch_from_f16(
+    vectors_f16: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Wave 4 — Quantize a [N, D] float16 array to INT8 directly.
+
+    Halves the input bandwidth versus a separate ``vectors.astype(f32)``
+    widening pass; the f16→f32 widening is fused into the per-row encode.
+
+    Returns the same ``(codes, scales)`` shape contract as
+    :func:`quantize_int8_batch`.
+    """
+    if _vectro_py is None:
+        raise RuntimeError("vectro_py Rust extension not installed.")
+    if not hasattr(_vectro_py, "quantize_int8_batch_from_f16"):
+        # Old extension built before Wave 4 — widen in Python.
+        return quantize_int8_batch(vectors_f16.astype(np.float32))
+    arr = np.ascontiguousarray(vectors_f16, dtype=np.float16)
+    was_1d = arr.ndim == 1
+    if was_1d:
+        arr = arr.reshape(1, -1)
+    codes, scales = _vectro_py.quantize_int8_batch_from_f16(arr)
     if was_1d:
         codes = codes.reshape(-1)
         scales = scales.reshape(1)

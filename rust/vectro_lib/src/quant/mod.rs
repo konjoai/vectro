@@ -12,6 +12,9 @@ pub mod rq;
 pub mod sq2;
 pub mod sq3;
 
+#[cfg(all(target_os = "macos", feature = "vectro_lib_accelerate"))]
+pub mod accelerate;
+
 use serde::{Deserialize, Serialize};
 
 // ─────────────────────────── Quantizer trait ─────────────────────────────────

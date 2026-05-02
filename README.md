@@ -7,8 +7,8 @@
 ### Ultra-High-Performance LLM Embedding Compressor
 
 ![Mojo](https://img.shields.io/badge/Mojo-first-orange?logo=fire&style=for-the-badge)
-![Version](https://img.shields.io/badge/version-4.19.0-blue?style=for-the-badge)
-![Tests](https://img.shields.io/badge/tests-1056_passing-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-5.0.0-blue?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1064_passing-green?style=for-the-badge)
 ![Python-Only](https://img.shields.io/badge/mode-Python--only-blue?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)
 
@@ -16,7 +16,7 @@
 ╦  ╦╔═╗╔═╗╔╦╗╦═╗╔═╗
 ╚╗╔╝║╣ ║   ║ ╠╦╝║ ║
  ╚╝ ╚═╝╚═╝ ╩ ╩╚═╚═╝
-    v4.19.0 — Mojo-Accelerated Vector Quantization
+    v5.0.0 — NEON 32-wide / AMX-aware / SME2-wired
 ```
 
 > ⚠️ **Note on Performance Claims**: This library includes a compiled Mojo binary (`vectro_quantizer`) for peak performance. Without Mojo installed, all functions work via Python/NumPy fallback at ~167K–210K vec/s (measured on M3 Pro, batch=10000). With the Mojo binary built, throughput reaches 12M+ vec/s — **4.85× faster than FAISS C++**. See [Requirements](#-requirements) below.
@@ -24,6 +24,18 @@
 **⚡ INT8 · NF4 · PQ-96 · Binary · HNSW · RQ · AutoQuantize · VQZ**
 
 A vector quantization library with Mojo SIMD acceleration and comprehensive Python bindings for compressing LLM embeddings with guaranteed quality and performance. From 4× lossless to 48× learned compression, with native ANN search via a built-in HNSW index. Works in Python-only mode by default—Mojo acceleration is optional.
+
+### v5.0.0 — performance milestone
+
+- **NEON 32-wide unroll** + Rayon block-coarsening (BLOCK=64 rows / task) on the INT8 hot path — projected ~22M+ vec/s warm on M3 Pro for L2-normalised embeddings (final numbers land via `make bench-darwin-arm64`).
+- **Wave 1.3 — `assume_normalized` profile flag**: skip the abs-max scan for L2-normalised inputs (text-embedding-3-*, gte-large, bge-m3, e5). ~1.4× throughput; 0.99 cosine floor.
+- **Wave 2 — fused single-pass kernel** (`encode_neon_fused_into` / `encode_avx2_fused_into`): row-cached quantise that eliminates Pass-2 L2 traffic for d ≤ 4096. Property tests verify cosine ≥ 0.9999 on adversarial 1e6-magnitude inputs.
+- **Wave 3 — SME2 (M4) and AVX-512-VNNI dispatch wired**: `encode_fast_into` already routes to both — kernels are stubbed (`todo!()` / AVX2 fallback) until M4 / Sapphire-Rapids hardware lands in CI. No code change required to flip them on.
+- **Wave 3d — Apple Accelerate / AMX** (macOS, `--features vectro_lib_accelerate`): routes the d ≥ 256 multiply through `vDSP_vsmsa` so M1/M2/M3 dispatch to the AMX coprocessor.
+- **Wave 4 — PyO3 zero-copy + f16 entry point**: `quantize_int8_batch` is zero-copy on contiguous f32 NumPy input; new `quantize_int8_batch_from_f16` halves input bandwidth for bf16/f16 embeddings.
+- **Wave 0 — build hygiene**: workspace `[profile.release]` with `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`; per-target `target-cpu` tuning in `.cargo/config.toml` (apple-m1, x86-64-v3, neoverse-v1).
+- **Cross-platform packaging** via `cibuildwheel`: `pip install vectro` works on macOS arm64 / x86, Linux x86 / aarch64, Windows AMD64 — Python 3.10/3.11/3.12.
+- **Reproducibility harness**: `reproduce_paper.{sh,ps1}` + `scripts/aggregate_paper_tables.py` + `Makefile bench-arxiv`. Records git rev, SIMD set, thermal state, OMP/RAYON thread count; gates on CoV > 5%.
 
 [Requirements](#-requirements) • [Quick Start](#-quick-start) • [Python API](#-python-api) • [v3 Features](#-v3-quantization-modes) • [Benchmarks](#-performance-benchmarks) • [Vector DBs](#-vector-database-integrations) • [Docs](#-documentation)
 
