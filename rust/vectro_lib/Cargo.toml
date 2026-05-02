@@ -1,6 +1,6 @@
 [package]
 name = "vectro_lib"
-version = "7.4.0"
+version = "8.0.0"
 edition = "2021"
 authors = ["Wesley Scholl <128409641+wesleyscholl@users.noreply.github.com>"]
 description = "Core Rust library for high-performance vector quantization and search"
@@ -17,6 +17,15 @@ rayon = "1.8"
 nalgebra = "0.32"
 anyhow = "1.0"
 simsimd = "6"
+half = "2.4"
+
+[features]
+default = []
+# Wave 3d — route the INT8 encode multiply through Apple's Accelerate
+# framework so vDSP can dispatch large workloads through the AMX
+# coprocessor on M1 / M2 / M3.  Off by default; macOS only.  When
+# enabled, vectro_py's build.rs links the Accelerate framework.
+vectro_lib_accelerate = []
 
 [dev-dependencies]
 tempfile = "3.6"
@@ -41,4 +50,8 @@ harness = false
 
 [[bench]]
 name = "simd_bench"
+harness = false
+
+[[bench]]
+name = "int8_fused_bench"
 harness = false

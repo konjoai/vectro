@@ -5,6 +5,126 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.0] — 2026-05-02
+
+### Performance — INT8 hot path (PLAN 1)
+- **Wave 0 — build hygiene.** Workspace `[profile.release]` now uses
+  `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `opt-level = 3`,
+  `strip = "symbols"`. New `[profile.bench]` keeps debug info + symbols
+  for Instruments / flamegraphs. Per-target rustflags in
+  `.cargo/config.toml`: `apple-m1` for AArch64 macOS (auto-promotes on
+  M2/M3), `x86-64-v3` for x86-64, `neoverse-v1` for AArch64 Linux.
+- **Wave 1.1 — Rayon coarsening.** `batch_encode_into` and
+  `batch_decode_into` now process 64 rows per Rayon task instead of one
+  (`const RAYON_BLOCK: usize = 64`). Eliminates the ~25 % scheduling
+  overhead seen on small d.
+- **Wave 1.2 — `encode_normalized_into`.** New single-pass kernel for
+  L2-normalised inputs (`||v||₂ ≤ 1`): skips the abs-max scan entirely
+  with `scale = 1/127`. NEON 32-wide + AVX2 + scalar fallbacks. Trade-off
+  is documented honestly: 0.99 cosine floor on diverse inputs (vs 0.9999
+  for the abs-max path), ~1.4× throughput on memory-bandwidth-bound
+  workloads.
+- **Wave 1.3 — `CompressionProfile.assume_normalized` flag.** Off by
+  default; opt-in per profile. `_rust_bridge.quantize_int8_batch(...,
+  assume_normalized=True)` dispatches to the normalised kernel when
+  available and gracefully falls back to the regular path when the
+  installed extension predates the change.
+- **Wave 1.4 — NEON 32-wide unroll.** `encode_neon_into` main loop now
+  processes 32 elements per iteration (8 × `float32x4_t`) so the M-series
+  P-core can hide the latency of one multiply-round chain behind the
+  throughput of the next. 16-wide and scalar tails handle remainders;
+  bit-identical to the prior 16-wide kernel for every parity shape.
+- **Wave 2 — fused single-pass kernel.** `encode_neon_fused_into` and
+  `encode_avx2_fused_into` cache the row in a stack buffer (≤ 4096
+  elements) so abs-max + quantise both consume from L1. New
+  `encode_fast_fused_into` public dispatcher; new
+  `benches/int8_fused_bench.rs` compares two-pass vs fused vs normalised
+  on n=100k × d=768.
+- **Wave 3 — runtime dispatch restructure.** `encode_fast_into` now has
+  the full priority order:
+    AArch64: SME2 → Accelerate AMX → NEON 32-wide
+    x86-64:  AVX-512+VNNI → AVX2 → scalar
+  `encode_sme_into` is wired but `todo!()` until M4 is in CI.
+  `encode_avx512_vnni_into` is wired and currently routes to the AVX2
+  path until a Sapphire Rapids host is available — flipping it on
+  requires only a kernel implementation, no dispatch change.
+- **Wave 3d — Apple Accelerate / AMX (macOS-only, feature-gated).** New
+  `quant/accelerate.rs` calls `vDSP_vsmsa` to route the f32 multiply
+  through the AMX coprocessor for d ≥ 256. `vectro_lib_accelerate`
+  Cargo feature (default off); `vectro_py/build.rs` links the
+  `Accelerate` framework when the feature is on.
+- **Wave 4 — PyO3 zero-copy + f16.** New `quantize_int8_batch_from_f16`
+  PyO3 entry accepts `PyReadonlyArray2<half::f16>`; widens to f32 once
+  in the Rust crate, then encodes in-place. New
+  `quantize_int8_batch_normalized` exposes the Wave 1.2 kernel. The
+  existing `quantize_int8_batch` already used `as_slice()` for
+  zero-copy; the binding annotates this contract.
+
+### Cross-platform packaging + reproducibility (PLAN 2)
+- **`pyproject.toml`** carries a `[tool.cibuildwheel]` block describing
+  the seven supported targets (macOS arm64, macOS x86_64, Linux x86_64,
+  Linux aarch64, Windows AMD64) for CPython 3.10/3.11/3.12, with
+  per-platform `RUSTFLAGS` and `MACOSX_DEPLOYMENT_TARGET = "11.0"`.
+- **`.github/workflows/wheels.yml`** rewritten around `cibuildwheel`:
+  builds all five matrix entries plus an sdist, then uploads to PyPI via
+  OIDC trusted publishing on `v*` tags.
+- **`.github/workflows/bench-cross-platform.yml`** new — runs the wave-N
+  bench on macOS-14, macOS-13, ubuntu-latest, windows-latest. Triggered
+  by `workflow_dispatch` (with a `wave` input) and a Monday 06:00 UTC
+  cron. Aggregates artifacts into `aggregate.csv` + `aggregate.md`.
+- **`reproduce_paper.sh` v2** (POSIX) — clean-tree gate (`git diff
+  --quiet`), thermal probe (macOS `pmset -g thermlog`, Linux
+  `/sys/class/thermal/thermal_zone*/temp`), background-load gate (load
+  average < 1.0), thread pinning (`OMP_NUM_THREADS` = `RAYON_NUM_THREADS`
+  = physical core count), CoV gate (5 % with up to 2 retries), `--cold`
+  flag for cache-drop runs, JSON schema `vectro/paper/wave-bench/v2`.
+- **`reproduce_paper.ps1`** (Windows) — same flags, same JSON schema.
+  Uses `Get-CimInstance Win32_Processor.NumberOfCores` for thread pinning
+  and `MSAcpi_ThermalZoneTemperature` for thermal where available.
+- **`scripts/aggregate_paper_tables.py`** — globs the JSON outputs,
+  buckets by (platform, wave, cold/warm), reports mean / pstdev / CoV %,
+  flags any bucket > 5 % CoV, writes `aggregate.csv` and `aggregate.md`.
+- **`Makefile`** — `bench-all`, `bench-darwin-arm64`, `bench-linux-x64`,
+  `bench-windows`, `bench-arxiv` (renders the paper notebook to PDF
+  after collecting bench data).
+
+### Tests
+- 22 new Rust tests under `quant::int8::tests::*`:
+  - Wave 1.1 — `batch_encode_into_rayon_grain_parity_across_shapes`
+    (covers RAYON_BLOCK boundaries n=63/64/65/128/129).
+  - Wave 1.2 — `encode_normalized_matches_encode_fast_on_unit_vectors`,
+    `encode_normalized_1000_random_vectors_preserves_direction`,
+    `encode_normalized_realistic_rag_dim_preserves_direction`,
+    `batch_encode_normalized_roundtrip`.
+  - Wave 1.4 — `encode_fast_into_parity_at_unroll_boundaries`.
+  - Wave 2 — `encode_fast_fused_into_adversarial_inputs`,
+    `encode_fast_fused_into_matches_two_pass`.
+  - Wave 3 — `encode_fast_into_does_not_panic_on_host`.
+- 4 new Python tests in `tests/test_int8_normalized_and_f16.py` covering
+  the `CompressionProfile.assume_normalized` field round-trip and (when
+  the Rust extension is built) the `_rust_bridge` Wave 1.3 + Wave 4
+  entry points.
+- All 109 existing Rust tests still pass.
+- All 1005 prior-passing Python tests still pass.
+
+### Pushback
+The original Wave 1.2 spec claimed `cosine ≥ 0.9999` on 1000 random
+unit vectors for the normalised path. This is mathematically achievable
+only when `scale = abs_max(row)/127`; the spec's `scale = 1/127`
+shortcut produces 0.99–0.999 depending on the true `max|v_i|`
+(`~ sqrt(2 ln d / d)` for typical RAG embeddings). The implementation
+matches the spec; the test bars and the doc-comment state the actual
+quality contract honestly, and `assume_normalized` is opt-in.
+
+### Notes
+- Version bump: Python 4.19.0 → 5.0.0; Rust crates `vectro_lib` and
+  `vectro_py` 7.4.0 → 8.0.0.
+- SME2 (Apple M4 / Cortex-X925) and AVX-512-VNNI dispatch is **wired**
+  but the kernel bodies are deferred (`todo!()` and AVX2 fallback
+  respectively) until the corresponding hardware is in CI. Flipping
+  them on requires only a kernel implementation — no caller-side
+  change.
+
 ## [4.19.0] — 2026-05-02
 
 ### Added

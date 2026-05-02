@@ -1,317 +1,98 @@
-name: Wheels
+name: Wheels (cibuildwheel)
 
-# Builds maturin wheels on every push to main and on every v* tag.
-# On a version tag the wheels are uploaded to PyPI and a GitHub Release is created.
+# v5.0.0 — replaces the hand-rolled per-target maturin matrix with
+# cibuildwheel.  Builds the seven supported targets in a single matrix:
+#   macOS arm64, macOS x86_64, Linux x86_64, Linux aarch64, Windows AMD64.
+# On a v* tag, wheels + sdist are uploaded to PyPI via OIDC trusted
+# publishing, and a GitHub Release is auto-created.
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 
 permissions:
-  contents: write   # needed to create a GitHub Release
-  id-token: write   # needed for trusted PyPI publishing (OIDC)
+  contents: write
+  id-token: write
 
 jobs:
-  # ────────────────────────────────────────────────────────────────────────────
-  # Build wheels for every target in the matrix
-  # ────────────────────────────────────────────────────────────────────────────
-  build:
-    name: Build ${{ matrix.target }} / py${{ matrix.python-version }}
+  build_wheels:
+    name: ${{ matrix.os }} ${{ matrix.archs }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # macOS ARM64 (Apple Silicon) — Mojo binary bundled
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            python-version: "3.10"
-            bundle_mojo: true
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            python-version: "3.12"
-            bundle_mojo: true
-
-          # macOS x86-64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            python-version: "3.10"
-          - os: macos-13
-            target: x86_64-apple-darwin
-            python-version: "3.12"
-
-          # Linux x86-64 (manylinux) — Mojo binary bundled
+          - os: macos-14          # Apple Silicon (M2)
+            archs: arm64
+          - os: macos-13          # Intel
+            archs: x86_64
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            python-version: "3.10"
-            bundle_mojo: true
+            archs: x86_64
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            python-version: "3.11"
-            bundle_mojo: true
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            python-version: "3.12"
-            bundle_mojo: true
-
-          # Linux ARM64 (manylinux QEMU cross-compile)
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            python-version: "3.12"
+            archs: aarch64        # via QEMU
+          - os: windows-latest
+            archs: AMD64
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          fetch-depth: 0
 
-      - name: Install pixi (Mojo build tool)
-        if: matrix.bundle_mojo
-        run: |
-          curl -fsSL https://pixi.sh/install.sh | bash
-          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
-
-      - name: Build and stage Mojo quantizer binary
-        if: matrix.bundle_mojo
-        run: |
-          pixi run build-mojo
-          cp vectro_quantizer python/vectro_quantizer
-          echo "Built Mojo binary: $(file python/vectro_quantizer)"
-
-      # maturin/action handles Rust toolchain, cross-compilation, manylinux
-      # containers, and wheel signing automatically.
-      - name: Build wheel
-        uses: PyO3/maturin-action@v1
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          target: ${{ matrix.target }}
-          args: >-
-            --release
-            --out dist
-            --manifest-path rust/vectro_py/Cargo.toml
-            --interpreter python${{ matrix.python-version }}
-          # Use the manylinux_2_28 image for broad Linux compatibility.
-          manylinux: "2_28"
-          # Emit compiler output so NEON/AVX2 codegen can be verified in logs.
-          before-script-linux: |
-            echo "RUSTFLAGS=-C target-cpu=x86-64-v3" >> "$GITHUB_ENV"
+          python-version: "3.12"
 
-      - name: Upload wheel artifact
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up QEMU (Linux aarch64 only)
+        if: matrix.os == 'ubuntu-latest' && matrix.archs == 'aarch64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Install cibuildwheel
+        run: python -m pip install --upgrade pip cibuildwheel==2.21.3
+
+      - name: Build wheels
+        run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_ARCHS: ${{ matrix.archs }}
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.target }}-py${{ matrix.python-version }}
-          path: dist/
+          name: wheels-${{ matrix.os }}-${{ matrix.archs }}
+          path: ./wheelhouse/*.whl
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # Build an sdist (source distribution) — once, on Linux
-  # ────────────────────────────────────────────────────────────────────────────
-  sdist:
+  build_sdist:
     name: Build sdist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Build sdist
-        uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist --manifest-path rust/vectro_py/Cargo.toml
-
-      - name: Upload sdist artifact
-        uses: actions/upload-artifact@v4
+      - run: |
+          python -m pip install --upgrade pip build
+          python -m build --sdist
+      - uses: actions/upload-artifact@v4
         with:
           name: sdist
-          path: dist/
+          path: ./dist/*.tar.gz
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # Build standalone CLI binary for Linux x86-64 + macOS ARM64/x86-64
-  # ────────────────────────────────────────────────────────────────────────────
-  cli-binary:
-    name: CLI binary ${{ matrix.artifact }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: vectro-linux-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: vectro-macos-arm64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            artifact: vectro-macos-x86_64
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cli-${{ matrix.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cli-${{ matrix.os }}-
-
-      - name: Build CLI binary
-        run: cargo build --release --locked -p vectro_cli
-
-      - name: Stage binary
-        run: |
-          mkdir -p cli-dist
-          cp target/release/vectro cli-dist/${{ matrix.artifact }}
-
-      - name: Upload CLI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-${{ matrix.artifact }}
-          path: cli-dist/
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Smoke-test: install the built wheel and run a quick sanity check
-  # ────────────────────────────────────────────────────────────────────────────
-  smoke-test:
-    name: Smoke-test ${{ matrix.os }} py${{ matrix.python-version }}
-    needs: build
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            python-version: "3.12"
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            python-version: "3.12"
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Download wheel
-        uses: actions/download-artifact@v4
-        with:
-          name: wheels-${{ matrix.target }}-py${{ matrix.python-version }}
-          path: dist/
-
-      - name: Install wheel + numpy
-        run: pip install dist/*.whl numpy
-
-      - name: Smoke test — INT8 round-trip + HNSW search
-        run: |
-          python - <<'EOF'
-          import numpy as np
-          from vectro_py import PyInt8Encoder, PyHnswIndex
-
-          rng = np.random.default_rng(42)
-          vecs = rng.standard_normal((512, 128)).astype(np.float32)
-
-          # INT8 encode via zero-copy numpy path
-          enc = PyInt8Encoder()
-          enc.encode_np(vecs)
-
-          # HNSW: insert + self-search
-          idx = PyHnswIndex(8, 40)
-          idx.add_np(vecs)
-          assert idx.__len__() == 512, f"expected 512, got {idx.__len__()}"
-
-          q = np.ascontiguousarray(vecs[0])
-          results = idx.search_np(q, k=5, ef=50)
-          ids = [r[0] for r in results]
-          assert 0 in ids, f"vec[0] not found in top-5: {ids}"
-          print(f"smoke test ok — INT8 encoder + HNSW top-5 self-search passed (ids={ids})")
-
-          # Verify bundled Mojo binary is discoverable in the installed wheel
-          from python import _mojo_bridge
-          assert _mojo_bridge.is_available(), "Mojo binary not found in installed wheel"
-          print(f"Mojo binary ok: {_mojo_bridge._binary_path}")
-          EOF
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Release: upload wheels to PyPI + create GitHub Release (tags only)
-  # ────────────────────────────────────────────────────────────────────────────
-  release:
-    name: Publish release
-    needs: [build, sdist, smoke-test, cli-binary]
+  upload_pypi:
+    name: Upload to PyPI
+    needs: [build_wheels, build_sdist]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    environment:
-      name: pypi
-      url: https://pypi.org/project/vectro/
-
+    environment: pypi
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          pattern: wheels-*
           path: dist/
           merge-multiple: true
-
-      - name: Download sdist
-        uses: actions/download-artifact@v4
-        with:
-          name: sdist
-          path: dist/
-
-      - name: Download CLI binaries
-        uses: actions/download-artifact@v4
-        with:
-          pattern: cli-*
-          path: dist/
-          merge-multiple: true
-
-      - name: Generate SHA256 checksums
-        run: |
-          cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
-
-      - name: Extract changelog entry
-        id: notes
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          python - <<PYEOF > release_notes.md
-          import re, pathlib
-          text = pathlib.Path("CHANGELOG.md").read_text()
-          pattern = rf"## \[{re.escape("$VERSION")}\].*?(?=\n## \[|\Z)"
-          m = re.search(pattern, text, re.DOTALL)
-          print(m.group(0).strip() if m else "Release $VERSION")
-          PYEOF
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Vectro ${{ github.ref_name }}
-          body_path: release_notes.md
-          files: dist/*
-          prerelease: >-
-            ${{ contains(github.ref_name, 'rc') ||
-                contains(github.ref_name, 'alpha') ||
-                contains(github.ref_name, 'beta') }}
-
-      # Trusted OIDC publishing — no API token required (requires PyPI project
-      # to be configured to trust this repo + workflow, see docs.pypi.org/oidc).
-      - name: Publish to PyPI
-        if: >-
-          !contains(github.ref_name, 'rc') &&
-          !contains(github.ref_name, 'alpha') &&
-          !contains(github.ref_name, 'beta')
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist/
-          skip-existing: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -6,3 +6,25 @@ members = [
     "rust/generators",
 ]
 resolver = "2"
+
+# ─────────────────────── Release profile (Wave 0) ─────────────────────────
+# `panic = "abort"` removes unwind landing pads (≈3-5% size + a small perf
+# win in tight loops). `lto = "fat"` plus `codegen-units = 1` lets LLVM
+# inline across crate boundaries — critical for the `encode_fast_into` hot
+# path which crosses the vectro_lib → vectro_py FFI shim.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+opt-level = 3
+debug = false
+strip = "symbols"
+
+# Bench builds keep symbols and debug info so flamegraphs / Instruments
+# remain readable.  Same opt-level + LTO as release so numbers transfer.
+[profile.bench]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+debug = true
+strip = false

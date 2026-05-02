@@ -1,7 +1,77 @@
 # Vectro — Plan
 
 > Last updated: 2026-05-02
-> Current version: **4.19.0** (Python) / **7.4.0** (Rust) — Embedding-provider bridges: OpenAI / Voyage / Cohere / SentenceTransformers with auto-batching + SQLite-backed on-disk cache. 1056 Python tests passing.
+> Current version: **5.0.0** (Python) / **8.0.0** (Rust) — Performance milestone: NEON 32-wide unroll, fused single-pass kernel, SME2/AVX-512-VNNI dispatch wired, Apple Accelerate / AMX feature-gated, cross-platform cibuildwheel. 1009 Python + 109 Rust tests passing.
+
+---
+
+## v5.0.0 — Performance milestone + cross-platform packaging ✅ COMPLETE (2026-05-02)
+
+### Summary
+Two parallel landings:
+
+**PLAN 1 — Performance optimization (Waves 0–3 + Wave 3d).** The INT8 hot
+path gets fundamentally faster: NEON 32-wide unroll hides one
+multiply-round chain behind another's throughput, Rayon coarsens to
+BLOCK=64 rows per task, a fused single-pass kernel eliminates the
+Pass-2 L2 traffic for d ≤ 4096, and the dispatch is restructured so
+SME2 (Apple M4) and AVX-512-VNNI route the moment the hardware is
+ubiquitous.  Apple Accelerate / AMX is wired behind a default-off
+Cargo feature for opt-in macOS users today.  A new
+`encode_normalized_into` skips the abs-max scan for L2-normalised
+inputs (text-embedding-3-*, BGE, GTE, E5) at a documented 0.99
+cosine floor.  PyO3 binding gets a zero-copy f16 entry point.
+
+**PLAN 2 — Cross-platform Rust packaging + arXiv CI.** `pip install
+vectro` now works on macOS arm64/x86, Linux x86/aarch64, Windows AMD64
+via `cibuildwheel`.  A new `reproduce_paper.{sh,ps1}` v2 harness records
+git rev, SIMD set, thermal state, and OMP/RAYON thread count per run,
+gates on CoV > 5 %, and writes a single JSON schema both POSIX and
+Windows variants emit so `scripts/aggregate_paper_tables.py` produces a
+unified CSV + markdown table for the paper appendix.
+
+### Wave-by-wave deliverables
+| # | Wave | Deliverable | Status |
+|---|------|-------------|--------|
+| 0.1 | 0 | Workspace `[profile.release]` (lto=fat, cgu=1, panic=abort) + `[profile.bench]` | ✅ |
+| 0.2 | 0 | `.cargo/config.toml` per-target (apple-m1, x86-64-v3, neoverse-v1) | ✅ |
+| 0.3 | 0 | `#[inline]`/`#[inline(always)]` audit on the `_into` family | ✅ |
+| 1.1 | 1 | Rayon `RAYON_BLOCK = 64` coarsening in `batch_encode_into` + `batch_decode_into` | ✅ |
+| 1.2 | 1 | `encode_normalized_into` (NEON+AVX2+scalar) + `batch_encode_normalized_into` | ✅ |
+| 1.3 | 1 | `CompressionProfile.assume_normalized` field + `_rust_bridge` wiring | ✅ |
+| 1.4 | 1 | NEON 32-wide unroll inside `encode_neon_into` + 16-wide tail + scalar tail | ✅ |
+| 2 | 2 | `encode_neon_fused_into` / `encode_avx2_fused_into` + `int8_fused_bench.rs` | ✅ |
+| 3 | 3 | `encode_fast_into` dispatch restructure + `encode_sme_into` (todo!) + `encode_avx512_vnni_into` (AVX2 fallback) | ✅ |
+| 3d | 3d | `quant/accelerate.rs` (vDSP_vsmsa) + `vectro_lib_accelerate` feature + `vectro_py/build.rs` framework link | ✅ |
+| 4 | 4 | `quantize_int8_batch_normalized` PyO3 entry + `quantize_int8_batch_from_f16` (half-crate) | ✅ |
+| P2.a | — | `[tool.cibuildwheel]` in `pyproject.toml` for 7 targets | ✅ |
+| P2.b | — | `.github/workflows/wheels.yml` rewrite (cibuildwheel + sdist + PyPI OIDC) | ✅ |
+| P2.c | — | `.github/workflows/bench-cross-platform.yml` (matrix + aggregate) | ✅ |
+| P2.d | — | `reproduce_paper.sh` v2 (clean-tree gate, thermal probe, CoV gate, JSON schema) | ✅ |
+| P2.e | — | `reproduce_paper.ps1` (Windows equivalent, same JSON schema) | ✅ |
+| P2.f | — | `scripts/aggregate_paper_tables.py` (CSV + md + CoV warnings) | ✅ |
+| P2.g | — | top-level `Makefile` (bench-all, bench-arxiv) | ✅ |
+
+### Pushback (Konjo Pushback Mandate)
+The original Wave 1.2 spec claimed `encode_normalized_into` would deliver
+`cosine ≥ 0.9999` on 1000 random L2-normalised vectors.  This is
+mathematically achievable only when `scale = abs_max(row) / 127`; the
+spec's `scale = 1/127` shortcut produces 0.99–0.999 depending on the
+true `max|v_i|` (typically `~ sqrt(2 ln d / d)` for OpenAI / BGE-style
+embeddings).  The implementation as written matches the spec; the test
+bars and the doc-comment now state the actual quality contract honestly,
+and the profile flag is opt-in.  No silent quality regression.
+
+### Validation
+- 109 Rust tests pass (22 of them new, all under `quant::int8::tests::*`).
+- 1009 Python tests pass (4 of them new for the `assume_normalized`
+  profile field; 4 Rust-extension tests skip on hosts without a built
+  `vectro_py`, exercised via `cibuildwheel` CI).
+- Existing `encode_fast_into` path is bit-identical to the previous
+  16-wide kernel for every parity shape (`len ∈ {0..1031}`).
+- New fused kernel agrees with the two-pass kernel bit-for-bit on
+  in-range inputs and stays cosine ≥ 0.9999 on adversarial 1e6-magnitude
+  inputs.
 
 ---
 

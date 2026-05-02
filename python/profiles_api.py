@@ -40,7 +40,14 @@ class CompressionProfile:
     preserve_norms: bool         # Preserve vector norms
     preserve_angles: bool        # Preserve angular relationships
     min_similarity_threshold: float  # Minimum acceptable cosine similarity
-    
+
+    # Wave 1.3 — input invariant.  When True, the encoder asserts that
+    # every row has ||·||_2 ≤ 1 (text-embedding-3-*, gte-large, bge-m3,
+    # e5 are all L2-normalised by default) and skips the abs-max scan
+    # entirely.  Trades a small amount of i8 dynamic range for ~1.4×
+    # encode throughput.  Off by default; opt in per profile.
+    assume_normalized: bool = False
+
     def __post_init__(self):
         """Validate profile parameters."""
         if not 1 <= self.quantization_bits <= 8:
@@ -69,7 +76,8 @@ class CompressionProfile:
             "memory_efficient": self.memory_efficient,
             "preserve_norms": self.preserve_norms,
             "preserve_angles": self.preserve_angles,
-            "min_similarity_threshold": self.min_similarity_threshold
+            "min_similarity_threshold": self.min_similarity_threshold,
+            "assume_normalized": self.assume_normalized,
         }
     
     @classmethod
@@ -91,7 +99,8 @@ class CompressionProfile:
             memory_efficient=data["memory_efficient"],
             preserve_norms=data["preserve_norms"],
             preserve_angles=data["preserve_angles"],
-            min_similarity_threshold=data["min_similarity_threshold"]
+            min_similarity_threshold=data["min_similarity_threshold"],
+            assume_normalized=data.get("assume_normalized", False),
         )
 
 

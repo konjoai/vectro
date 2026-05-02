@@ -642,9 +642,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1318,6 +1320,7 @@ version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef41cbb417ea83b30525259e30ccef6af39b31c240bda578889494c5392d331"
 dependencies = [
+ "half",
  "libc",
  "ndarray",
  "num-complex",
@@ -2465,11 +2468,13 @@ dependencies = [
 
 [[package]]
 name = "vectro_lib"
-version = "7.4.0"
+version = "8.0.0"
 dependencies = [
  "anyhow",
  "bincode",
  "criterion",
+ "getrandom 0.3.4",
+ "half",
  "nalgebra",
  "ndarray",
  "proptest",
@@ -2484,8 +2489,9 @@ dependencies = [
 
 [[package]]
 name = "vectro_py"
-version = "7.4.0"
+version = "8.0.0"
 dependencies = [
+ "half",
  "ndarray",
  "numpy",
  "pyo3",

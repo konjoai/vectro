@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectro"
-version = "4.19.0"
-description = "Mojo-first ultra-high-performance LLM embedding compressor with vector DB integrations, IVF/PQ/RQ/NF4/Binary quantization, JS bindings, cloud I/O, and a CLI — 741 tests, 13.07M vec/s INT8 on Apple Silicon"
+version = "5.0.0"
+description = "Mojo + Rust ultra-high-performance LLM embedding compressor with vector DB integrations, IVF/PQ/RQ/NF4/Binary quantization, JS bindings, cloud I/O, and a CLI — v5.0.0: NEON 32-wide unroll, fused single-pass kernel, SME2/AVX-512-VNNI dispatch wired, cross-platform cibuildwheel"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -145,3 +145,26 @@ python = ["*.pyx", "vectro_quantizer"]
 
 [tool.cython]
 language_level = 3
+
+# ─────────────────────── cibuildwheel (PLAN 2) ────────────────────────────
+# `pip install cibuildwheel && cibuildwheel --output-dir wheelhouse`
+# Builds CPython 3.10/3.11/3.12 wheels for the seven supported targets:
+#   macOS arm64, macOS x86_64, Linux x86_64, Linux aarch64, Windows x86_64.
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-*"
+skip = "*-musllinux_*"
+test-command = "python {project}/benchmarks/vectro_paper_benchmark.py --quick --table int8"
+test-requires = ["faiss-cpu", "hnswlib", "numpy", "psutil"]
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+archs = ["x86_64", "aarch64"]
+environment = { RUSTFLAGS = "-C target-cpu=x86-64-v3" }
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
+before-build = "rustup target add x86_64-pc-windows-msvc"

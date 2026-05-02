@@ -1,6 +1,6 @@
 [package]
 name = "vectro_py"
-version = "7.4.0"
+version = "8.0.0"
 edition = "2021"
 authors = ["Wesley Scholl <128409641+wesleyscholl@users.noreply.github.com>"]
 description = "Python bindings for Vectro high-performance vector compression and search"
@@ -9,8 +9,14 @@ license = "MIT"
 [dependencies]
 vectro_lib = { path = "../vectro_lib" }
 pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"] }
-numpy = "0.20"
+numpy = { version = "0.20", features = ["half"] }
 ndarray = "0.15"
+half = "2.4"
+
+[features]
+default = []
+# Pass-through to vectro_lib's Accelerate / AMX (Wave 3d, macOS only).
+vectro_lib_accelerate = ["vectro_lib/vectro_lib_accelerate"]
 
 [lib]
 name = "vectro_py"
