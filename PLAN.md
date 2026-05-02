@@ -1,7 +1,51 @@
 # Vectro — Plan
 
-> Last updated: 2026-04-29
-> Current version: **4.17.1** (Python) / **7.4.0** (Rust) — DRY pass: shared cosine_scores + LlamaIndex MMR consolidated, 982 Python tests passing
+> Last updated: 2026-05-02
+> Current version: **4.18.0** (Python) / **7.4.0** (Rust) — DSPy integration: VectroDSPyRetriever completes the "Big Four" RAG framework coverage (LangChain + LlamaIndex + Haystack + DSPy). 1017 Python tests passing.
+
+---
+
+## v4.18.0 — DSPy Integration: VectroDSPyRetriever ✅ COMPLETE (2026-05-02)
+
+### Summary
+Closes the last major RAG framework gap. `VectroDSPyRetriever` is a drop-in
+DSPy retrieval module — `forward(query_or_queries, k)` / `__call__` returning
+`dspy.Prediction(passages=[...])` per the standard DSPy retrieval contract,
+backed by Vectro INT8/NF4 compression for 4–8× memory reduction. Full feature
+parity with the LangChain / LlamaIndex / Haystack adapters: text-in
+retrieval, multi-query aggregation, async forward (`aforward`), MMR with
+diversity control, metadata equality filters, persistent save/load, and a
+zero-dep fallback path so the integration imports without `dspy-ai`.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `python/integrations/dspy_integration.py` — `VectroDSPyRetriever` | ✅ |
+| 2 | `python/integrations/dspy_integration.pyi` — type stub | ✅ |
+| 3 | `forward()` / `__call__` — `dspy.Prediction` contract | ✅ |
+| 4 | `aforward()` / `aforward_mmr()` — non-blocking variants | ✅ |
+| 5 | `forward_mmr()` — diversity-promoting retrieval (shared `mmr_select`) | ✅ |
+| 6 | Multi-query aggregation (`forward(["q1","q2"])`) | ✅ |
+| 7 | Metadata equality filters | ✅ |
+| 8 | `save()` / `load()` — persistent retriever directory | ✅ |
+| 9 | Optional-dep safe — fallback `_Prediction` when DSPy not installed | ✅ |
+| 10 | `python/integrations/__init__.py(.pyi)` — `VectroDSPyRetriever` exported | ✅ |
+| 11 | `python/__init__.py` — top-level `VectroDSPyRetriever` in `__all__` | ✅ |
+| 12 | `tests/test_dspy_integration.py` — 35 tests: construction, forward, filters, async, MMR, persistence, fallback | ✅ |
+| 13 | README — DSPy section + extras hint (`pip install "vectro[integrations] dspy-ai"`) | ✅ |
+| 14 | Version bump 4.17.1 → 4.18.0 | ✅ |
+
+### Validation
+- 1017 tests passing (up from 982; 35 new DSPy tests, no regressions)
+- All 94 LangChain/LlamaIndex/Haystack framework tests pass unchanged
+
+### RAG Framework Coverage (Post v4.18.0)
+| Framework | retrieve | filter= | MMR | async | re-rank | save/load |
+|-----------|----------|---------|-----|-------|---------|-----------|
+| LangChain | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| LlamaIndex | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Haystack 2.x | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **DSPy** | ✅ | ✅ | ✅ | ✅ | — (n/a — DSPy reranks via `dspy.Predict`) | ✅ |
 
 ---
 

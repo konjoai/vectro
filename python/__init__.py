@@ -70,6 +70,7 @@ from .integrations import (
     LangChainVectorStore,
     LlamaIndexVectorStore,
     HaystackDocumentStore,
+    VectroDSPyRetriever,
 )
 
 from .streaming import StreamingDecompressor, AsyncStreamingDecompressor
@@ -111,7 +112,7 @@ from .retrieval import (
 from .ivf_api import IVFIndex, IVFPQIndex
 from .bf16_api import Bf16Encoder
 
-__version__ = "4.17.1"
+__version__ = "4.18.0"
 __author__ = "Wesley Scholl"
 __license__ = "MIT"
 __description__ = "Ultra-High-Performance LLM Embedding Compressor"
@@ -174,10 +175,11 @@ __all__ = [
     "read_parquet",
     "to_arrow_bytes",
     "from_arrow_bytes",
-    # Framework integrations (LangChain / LlamaIndex / Haystack)
+    # Framework integrations (LangChain / LlamaIndex / Haystack / DSPy)
     "LangChainVectorStore",
     "LlamaIndexVectorStore",
     "HaystackDocumentStore",
+    "VectroDSPyRetriever",
     # Streaming
     "StreamingDecompressor",
     "AsyncStreamingDecompressor",

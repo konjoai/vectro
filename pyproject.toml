@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectro"
-version = "4.17.1"
+version = "4.18.0"
 description = "Mojo-first ultra-high-performance LLM embedding compressor with vector DB integrations, IVF/PQ/RQ/NF4/Binary quantization, JS bindings, cloud I/O, and a CLI — 741 tests, 13.07M vec/s INT8 on Apple Silicon"
 readme = "README.md"
 license = {text = "MIT"}
