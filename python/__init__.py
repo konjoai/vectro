@@ -111,8 +111,15 @@ from .retrieval import (
 )
 from .ivf_api import IVFIndex, IVFPQIndex
 from .bf16_api import Bf16Encoder
+from .embeddings import (
+    BaseEmbeddingProvider,
+    OpenAIEmbeddings,
+    VoyageEmbeddings,
+    CohereEmbeddings,
+    SentenceTransformersEmbeddings,
+)
 
-__version__ = "4.18.0"
+__version__ = "4.19.0"
 __author__ = "Wesley Scholl"
 __license__ = "MIT"
 __description__ = "Ultra-High-Performance LLM Embedding Compressor"
@@ -180,6 +187,12 @@ __all__ = [
     "LlamaIndexVectorStore",
     "HaystackDocumentStore",
     "VectroDSPyRetriever",
+    # Embedding-provider bridges
+    "BaseEmbeddingProvider",
+    "OpenAIEmbeddings",
+    "VoyageEmbeddings",
+    "CohereEmbeddings",
+    "SentenceTransformersEmbeddings",
     # Streaming
     "StreamingDecompressor",
     "AsyncStreamingDecompressor",

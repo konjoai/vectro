@@ -1,7 +1,54 @@
 # Vectro — Plan
 
 > Last updated: 2026-05-02
-> Current version: **4.18.0** (Python) / **7.4.0** (Rust) — DSPy integration: VectroDSPyRetriever completes the "Big Four" RAG framework coverage (LangChain + LlamaIndex + Haystack + DSPy). 1017 Python tests passing.
+> Current version: **4.19.0** (Python) / **7.4.0** (Rust) — Embedding-provider bridges: OpenAI / Voyage / Cohere / SentenceTransformers with auto-batching + SQLite-backed on-disk cache. 1056 Python tests passing.
+
+---
+
+## v4.19.0 — Embedding-Provider Bridges ✅ COMPLETE (2026-05-02)
+
+### Summary
+Closes the last RAG-pipeline glue gap: every demo today re-implements
+"call the OpenAI/Voyage/Cohere/ST embedding API in batches and cache results."
+Vectro now ships first-class adapters for the four dominant providers
+behind a single `BaseEmbeddingProvider` superclass with auto-batching and a
+SQLite-backed on-disk cache. Every provider instance is simultaneously a
+Vectro `embed_fn`, a LangChain `Embeddings`, and a LlamaIndex `BaseEmbedding`
+— pass it directly to any of the four RAG framework adapters without
+wrapping.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `python/embeddings/base.py` — `BaseEmbeddingProvider` (auto-batch + SQLite cache + multi-protocol surface) | ✅ |
+| 2 | `python/embeddings/openai.py` — `OpenAIEmbeddings` (text-embedding-3-* models) | ✅ |
+| 3 | `python/embeddings/voyage.py` — `VoyageEmbeddings` (voyage-3, voyage-code-3) with asymmetric document/query cache | ✅ |
+| 4 | `python/embeddings/cohere.py` — `CohereEmbeddings` (embed-english-v3.0, embed-multilingual-v3.0) with asymmetric search_document/search_query cache, supports v2 by-type response | ✅ |
+| 5 | `python/embeddings/sentence_transformers.py` — `SentenceTransformersEmbeddings` (any ST model, local CPU/MPS/CUDA) | ✅ |
+| 6 | `.pyi` type stubs for all five modules | ✅ |
+| 7 | `python/embeddings/__init__.py(.pyi)` — package exports | ✅ |
+| 8 | `python/__init__.py` — top-level exports + `__all__` entries | ✅ |
+| 9 | `tests/test_embeddings_base.py` — 22 tests: construction, batching, caching (hits/misses/persistence/clear/keying/concurrency), normalization, LangChain + LlamaIndex protocols, async, embed_fn contract | ✅ |
+| 10 | `tests/test_embeddings_providers.py` — 17 tests: each provider with stub client (no network), batching, response-shape variants (object/dict/by-type), asymmetric document/query cache separation, missing-SDK ImportError, integration with VectroDSPyRetriever | ✅ |
+| 11 | README — Embedding-Provider Bridges section + extras hint | ✅ |
+| 12 | Version bump 4.18.0 → 4.19.0 | ✅ |
+
+### Cache design
+- **Storage:** single `cache.sqlite` file inside `cache_dir` — autocommit
+  mode, thread-safe via `check_same_thread=False` plus an in-memory lock.
+- **Key:** `SHA-256(provider_name : model : text)` — collision-resistant,
+  model/provider-namespaced so swapping either invalidates cleanly.
+- **Asymmetric retrievers** (Voyage, Cohere v3) cache document and query
+  embeddings under separate provider keys (`<provider>` vs
+  `<provider>:query`) so the same text retrieved at index time never
+  collides with the same text issued as a query.
+- **Bulk operations:** `_cache_get` does one SQL `IN (...)` query;
+  `_cache_put` does one `executemany`. Single round-trip per call.
+
+### Validation
+- 1056 tests passing (up from 1017; 39 new embedding tests, no regressions)
+- All 35 DSPy + 94 LangChain/LlamaIndex/Haystack framework tests pass unchanged
+- New providers verified end-to-end with `VectroDSPyRetriever`
 
 ---
 

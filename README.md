@@ -7,8 +7,8 @@
 ### Ultra-High-Performance LLM Embedding Compressor
 
 ![Mojo](https://img.shields.io/badge/Mojo-first-orange?logo=fire&style=for-the-badge)
-![Version](https://img.shields.io/badge/version-4.18.0-blue?style=for-the-badge)
-![Tests](https://img.shields.io/badge/tests-1017_passing-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-4.19.0-blue?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1056_passing-green?style=for-the-badge)
 ![Python-Only](https://img.shields.io/badge/mode-Python--only-blue?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)
 
@@ -16,7 +16,7 @@
 ╦  ╦╔═╗╔═╗╔╦╗╦═╗╔═╗
 ╚╗╔╝║╣ ║   ║ ╠╦╝║ ║
  ╚╝ ╚═╝╚═╝ ╩ ╩╚═╚═╝
-    v4.18.0 — Mojo-Accelerated Vector Quantization
+    v4.19.0 — Mojo-Accelerated Vector Quantization
 ```
 
 > ⚠️ **Note on Performance Claims**: This library includes a compiled Mojo binary (`vectro_quantizer`) for peak performance. Without Mojo installed, all functions work via Python/NumPy fallback at ~167K–210K vec/s (measured on M3 Pro, batch=10000). With the Mojo binary built, throughput reaches 12M+ vec/s — **4.85× faster than FAISS C++**. See [Requirements](#-requirements) below.
@@ -60,6 +60,7 @@ A vector quantization library with Mojo SIMD acceleration and comprehensive Pyth
 - `pip install "vectro[integrations] llama-index-core"` for LlamaIndex VectorStore
 - `pip install "vectro[integrations] haystack-ai"` for Haystack 2.x DocumentStore
 - `pip install "vectro[integrations] dspy-ai"` for DSPy retriever module
+- `pip install "vectro[integrations] openai voyageai cohere sentence-transformers"` for the built-in embedding-provider bridges (any subset)
 
 All core functions work in Python-only mode. Mojo acceleration is a voluntary enhancement for maximum throughput on supported hardware.
 
@@ -744,6 +745,60 @@ await rm.aforward("query", k=5)
 # Wire as global retriever
 dspy.settings.configure(rm=rm)
 ```
+
+### Embedding-Provider Bridges
+
+Drop-in callable embedders for the four dominant providers. Each instance is
+simultaneously a Vectro `embed_fn`, a LangChain `Embeddings`, and a
+LlamaIndex `BaseEmbedding` — pass it directly to any of those adapters.
+
+```python
+from python.embeddings import (
+    OpenAIEmbeddings,
+    VoyageEmbeddings,
+    CohereEmbeddings,
+    SentenceTransformersEmbeddings,
+)
+
+# OpenAI text-embedding-3-small with on-disk cache + auto-batching
+embed = OpenAIEmbeddings(
+    model="text-embedding-3-small",
+    cache_dir="~/.cache/vectro-embeddings",
+    batch_size=256,
+)
+
+# Voyage 3 (asymmetric: documents vs queries use different input_type)
+embed = VoyageEmbeddings(model="voyage-3", cache_dir="...")
+
+# Cohere v3 (asymmetric: search_document / search_query)
+embed = CohereEmbeddings(model="embed-english-v3.0")
+
+# Local SentenceTransformers — any HuggingFace ST-compatible model
+embed = SentenceTransformersEmbeddings(
+    model="BAAI/bge-small-en-v1.5", device="mps", normalize=True,
+)
+
+# Plug directly into any Vectro adapter
+from python.integrations import VectroDSPyRetriever, LangChainVectorStore
+
+rm = VectroDSPyRetriever(embed_fn=embed, k=5)
+rm.add_texts(["Paris is the capital of France", "Berlin is cold in winter"])
+
+# LangChain — same instance, no wrapping needed
+store = LangChainVectorStore.from_texts(
+    ["Paris is the capital of France", "Berlin is cold in winter"],
+    embedding=embed,
+)
+
+# Cache statistics
+print(embed.cache_stats())   # {'hits': 12, 'misses': 4, 'size': 16}
+```
+
+The cache is keyed by `provider:model:text` — swapping models or providers
+never returns stale vectors. Document and query embeddings live in separate
+namespaces for asymmetric retrievers (Voyage, Cohere v3) so the same query
+text retrieved at index time never collides with the same text issued as a
+query.
 
 ### Hybrid Retrieval (RRF)
 
