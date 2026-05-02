@@ -5,6 +5,64 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.19.0] — 2026-05-02
+
+### Added
+- **Embedding-provider bridges** — `python/embeddings/` package shipping
+  `BaseEmbeddingProvider` plus four concrete adapters: `OpenAIEmbeddings`,
+  `VoyageEmbeddings`, `CohereEmbeddings`, `SentenceTransformersEmbeddings`.
+- Each provider instance is simultaneously a Vectro `embed_fn` callable
+  (`__call__(str | list) -> np.ndarray`), a LangChain `Embeddings`
+  (`embed_query` / `embed_documents` plus async variants), and a LlamaIndex
+  `BaseEmbedding` (`_get_query_embedding` / `_get_text_embedding` /
+  `_get_text_embeddings`). A single instance can be passed to any of the
+  four Vectro RAG-framework adapters without wrapping.
+- **Auto-batching** — long input lists are split into chunks of size
+  `batch_size` so the underlying API never sees more than its supported
+  request size (OpenAI 256, Voyage 64, Cohere 96, SentenceTransformers 32
+  by default, all configurable).
+- **On-disk SQLite cache** — when `cache_dir` is set, every text → vector
+  is persisted in a single `cache.sqlite` file keyed by
+  `SHA-256(provider:model:text)`. Bulk lookup via one SQL `IN (...)` query;
+  bulk insert via one `executemany`. Survives process restarts.
+- **Asymmetric retriever cache separation** — Voyage and Cohere v3 cache
+  document and query embeddings under disjoint provider keys (`voyage` vs
+  `voyage:query`, `cohere` vs `cohere:query`) so the same text indexed as a
+  document never collides with the same text issued as a query.
+- **L2 normalisation** — set `normalize=True` to receive unit-norm vectors;
+  applied uniformly post-batch so a single source of truth.
+- **Cache observability** — `cache_stats()` returns `hits`, `misses`,
+  `size`. `clear_cache()` empties the table without deleting the file.
+- **Optional-dep safe** — every provider lazy-imports its SDK on first
+  use; the `python.embeddings` package itself imports without any of
+  `openai`, `voyageai`, `cohere`, or `sentence-transformers` installed.
+- `python/embeddings/{base,openai,voyage,cohere,sentence_transformers}.pyi`
+  type stubs.
+- `python/embeddings/__init__.py(.pyi)` package exports.
+- `python/__init__.py` re-exports all five classes at the top level.
+- `tests/test_embeddings_base.py` — 22 unit tests covering construction,
+  batching (split, single-string, empty, bad shape, dim drift),
+  caching (hits/misses, partial, persistence, clear, model-keying,
+  provider-keying, concurrency), normalisation (unit norm + zero-vector
+  safety), LangChain + LlamaIndex protocol surface, async variants, and
+  the Vectro `embed_fn` contract end-to-end with `VectroDSPyRetriever`.
+- `tests/test_embeddings_providers.py` — 17 unit tests with in-process
+  stub clients (zero network calls) covering each provider's request
+  shape, response decoding (object / dict / Cohere v2 by-type),
+  asymmetric `input_type` handling, document/query cache separation,
+  cache-hit short-circuit, missing-SDK `ImportError`, and end-to-end
+  integration with `VectroDSPyRetriever`.
+- README — Embedding-Provider Bridges section + extras hint
+  (`pip install "vectro[integrations] openai voyageai cohere sentence-transformers"`).
+
+### Notes
+- Closes the last RAG-pipeline glue gap. Every Vectro RAG adapter now has
+  a turnkey embedder available without users wiring their own `embed_fn`
+  or implementing the LangChain / LlamaIndex protocol manually.
+- 1056 Python tests passing (up from 1017; 39 new embedding tests, no regressions).
+- Version bump 4.18.0 → 4.19.0 in `python/__init__.py`, `python/vectro.py`,
+  `pyproject.toml`, and `README.md`.
+
 ## [4.18.0] — 2026-05-02
 
 ### Added
