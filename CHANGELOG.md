@@ -5,6 +5,50 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.18.0] — 2026-05-02
+
+### Added
+- **DSPy integration** — `python/integrations/dspy_integration.py` ships
+  `VectroDSPyRetriever`, a drop-in DSPy retrieval module backed by Vectro
+  INT8/NF4 compression. Implements the `dspy.Retrieve` duck-typing protocol
+  (`forward(query_or_queries, k)` and `__call__`) returning
+  `dspy.Prediction(passages=[...])`. Falls back to a structurally equivalent
+  `_Prediction` object when `dspy-ai` is not installed, so the import is
+  always safe.
+- Async retrieval — `aforward()` and `aforward_mmr()` non-blocking variants
+  for FastAPI / DSPy async pipelines.
+- MMR retrieval — `forward_mmr(query, k, fetch_k, lambda_mult)` for
+  diversity-promoting selection, sharing the canonical `mmr_select` utility
+  with the LangChain / LlamaIndex / Haystack adapters.
+- Metadata equality filters on `forward()` and `forward_mmr()`.
+- Multi-query aggregation — passing a list of strings sums per-query
+  cosine scores before top-k, matching the standard DSPy convention for
+  `Retrieve(["q1", "q2"])` calls.
+- Pre-computed `query_embedding=` bypass — for pipelines that already
+  produced the query vector and want to skip `embed_fn` re-encoding.
+- Persistent `save(path)` / `load(path, embed_fn=...)` — retriever
+  directory with `meta.json` (passages, metadatas, profile, dims, k) and
+  `vectors.npy` (reconstructed float32 embeddings).
+- `compression_stats` property — n_passages, dims, profile, original_mb,
+  compressed_mb, compression_ratio, memory_saved_mb.
+- `python/integrations/dspy_integration.pyi` — type stub.
+- `python/integrations/__init__.py(.pyi)` exports `VectroDSPyRetriever`.
+- `python/__init__.py` re-exports `VectroDSPyRetriever` at the top level.
+- `tests/test_dspy_integration.py` — 35 unit tests covering construction,
+  forward/__call__, k override, multi-query, query_embedding bypass,
+  empty corpus, filters, async, MMR (relevance/diversity/filters),
+  save/load round-trip, store-type validation, compression stats,
+  top-level export sanity, and the DSPy-not-installed fallback path.
+- README — DSPy quickstart section and `pip install "vectro[integrations] dspy-ai"` extras hint.
+
+### Notes
+- Closes the last major RAG framework gap. The "Big Four" — LangChain,
+  LlamaIndex, Haystack 2.x, and DSPy — now have full feature parity in
+  Vectro adapters: search, filters, MMR, async, save/load.
+- 1017 Python tests passing (up from 982; 35 new DSPy tests, no regressions).
+- Version bump 4.17.1 → 4.18.0 in `python/__init__.py`, `python/vectro.py`,
+  `pyproject.toml`, and `README.md`.
+
 ## [4.17.1] — 2026-04-29
 
 ### Changed
