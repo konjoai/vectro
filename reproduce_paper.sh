@@ -105,13 +105,18 @@ export RAYON_NUM_THREADS="$N_THREADS"
 read_thermal() {
   case "$(uname -s)" in
     Darwin)
-      if pmset -g thermlog 2>/dev/null | tail -1 | grep -qi normal; then
+      # `pmset -g thermlog` opens a blocking log stream and never returns
+      # on some macOS versions.  Use `pmset -g therm` instead — it reads
+      # the current snapshot and exits immediately.
+      local out
+      out="$(pmset -g therm 2>/dev/null)"
+      if echo "$out" | grep -qi "CPU_Scheduler_Limit.*=.*100"; then
         echo "normal"
-      elif pmset -g thermlog 2>/dev/null | tail -1 | grep -qi fair; then
+      elif echo "$out" | grep -qi "performance"; then
         echo "fair"
-      elif pmset -g thermlog 2>/dev/null | tail -1 | grep -qi serious; then
+      elif echo "$out" | grep -qi "serious"; then
         echo "serious"
-      elif pmset -g thermlog 2>/dev/null | tail -1 | grep -qi critical; then
+      elif echo "$out" | grep -qi "critical"; then
         echo "critical"
       else
         echo "unknown"
