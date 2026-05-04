@@ -5,6 +5,41 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.1] — 2026-05-03
+
+### Fixed
+- **`benchmarks/vectro_paper_benchmark.py`** — closes the v5.0.0
+  reproducibility gap.  v5.0.0 shipped four pieces of CI / scripting
+  that all referenced this file (`pyproject.toml` cibuildwheel
+  test-command, `reproduce_paper.sh`, `reproduce_paper.ps1`,
+  `bench-cross-platform.yml`), but the script itself didn't exist —
+  every wheel test fell through silently and `reproduce_paper`
+  emitted the `{"throughput": 0}` sentinel.
+
+### Added
+- `benchmarks/vectro_paper_benchmark.py` — real bench harness:
+  `--quick / --table {int8|nf4|binary|all} / --json / --n / --d /
+  --reps / --warmup`.  Calls real `Vectro.compress` at multiple shapes,
+  reports best-of-N + p50 throughput in M vec/s + reconstruction
+  cosine + memory before/after.  JSON output carries a `throughput`
+  headline contract field consumed by `reproduce_paper.{sh,ps1}`.
+- `tests/test_paper_benchmark.py` — 10 unit tests pinning the JSON
+  shape contract, headline-throughput presence + positivity,
+  `--table all` covering every quantisation table, `--n / --d`
+  overrides, INT8 cosine ≥ 0.999, binary ratio > 16×, pretty-mode
+  marker, unknown-table exit-nonzero.
+
+### Docs
+- `CLAUDE.md` — added "## The Konjo Way" section defining the KONJO
+  acronym (Know, Outline, Nail, Justify, Optimize) near the top of the
+  file.
+
+### Notes
+- Version bump 5.0.0 → 5.0.1 in `pyproject.toml`, `python/__init__.py`,
+  `python/vectro.py`.
+- 1019 Python tests pass (1009 prior + 10 new).
+- Rust crate versions unchanged at 8.0.0.
+
 ## [5.0.0] — 2026-05-02
 
 ### Performance — INT8 hot path (PLAN 1)
