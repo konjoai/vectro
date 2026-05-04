@@ -105,13 +105,18 @@ export RAYON_NUM_THREADS="$N_THREADS"
 read_thermal() {
   case "$(uname -s)" in
     Darwin)
-      if pmset -g thermlog 2>/dev/null | tail -1 | grep -qi normal; then
+      # `pmset -g thermlog` opens a blocking log stream and never returns
+      # on some macOS versions.  Use `pmset -g therm` instead — it reads
+      # the current snapshot and exits immediately.
+      local out
+      out="$(pmset -g therm 2>/dev/null)"
+      if echo "$out" | grep -qi "CPU_Scheduler_Limit.*=.*100"; then
         echo "normal"
-      elif pmset -g thermlog 2>/dev/null | tail -1 | grep -qi fair; then
+      elif echo "$out" | grep -qi "performance"; then
         echo "fair"
-      elif pmset -g thermlog 2>/dev/null | tail -1 | grep -qi serious; then
+      elif echo "$out" | grep -qi "serious"; then
         echo "serious"
-      elif pmset -g thermlog 2>/dev/null | tail -1 | grep -qi critical; then
+      elif echo "$out" | grep -qi "critical"; then
         echo "critical"
       else
         echo "unknown"
@@ -158,7 +163,10 @@ drop_caches() {
 # 7. Bench loop with CoV gate + outlier rule
 # ─────────────────────────────────────────────────────────────────
 
-BENCH_CMD=(python3 benchmarks/vectro_paper_benchmark.py --quick --table int8 --json)
+# --reps 1 --warmup 0: the outer $RUNS loop already handles statistical
+# replication; one rep per run keeps each iteration to ~15–40s depending
+# on the platform, so a 3-run job completes in under 2 minutes.
+BENCH_CMD=(python3 benchmarks/vectro_paper_benchmark.py --quick --table int8 --json --reps 1 --warmup 0)
 RAW_RESULTS=()
 
 run_once() {
@@ -260,7 +268,7 @@ record = {
     "throughput_mean":  mean,
     "throughput_stdev": stdev,
     "cov_pct":        float("${COV_PCT}"),
-    "timestamp_utc":  datetime.datetime.utcnow().isoformat() + "Z",
+    "timestamp_utc":  datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }
 print(json.dumps(record, indent=2))
 PY

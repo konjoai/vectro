@@ -5,6 +5,41 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.2] — 2026-05-04
+
+### Fixed
+- `reproduce_paper.sh` and `reproduce_paper.ps1` — `BENCH_CMD` now passes
+  `--reps 1 --warmup 0` to `vectro_paper_benchmark.py`.  Without this flag,
+  each outer `--runs 1` iteration ran 4 timed invocations (warmup + 3 reps)
+  and appeared to hang (~120 s on NumPy path).  With `--reps 1 --warmup 0`
+  each pass takes < 30 s; a `--runs 3` CI job completes in < 90 s.
+
+### Added
+- `notebooks/vectro_paper_results.ipynb` — real paper-results notebook
+  referenced by `make bench-arxiv`.  8 cells:
+    * Locates `results/paper/*.json` relative to the repo root.
+    * Loads and validates records from both `reproduce_paper` (v2 schema)
+      and direct `vectro_paper_benchmark.py` (v1 schema) runs.
+    * Prints a throughput summary table bucketed by (platform, wave, mode)
+      with mean ± pstdev and CoV% flagging.
+    * Dark-theme matplotlib bar chart of M vec/s by platform (written to
+      `results/paper/throughput_chart.png`; matplotlib import guarded for
+      headless/nbconvert runs without the package).
+    * Compression ratio table by (table, n, d, platform).
+    * SIMD path summary per platform.
+    * Runs cleanly with zero records in `results/paper/` (graceful
+      no-data state).
+- `tests/test_paper_benchmark.py::TestSingleRepIsQuick.test_reps_1_warmup_0_completes_within_60s`
+  — timing regression guard: asserts `--quick --reps 1 --warmup 0 --json`
+  exits in < 60 s (28.1 s on Darwin / x86_64 NumPy fallback).
+
+### Notes
+- Version bump 5.0.1 → 5.0.2 in `pyproject.toml`, `python/__init__.py`,
+  `python/vectro.py`.
+- 11 bench-harness tests pass (10 prior + 1 new timing gate).
+- 1020 Python tests total (1019 prior + 1 new).
+- Rust crate versions unchanged at 8.0.0.
+
 ## [5.0.1] — 2026-05-03
 
 ### Fixed
