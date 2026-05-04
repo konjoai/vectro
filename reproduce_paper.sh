@@ -268,7 +268,7 @@ record = {
     "throughput_mean":  mean,
     "throughput_stdev": stdev,
     "cov_pct":        float("${COV_PCT}"),
-    "timestamp_utc":  datetime.datetime.utcnow().isoformat() + "Z",
+    "timestamp_utc":  datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }
 print(json.dumps(record, indent=2))
 PY
