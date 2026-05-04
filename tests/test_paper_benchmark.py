@@ -142,5 +142,26 @@ class TestUnknownTable(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
 
 
+class TestSingleRepIsQuick(unittest.TestCase):
+    """v5.0.2 — --reps 1 --warmup 0 (the reproduce_paper.sh contract) must
+    finish in under 60 s so a 3-run CI job completes in < 3 minutes.
+    """
+
+    def test_reps_1_warmup_0_completes_within_60s(self):
+        import time
+        t0 = time.time()
+        r = _run("--quick", "--table", "int8",
+                 "--json", "--reps", "1", "--warmup", "0")
+        elapsed = time.time() - t0
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertLess(
+            elapsed, 60.0,
+            f"--quick --reps 1 --warmup 0 took {elapsed:.1f}s — must be < 60s "
+            f"so reproduce_paper.sh does not time out in CI")
+        rec = json.loads(r.stdout.strip())
+        self.assertEqual(rec["rows"][0]["reps"], 1)
+        self.assertGreater(rec["throughput"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

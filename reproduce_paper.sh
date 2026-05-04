@@ -158,7 +158,10 @@ drop_caches() {
 # 7. Bench loop with CoV gate + outlier rule
 # ─────────────────────────────────────────────────────────────────
 
-BENCH_CMD=(python3 benchmarks/vectro_paper_benchmark.py --quick --table int8 --json)
+# --reps 1 --warmup 0: the outer $RUNS loop already handles statistical
+# replication; one rep per run keeps each iteration to ~15–40s depending
+# on the platform, so a 3-run job completes in under 2 minutes.
+BENCH_CMD=(python3 benchmarks/vectro_paper_benchmark.py --quick --table int8 --json --reps 1 --warmup 0)
 RAW_RESULTS=()
 
 run_once() {

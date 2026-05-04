@@ -86,7 +86,9 @@ function Drop-CachesProxy {
 }
 
 # ── 9. Bench loop ────────────────────────────────────────────────
-$BenchCmd = @("python", "benchmarks/vectro_paper_benchmark.py", "--quick", "--table", "int8", "--json")
+# --reps 1 --warmup 0: outer -Runs N already provides statistical reps;
+# one timed iteration keeps each pass to ~15-40s.
+$BenchCmd = @("python", "benchmarks/vectro_paper_benchmark.py", "--quick", "--table", "int8", "--json", "--reps", "1", "--warmup", "0")
 $Throughputs = @()
 $attempt = 0
 $maxAttempts = $Runs + 2

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectro"
-version = "5.0.1"
+version = "5.0.2"
 description = "Mojo + Rust ultra-high-performance LLM embedding compressor with vector DB integrations, IVF/PQ/RQ/NF4/Binary quantization, JS bindings, cloud I/O, and a CLI — v5.0.0: NEON 32-wide unroll, fused single-pass kernel, SME2/AVX-512-VNNI dispatch wired, cross-platform cibuildwheel"
 readme = "README.md"
 license = {text = "MIT"}

@@ -1,7 +1,36 @@
 # Vectro — Plan
 
-> Last updated: 2026-05-03
-> Current version: **5.0.1** (Python) / **8.0.0** (Rust) — Patch: closes the v5.0.0 reproducibility gap. `benchmarks/vectro_paper_benchmark.py` is now a real script, not a missing reference. 1019 Python + 109 Rust tests passing.
+> Last updated: 2026-05-04
+> Current version: **5.0.2** (Python) / **8.0.0** (Rust) — Patch: reproduce_paper.{sh,ps1} --reps 1 --warmup 0 fix + vectro_paper_results.ipynb. 1020 Python + 109 Rust tests passing.
+
+---
+
+## v5.0.2 — Reproduce timing fix + paper notebook ✅ COMPLETE (2026-05-04)
+
+### Problem
+Two linked gaps remained after v5.0.1:
+
+1. `reproduce_paper.{sh,ps1}` called `vectro_paper_benchmark.py` without
+   `--reps 1 --warmup 0`.  The bench script defaults to 3 reps + 1 warmup,
+   so each outer `--runs 1` iteration took ≈ 4 × 30 s ≈ 120 s; a standard
+   `--runs 3` CI job needed 6 minutes.  The script appeared to hang.
+2. `notebooks/vectro_paper_results.ipynb` did not exist, so
+   `make bench-arxiv` exited immediately on `jupyter nbconvert`.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `reproduce_paper.sh` — BENCH_CMD now passes `--reps 1 --warmup 0` | ✅ |
+| 2 | `reproduce_paper.ps1` — same fix on Windows | ✅ |
+| 3 | `notebooks/vectro_paper_results.ipynb` — real 8-cell notebook: loads `results/paper/*.json`, throughput summary table, matplotlib dark-theme chart, compression ratio table, SIMD summary; matplotlib import is guarded so `nbconvert` degrades gracefully | ✅ |
+| 4 | `tests/test_paper_benchmark.py::TestSingleRepIsQuick` — new test: `--quick --reps 1 --warmup 0 --json` must complete in < 60 s (measured: 28 s) | ✅ |
+| 5 | Version bump 5.0.1 → 5.0.2 | ✅ |
+
+### Validation
+- 11 bench-harness tests pass (10 prior + 1 new timing gate).
+- `--quick --reps 1 --warmup 0` completed in **28.1 s** on Darwin / x86_64.
+- Notebook JSON validates as nbformat 4, 8 cells; runs clean with empty results dir.
+- `reproduce_paper.sh --runs 1` exits with a real JSON record (non-zero throughputs) in < 45 s.
 
 ---
 
