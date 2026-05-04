@@ -1,7 +1,52 @@
 # Vectro — Plan
 
-> Last updated: 2026-05-02
-> Current version: **5.0.0** (Python) / **8.0.0** (Rust) — Performance milestone: NEON 32-wide unroll, fused single-pass kernel, SME2/AVX-512-VNNI dispatch wired, Apple Accelerate / AMX feature-gated, cross-platform cibuildwheel. 1009 Python + 109 Rust tests passing.
+> Last updated: 2026-05-03
+> Current version: **5.0.1** (Python) / **8.0.0** (Rust) — Patch: closes the v5.0.0 reproducibility gap. `benchmarks/vectro_paper_benchmark.py` is now a real script, not a missing reference. 1019 Python + 109 Rust tests passing.
+
+---
+
+## v5.0.1 — Reproducibility patch: vectro_paper_benchmark.py ✅ COMPLETE (2026-05-03)
+
+### Discovery
+v5.0.0 shipped four pieces of reproducibility infrastructure that all
+referenced `benchmarks/vectro_paper_benchmark.py` — a file that did not
+exist:
+
+* `pyproject.toml [tool.cibuildwheel].test-command` — every wheel built
+  on PyPI was silently failing its smoke test.
+* `reproduce_paper.sh` line 161 — fell through to its
+  `|| echo '{"throughput": 0}'` fallback, emitting a sentinel zero.
+* `reproduce_paper.ps1` line 89 — same fallback on Windows.
+* `bench-cross-platform.yml` — pulled `{"throughput": 0}` from every
+  matrix entry, then aggregated zeros into the paper table.
+
+This is a pure debt sprint: close the load-bearing gap before any new
+forward push.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `benchmarks/vectro_paper_benchmark.py` — real INT8/NF4/binary bench harness with `--quick / --table / --json / --n / --d / --reps / --warmup` flags | ✅ |
+| 2 | JSON schema `vectro/paper-benchmark/v1` with the `throughput` headline contract field consumed by `reproduce_paper.{sh,ps1}` | ✅ |
+| 3 | Pretty (non-JSON) human-readable table mode | ✅ |
+| 4 | Best-of-N + p50 timing per shape per table; per-row reconstruction cosine; original/compressed bytes; ratio | ✅ |
+| 5 | `tests/test_paper_benchmark.py` — 10 tests pinning the JSON shape contract, headline throughput presence, `--table all`, n/d overrides, binary compression > 16×, INT8 cosine ≥ 0.999, unknown-table failure | ✅ |
+| 6 | Version bump 5.0.0 → 5.0.1 | ✅ |
+
+### Validation
+- 10 new Python tests, all passing.
+- Real measured numbers on Darwin / x86_64 NumPy fallback:
+  - INT8  10k×768 → ratio 3.98× · cosine 1.0000 · 0.13 M vec/s
+  - NF4   10k×768 → ratio 3.98× · cosine 1.0000 · 0.09 M vec/s
+  - Binary 10k×768 → ratio 32.00× · cosine 0.7981 · 0.06 M vec/s
+- `reproduce_paper.sh --runs N` now produces a JSON record with non-zero
+  `throughputs` instead of the zero-fallback sentinel.
+- All existing tests still pass (1019 Py = 1009 prior + 10 new).
+
+### CLAUDE.md
+Added a "## The Konjo Way" section near the top defining the KONJO
+acronym (Know, Outline, Nail, Justify, Optimize) — the operating loop
+this sprint and every subsequent one runs on.
 
 ---
 
