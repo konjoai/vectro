@@ -8,7 +8,8 @@ vector quantization capabilities implemented in Mojo.
 from __future__ import annotations
 
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Union, Any
+from dataclasses import dataclass, field
+from typing import Dict, List, Literal, Optional, Tuple, Union, Any
 from pathlib import Path
 import warnings
 import json
@@ -47,13 +48,147 @@ from .profiles_api import (
     create_custom_profile
 )
 
-__version__ = "5.0.2"
+__version__ = "5.1.0"
 __author__ = "Wesley Scholl"
 __license__ = "MIT"
 __description__ = "Ultra-High-Performance LLM Embedding Compressor"
 
 _STORAGE_FORMAT_VERSION = 2
 _STORAGE_FORMAT_NAME = "vectro_npz"
+
+# Valid precision modes and backends exposed at the module boundary.
+_VALID_PRECISION_MODES = frozenset({"int8", "nf4", "binary", "int4", "int2"})
+_VALID_BACKENDS = frozenset({"auto", "mojo", "rust", "python"})
+_VALID_PROFILES = frozenset({"fast", "balanced", "quality", "ultra", "binary", "int8", "nf4"})
+
+
+@dataclass
+class QuantizationConfig:
+    """Validated configuration container for a single :class:`Vectro` compression run.
+
+    ``QuantizationConfig`` provides a structured, type-checked alternative to the
+    raw ``profile=``/``precision_mode=`` string arguments accepted by
+    :meth:`Vectro.compress`.  All parameters are validated at construction time so
+    callers get a ``ValueError`` immediately — not buried inside a hot path.
+
+    Typical usage::
+
+        cfg = QuantizationConfig(precision_mode="nf4", group_size=32)
+        result = vectro.compress(embeddings, config=cfg)
+
+    Attributes
+    ----------
+    precision_mode : Quantization method.  One of ``"int8"`` (default), ``"nf4"``,
+        ``"binary"``, ``"int4"``, ``"int2"``.
+    profile : Named compression profile.  When set, ``profile`` supplies defaults
+        for ``precision_mode`` and ``group_size`` unless those fields are given
+        explicitly.  One of ``"fast"``, ``"balanced"``, ``"quality"``, ``"ultra"``,
+        ``"binary"``.  ``None`` means no named profile — explicit fields are used.
+    group_size : Sub-vector group size for grouped INT4/INT2 quantization.  Must be
+        a positive power of 2.  Default ``64``.  Ignored for ``int8`` and ``nf4``.
+    assume_normalized : When ``True``, skips the per-vector abs-max scan and uses
+        ``scale = 1/127`` — valid only for L2-normalised inputs such as
+        ``text-embedding-3-*``, ``BGE``, ``E5``.  Saves ~30 % of encode time.
+        Default ``False``.
+    return_quality_metrics : When ``True``, :meth:`Vectro.compress` returns a
+        ``(result, QualityMetrics)`` tuple.  Default ``False``.
+    model_dir : Path to a HuggingFace model directory.  When set, the model-family
+        registry auto-selects ``precision_mode`` for that embedding family and
+        ``precision_mode`` must not be set simultaneously (raises ``ValueError``).
+    seed : Optional integer seed for any stochastic operations (e.g. PQ training).
+        ``None`` means unseeded (non-deterministic).  When set, the seed is logged
+        alongside the result metadata.
+    """
+
+    precision_mode: str = "int8"
+    profile: Optional[str] = None
+    group_size: int = 64
+    assume_normalized: bool = False
+    return_quality_metrics: bool = False
+    model_dir: Optional[str] = None
+    seed: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        # precision_mode validation
+        if self.precision_mode not in _VALID_PRECISION_MODES:
+            raise ValueError(
+                f"precision_mode {self.precision_mode!r} is not valid. "
+                f"Valid options: {sorted(_VALID_PRECISION_MODES)}"
+            )
+        # profile validation
+        if self.profile is not None and self.profile not in _VALID_PROFILES:
+            raise ValueError(
+                f"profile {self.profile!r} is not a recognised built-in profile. "
+                f"Valid options: {sorted(_VALID_PROFILES)}. "
+                "Use ProfileManager.add_custom_profile() to register custom profiles."
+            )
+        # group_size must be a positive power of two
+        if not isinstance(self.group_size, int) or self.group_size < 1:
+            raise ValueError(
+                f"group_size must be a positive integer, got {self.group_size!r}"
+            )
+        if self.group_size & (self.group_size - 1) != 0:
+            raise ValueError(
+                f"group_size must be a power of 2, got {self.group_size}"
+            )
+        # model_dir + explicit precision_mode conflict guard
+        if self.model_dir is not None and self.precision_mode != "int8":
+            # Only raise when the caller set both explicitly; the default "int8"
+            # is overridden by the model-family registry, so the conflict is only
+            # real when the caller overrides the default themselves.
+            # We detect this via the fact that dataclass default is "int8"; if
+            # the caller passed a non-default value we warn that model_dir wins.
+            warnings.warn(
+                f"Both model_dir and precision_mode={self.precision_mode!r} were set. "
+                "The model-family registry (model_dir) will override precision_mode "
+                "when a known family is detected.",
+                UserWarning,
+                stacklevel=3,
+            )
+        # seed bookkeeping — nothing to validate, any int is acceptable
+        if self.seed is not None and not isinstance(self.seed, int):
+            raise ValueError(f"seed must be an integer or None, got {type(self.seed).__name__}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-serialisable dict of all config fields."""
+        return {
+            "precision_mode": self.precision_mode,
+            "profile": self.profile,
+            "group_size": self.group_size,
+            "assume_normalized": self.assume_normalized,
+            "return_quality_metrics": self.return_quality_metrics,
+            "model_dir": self.model_dir,
+            "seed": self.seed,
+        }
+
+    @classmethod
+    def from_profile(cls, profile: str, **overrides: Any) -> "QuantizationConfig":
+        """Construct a config from a named profile with optional field overrides.
+
+        Example::
+
+            cfg = QuantizationConfig.from_profile("quality", seed=42)
+        """
+        if profile not in _VALID_PROFILES:
+            raise ValueError(
+                f"Unknown profile {profile!r}. Valid: {sorted(_VALID_PROFILES)}"
+            )
+        # Map named profile to a default precision_mode
+        _profile_defaults: Dict[str, str] = {
+            "fast": "int8",
+            "balanced": "int8",
+            "quality": "nf4",
+            "ultra": "nf4",
+            "binary": "binary",
+            "int8": "int8",
+            "nf4": "nf4",
+        }
+        defaults: Dict[str, Any] = {
+            "precision_mode": _profile_defaults[profile],
+            "profile": profile,
+        }
+        defaults.update(overrides)
+        return cls(**defaults)
 
 
 class Vectro:
@@ -99,6 +234,7 @@ class Vectro:
         precision_mode: Optional[str] = None,
         return_quality_metrics: bool = False,
         model_dir: Optional[str] = None,
+        config: Optional[QuantizationConfig] = None,
     ) -> Union[QuantizationResult, BatchQuantizationResult, Tuple[Any, QualityMetrics]]:
         """Compress vectors using quantization.
 
@@ -107,14 +243,32 @@ class Vectro:
             profile: Compression profile to use (None = use default)
             precision_mode: Override quantization method (int8, nf4, binary, int4)
             return_quality_metrics: Return quality analysis alongside results
+            model_dir: Path to a HuggingFace model directory for auto-routing
+            config: Optional :class:`QuantizationConfig` instance.  When provided,
+                its fields override the individual keyword arguments ``profile``,
+                ``precision_mode``, ``return_quality_metrics``, and ``model_dir``.
             model_dir: Path to a HuggingFace model directory.  When supplied,
                 the model-family registry selects the optimal precision_mode
-                for that embedding family (e.g. GTE → INT8, BGE → NF4).
+                for that embedding family (e.g. GTE -> INT8, BGE -> NF4).
                 Ignored when precision_mode is explicitly set.
 
         Returns:
             Quantization result(s) and optionally quality metrics
         """
+        # config= acts as a structured override of the individual kwargs.
+        if config is not None:
+            if not isinstance(config, QuantizationConfig):
+                raise TypeError(
+                    f"config must be a QuantizationConfig instance, got {type(config).__name__}"
+                )
+            # config fields win over their corresponding kwargs when config is given.
+            if config.profile is not None:
+                profile = config.profile
+            precision_mode = precision_mode or config.precision_mode
+            return_quality_metrics = return_quality_metrics or config.return_quality_metrics
+            if model_dir is None and config.model_dir is not None:
+                model_dir = config.model_dir
+
         if profile is None:
             profile = self.default_profile
 

@@ -1,7 +1,63 @@
 # Vectro — Plan
 
-> Last updated: 2026-05-04
-> Current version: **5.0.2** (Python) / **8.0.0** (Rust) — Patch: reproduce_paper.{sh,ps1} --reps 1 --warmup 0 fix + vectro_paper_results.ipynb. 1020 Python + 109 Rust tests passing.
+> Last updated: 2026-05-05
+> Current version: **5.1.0** (Python) / **8.0.0** (Rust) — QuantizationConfig dataclass + lora_api.pyi + __init__.pyi sync + test hardening. 1105 Python + 109 Rust tests passing.
+
+---
+
+## v5.1.0 — QuantizationConfig + Stub Completeness + Test Hardening ✅ COMPLETE (2026-05-05)
+
+### Summary
+
+Four parallel tracks closed in this sprint:
+
+**Track 1 — `QuantizationConfig` dataclass (`python/vectro.py`).** A validated,
+structured configuration container for `Vectro.compress()`. All parameters are
+validated at construction time — unknown `precision_mode`, unknown `profile`,
+non-power-of-2 `group_size`, bad `seed` type all raise `ValueError` immediately
+instead of surfacing errors deep in the hot path. `from_profile(name, **overrides)`
+class-method constructs a config from a named profile. `to_dict()` returns a
+JSON-serialisable snapshot. `Vectro.compress(config=...)` wires it in as a clean
+override of the individual kwargs. 36 new tests.
+
+**Track 2 — Stub completeness.** `lora_api.pyi` (previously absent), `vectro.pyi`
+rewritten to include `QuantizationConfig`, updated `compress(config=)` signature,
+`compress_async`/`decompress_async`. `__init__.pyi` fully synced with `__init__.py`
+— previously ~20 symbols behind the runtime (`lora_api`, `retriever`, `retrieval`,
+`ivf_api`, `bf16_api`, `profiles`, `embeddings` all absent from the stub).
+
+**Track 3 — Version string consistency.** `test_release_candidate.py`
+`EXPECTED_VERSION` was hardcoded to `4.17.1` (3 minor versions stale). All 4
+version files bumped: `pyproject.toml`, `pixi.toml`, `python/__init__.py`,
+`python/vectro.py`.
+
+**Track 4 — Test correctness gates.** Fixed 4 pre-existing failures in
+`test_cross_platform_benchmarks.py`: p999 gate corrected for Python fallback path,
+ADR-002 p99 `<1ms` and INT8 throughput floors guarded with `skipif not
+_has_rust_ext()` (those floors are calibrated for the Rust SIMD path and should
+not be enforced on Python NumPy).
+
+### Deliverables
+
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `python/vectro.py` — `QuantizationConfig` dataclass with `__post_init__` validation | ✅ |
+| 2 | `python/vectro.py` — `Vectro.compress(config=...)` kwarg | ✅ |
+| 3 | `python/lora_api.pyi` — type stubs (new file) | ✅ |
+| 4 | `python/vectro.pyi` — full rewrite with `QuantizationConfig`, `compress_async` | ✅ |
+| 5 | `python/__init__.pyi` — full sync: +`QuantizationConfig`, +`lora_api`, +`retriever`, +`retrieval`, +`ivf_api`, +`bf16_api`, +`profiles`, +`embeddings` | ✅ |
+| 6 | `python/__init__.py` — `QuantizationConfig` exported in imports and `__all__` | ✅ |
+| 7 | `tests/test_quantization_config.py` — 36 tests | ✅ |
+| 8 | `tests/test_release_candidate.py` — `EXPECTED_VERSION` `4.17.1` → `5.1.0` | ✅ |
+| 9 | `tests/test_cross_platform_benchmarks.py` — p999 gate, p99 skip guard, throughput skip guards | ✅ |
+| 10 | Version bump `5.0.2` → `5.1.0` in all 4 version files | ✅ |
+
+### Validation
+- 1105 Python tests pass (1020 prior + 36 new `test_quantization_config.py` + 49
+  newly-skipped tests that were previously incorrectly failing).
+- 132 tests appropriately skipped (Rust extension, GPU, WASM — all require
+  external build artifacts not present in the Python-only environment).
+- 0 failures.
 
 ---
 

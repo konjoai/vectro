@@ -7,6 +7,7 @@ Provides comprehensive compression, quality analysis, and benchmarking capabilit
 
 from .vectro import (
     Vectro,
+    QuantizationConfig,
     compress_vectors,
     decompress_vectors,
     analyze_compression_quality,
@@ -119,7 +120,7 @@ from .embeddings import (
     SentenceTransformersEmbeddings,
 )
 
-__version__ = "5.0.2"
+__version__ = "5.1.0"
 __author__ = "Wesley Scholl"
 __license__ = "MIT"
 __description__ = "Ultra-High-Performance LLM Embedding Compressor"
@@ -127,6 +128,7 @@ __description__ = "Ultra-High-Performance LLM Embedding Compressor"
 __all__ = [
     # Main API
     "Vectro",
+    "QuantizationConfig",
     "compress_vectors",
     "decompress_vectors", 
     "analyze_compression_quality",
