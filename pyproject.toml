@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectro"
-version = "5.1.0"
-description = "Mojo + Rust ultra-high-performance LLM embedding compressor with vector DB integrations, IVF/PQ/RQ/NF4/Binary quantization, JS bindings, cloud I/O, and a CLI — v5.1.0: QuantizationConfig dataclass, lora_api type stubs, __init__.pyi sync, test hardening"
+version = "5.2.0"
+description = "Mojo + Rust ultra-high-performance LLM embedding compressor with vector DB integrations, IVF/PQ/RQ/NF4/Binary quantization, JS bindings, cloud I/O, and a CLI — v5.2.0: async compression pipeline, CompressionPipeline, PipelineStage, PipelineResult, compress_async"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [

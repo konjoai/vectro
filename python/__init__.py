@@ -120,7 +120,15 @@ from .embeddings import (
     SentenceTransformersEmbeddings,
 )
 
-__version__ = "5.1.0"
+# v5.2.0 async pipeline
+from .async_pipeline import (
+    CompressionPipeline,
+    PipelineStage,
+    PipelineResult,
+    compress_async,
+)
+
+__version__ = "5.2.0"
 __author__ = "Wesley Scholl"
 __license__ = "MIT"
 __description__ = "Ultra-High-Performance LLM Embedding Compressor"
@@ -258,6 +266,12 @@ __all__ = [
     "IVFPQIndex",
     # BFloat16 vector store
     "Bf16Encoder",
+
+    # v5.2.0 async pipeline
+    "CompressionPipeline",
+    "PipelineStage",
+    "PipelineResult",
+    "compress_async",
 
     # Utilities
     "get_version_info"
