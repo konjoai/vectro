@@ -41,7 +41,7 @@ from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from python.retrieval.mmr import cosine_scores as _cosine_scores_fn, mmr_select as _mmr_select
+from ..retrieval.mmr import cosine_scores as _cosine_scores_fn, mmr_select as _mmr_select
 
 _LANGCHAIN_ERROR = (
     "langchain-core is required for VectroVectorStore. "
@@ -81,7 +81,7 @@ class VectroVectorStore:
         compression_profile: str = "balanced",
         model_dir: Optional[str] = None,
     ) -> None:
-        from python.vectro import Vectro  # lazy import — keeps module side-effect free
+        from ..vectro import Vectro  # relative import — avoids circular at module level
 
         self._embedding = embedding
         self._profile = compression_profile
@@ -700,4 +700,3 @@ class VectroVectorStore:
             f"VectroVectorStore(n={len(self)}, profile={self._profile!r}, "
             f"dims={self._n_dims})"
         )
-

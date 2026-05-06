@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Sequence, cast
 
 import numpy as np
 
-from python.retrieval.mmr import cosine_scores as _cosine_scores_fn, mmr_select
+from ..retrieval.mmr import cosine_scores as _cosine_scores_fn, mmr_select
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -113,7 +113,7 @@ class VectroVectorStore:
         compression_profile: str = "balanced",
         model_dir: Optional[str] = None,
     ) -> None:
-        from python.vectro import Vectro
+        from ..vectro import Vectro  # relative import — avoids circular at module level
 
         self._profile = compression_profile
         self._model_dir = model_dir
