@@ -64,7 +64,7 @@ class CompressionPipeline:
     def _get_vectro(self):
         if self._vectro is not None:
             return self._vectro
-        from python.vectro import Vectro
+        from .vectro import Vectro
         return Vectro()
 
     def run(self, vectors: np.ndarray) -> tuple:
