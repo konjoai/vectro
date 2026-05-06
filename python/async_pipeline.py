@@ -42,7 +42,10 @@ class PipelineResult:
 async def compress_async(vectro, vectors: np.ndarray, mode: str = "int8", **kwargs) -> Any:
     """Run vectro.compress() in a thread pool (non-blocking for the event loop)."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: vectro.compress(vectors, mode=mode, **kwargs))
+    return await loop.run_in_executor(
+        None,
+        lambda: vectro.compress(vectors, precision_mode=mode, **kwargs),
+    )
 
 
 class CompressionPipeline:
@@ -85,7 +88,7 @@ class CompressionPipeline:
             if stage.group_size is not None:
                 kwargs["group_size"] = stage.group_size
             t0 = time.perf_counter()
-            result = vectro.compress(current, mode=stage.mode, **kwargs)
+            result = vectro.compress(current, precision_mode=stage.mode, **kwargs)
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             stage_latencies.append(elapsed_ms)
             stage_names.append(stage.mode)
