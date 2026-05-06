@@ -1,4 +1,4 @@
-"""
+""" 
 Vectro - Ultra-High-Performance LLM Embedding Compressor
 Unified Python API providing access to all Mojo-powered compression capabilities.
 
@@ -48,7 +48,7 @@ from .profiles_api import (
     create_custom_profile
 )
 
-__version__ = "5.1.0"
+__version__ = "5.2.0"
 __author__ = "Wesley Scholl"
 __license__ = "MIT"
 __description__ = "Ultra-High-Performance LLM Embedding Compressor"
@@ -906,4 +906,4 @@ if __name__ == "__main__":
     reconstruction_error = np.mean(np.abs(embeddings - decompressed))
     print(f"\nRound-trip reconstruction error: {reconstruction_error:.6f}")
     
-    print("\n✅ Vectro API demonstration completed successfully!")
+    print("\nVectro API demonstration completed successfully!")

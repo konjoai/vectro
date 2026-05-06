@@ -3,7 +3,7 @@ authors = ["Wesley Scholl <128409641+wesleyscholl@users.noreply.github.com>"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 name = "mojo"
 platforms = ["osx-arm64", "linux-64"]
-version = "5.1.0"
+version = "5.2.0"
 
 [tasks]
 build-mojo        = "mojo build experimental/mojo/vectro_standalone.mojo -o vectro_quantizer"

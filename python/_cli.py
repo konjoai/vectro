@@ -6,7 +6,7 @@ package's `bin/` directory (via maturin's `scripts` mechanism) *and* registers
 this shim as a console-script entry-point named `vectro`.
 
 The shim locates the bundled binary and exec()s it, forwarding all arguments.
-Falls back to the Python CLI (python.cli:main) when the Rust binary is not
+Falls back to the Python CLI (.cli:main) when the Rust binary is not
 present so the package remains usable in dev/editable installs that have not
 yet run `cargo build`.
 """
@@ -50,7 +50,7 @@ def main() -> None:
 
     # No Rust binary found — fall back to the Python CLI for dev convenience.
     try:
-        from python.cli import main as py_main  # type: ignore[import]
+        from .cli import main as py_main  # relative import within the package
 
         py_main()
     except ImportError:

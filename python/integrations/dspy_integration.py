@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
-from python.retrieval.mmr import cosine_scores as _cosine_scores_fn, mmr_select as _mmr_select
+from ..retrieval.mmr import cosine_scores as _cosine_scores_fn, mmr_select as _mmr_select
 
 
 QueryLike = Union[str, Sequence[str]]
@@ -120,7 +120,7 @@ class VectroDSPyRetriever:
         compression_profile: str = "balanced",
         model_dir: Optional[str] = None,
     ) -> None:
-        from python.vectro import Vectro
+        from ..vectro import Vectro  # relative import — avoids circular at module level
 
         self._embed_fn = embed_fn
         self._k = int(k)

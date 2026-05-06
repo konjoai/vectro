@@ -30,8 +30,9 @@ class QuantizationResult(NamedTuple):
 # Try to import the high-performance backends if available
 _cython_quant = None
 try:
-    _cython_quant = importlib.import_module("python.quantizer_cython")
-except Exception:
+    # Try relative import first (inside the package)
+    from . import quantizer_cython as _cython_quant  # type: ignore
+except (ImportError, Exception):
     try:
         # Fallback for development/local install
         _cython_quant = importlib.import_module("quantizer_cython")
