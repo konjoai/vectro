@@ -275,7 +275,7 @@ def pq_encode_gpu(
     -------
     np.ndarray, shape (n, M), uint8
     """
-    from python.pq_api import pq_encode  # type: ignore[import]
+    from .pq_api import pq_encode  # type: ignore[import]
     return pq_encode(vectors, codebook)
 
 

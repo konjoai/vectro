@@ -98,7 +98,7 @@ def _try_nf4(embeddings: np.ndarray, mixed: bool = False) -> dict:
     """
     mode_name = "nf4_mixed" if mixed else "nf4"
     try:
-        from python.nf4_api import (  # type: ignore[import]
+        from .nf4_api import (  # type: ignore[import]
             quantize_nf4,
             dequantize_nf4,
             quantize_mixed,
@@ -145,7 +145,7 @@ def _try_pq(
     target_code_bytes: desired code length in bytes (= n_subspaces, K=256)
     """
     try:
-        from python.pq_api import train_pq_codebook, pq_encode, pq_decode  # type: ignore[import]
+        from .pq_api import train_pq_codebook, pq_encode, pq_decode  # type: ignore[import]
     except ImportError:
         return {
             "success": False,
@@ -180,7 +180,7 @@ def _try_pq(
 def _try_binary(embeddings: np.ndarray) -> dict:
     """Attempt binary sign quantization."""
     try:
-        from python.binary_api import quantize_binary, dequantize_binary  # type: ignore[import]
+        from .binary_api import quantize_binary, dequantize_binary  # type: ignore[import]
     except ImportError:
         return {"success": False, "mode": "binary", "error": "binary_api not available"}
 
@@ -268,7 +268,7 @@ def auto_quantize(
     """
     data = np.ascontiguousarray(embeddings, dtype=np.float32)
 
-    # ── Fast path: model-family registry ──────────────────────────────────────
+    # ── Fast path: model-family registry ──────────────────────────────────────────────────────────────────────────────
     if model_dir is not None:
         from .profiles import get_profile
         profile = get_profile(model_dir)
@@ -284,7 +284,7 @@ def auto_quantize(
             return result
         # profile.method == "auto" → fall through to statistical heuristic
 
-    # ── Statistical heuristic ─────────────────────────────────────────────────
+    # ── Statistical heuristic ──────────────────────────────────────────────────────────────────────────────────────
     n, d = data.shape
     kurt = _compute_kurtosis(data)
     heavy_tailed = kurt > 1.5      # excess kurtosis threshold (Laplace ≈ 3, Gaussian ≈ 0)

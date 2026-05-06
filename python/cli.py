@@ -38,8 +38,8 @@ _VERSION = "3.6.0"
 
 def _cmd_compress(args: argparse.Namespace) -> int:
     import numpy as np
-    from python.vectro import Vectro
-    from python.profiles_api import get_compression_profile
+    from .vectro import Vectro
+    from .profiles_api import get_compression_profile
 
     try:
         vectors = np.load(args.input, allow_pickle=False)
@@ -69,22 +69,22 @@ def _cmd_compress(args: argparse.Namespace) -> int:
 
     # Cloud URI dispatch: s3://, gs://, abfs://
     if output.startswith("s3://"):
-        from python.storage_v3 import S3Backend
+        from .storage_v3 import S3Backend
         bucket, _, remote = output[5:].partition("/")
         S3Backend(bucket).save_vqz(result.quantized, result.scales, d, remote,
                                    compression=lossless_pass)
     elif output.startswith("gs://"):
-        from python.storage_v3 import GCSBackend
+        from .storage_v3 import GCSBackend
         bucket, _, remote = output[5:].partition("/")
         GCSBackend(bucket).save_vqz(result.quantized, result.scales, d, remote,
                                     compression=lossless_pass)
     elif output.startswith("abfs://"):
-        from python.storage_v3 import AzureBlobBackend
+        from .storage_v3 import AzureBlobBackend
         container, _, remote = output[7:].partition("/")
         AzureBlobBackend(container).save_vqz(result.quantized, result.scales, d, remote,
                                              compression=lossless_pass)
     elif output.endswith(".vqz"):
-        from python.storage_v3 import save_compressed
+        from .storage_v3 import save_compressed
         save_compressed(result, output, codec=lossless_pass)
     else:
         vectro.save_compressed(result, output)
@@ -97,7 +97,7 @@ def _cmd_compress(args: argparse.Namespace) -> int:
 
 def _cmd_decompress(args: argparse.Namespace) -> int:
     import numpy as np
-    from python.vectro import Vectro
+    from .vectro import Vectro
 
     vectro = Vectro()
     try:
@@ -106,7 +106,7 @@ def _cmd_decompress(args: argparse.Namespace) -> int:
         print(f"Error loading {args.input}: {exc}", file=sys.stderr)
         return 1
 
-    from python import decompress_vectors
+    from . import decompress_vectors
     restored = decompress_vectors(result)
     np.save(args.output, restored)
 
@@ -115,7 +115,7 @@ def _cmd_decompress(args: argparse.Namespace) -> int:
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
-    from python.migration import inspect_artifact
+    from .migration import inspect_artifact
 
     try:
         info = inspect_artifact(args.path)
@@ -143,7 +143,7 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
 
 
 def _cmd_upgrade(args: argparse.Namespace) -> int:
-    from python.migration import upgrade_artifact
+    from .migration import upgrade_artifact
 
     try:
         result = upgrade_artifact(args.src, args.dst, dry_run=args.dry_run)
@@ -158,7 +158,7 @@ def _cmd_upgrade(args: argparse.Namespace) -> int:
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
-    from python.migration import validate_artifact
+    from .migration import validate_artifact
 
     result = validate_artifact(args.path)
     if result["valid"]:
@@ -173,7 +173,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
 def _cmd_benchmark(args: argparse.Namespace) -> int:
     import numpy as np
-    from python.benchmark import BenchmarkSuite
+    from .benchmark import BenchmarkSuite
 
     rng = np.random.default_rng(args.seed)
     embeddings = rng.standard_normal((args.n, args.dim)).astype(np.float32)
@@ -212,15 +212,15 @@ def _load_result_for_export(path: str):
         If *path* does not exist.
     """
     if path.endswith(".vqz"):
-        from python.storage_v3 import load_compressed
+        from .storage_v3 import load_compressed
         return load_compressed(path)
-    from python.vectro import Vectro
+    from .vectro import Vectro
     return Vectro().load_compressed(path)
 
 
 def _cmd_export_onnx(args: argparse.Namespace) -> int:
     """Export a compressed artifact as an ONNX INT8 dequantization graph."""
-    from python.onnx_export import export_onnx
+    from .onnx_export import export_onnx
 
     try:
         result = _load_result_for_export(args.input)
@@ -242,7 +242,7 @@ def _cmd_export_onnx(args: argparse.Namespace) -> int:
 
 
 def _cmd_info(args: argparse.Namespace) -> int:
-    from python import get_backend_info, get_version_info
+    from . import get_backend_info, get_version_info
 
     vi = get_version_info()
     bi = get_backend_info()
@@ -264,8 +264,8 @@ def _run_inline_benchmark() -> None:
     """5-second throughput estimation printed to stdout."""
     import time
     import numpy as np
-    from python import quantize_embeddings, reconstruct_embeddings
-    from python.nf4_api import quantize_nf4, dequantize_nf4
+    from . import quantize_embeddings, reconstruct_embeddings
+    from .nf4_api import quantize_nf4, dequantize_nf4
 
     _DIM   = 768
     _BATCH = 256
@@ -274,9 +274,9 @@ def _run_inline_benchmark() -> None:
     vecs = rng.standard_normal((_BATCH, _DIM)).astype(np.float32)
 
     print()
-    print("── Benchmark (5 s) ──────────────────────────────")
+    print("── Benchmark (5 s) ────────────────────────────────────────")
 
-    # ── INT8 throughput ───────────────────────────────────────────────────
+    # ── INT8 throughput ───────────────────────────────────────────────────────────────────────────────────
     deadline  = time.monotonic() + 5.0
     n_batches = 0
     while time.monotonic() < deadline:
@@ -287,13 +287,13 @@ def _run_inline_benchmark() -> None:
     print(f"INT8 throughput : {total_vecs / 5:,.0f} vec/s  "
           f"({n_batches} × {_BATCH}-batch in 5 s)")
 
-    # ── INT8 MAE ──────────────────────────────────────────────────────────
+    # ── INT8 MAE ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
     result_int8 = quantize_embeddings(vecs)
     recon_int8  = reconstruct_embeddings(result_int8)
     mae_int8    = float(np.mean(np.abs(vecs - recon_int8)))
     print(f"INT8 MAE        : {mae_int8:.6f}")
 
-    # ── NF4 MAE (best-effort; skipped when unavailable) ───────────────────
+    # ── NF4 MAE (best-effort; skipped when unavailable) ──────────────────────────────────────────────────────────────────────────────
     try:
         packed, scales = quantize_nf4(vecs)
         recon_nf4 = dequantize_nf4(packed, scales, _DIM)
