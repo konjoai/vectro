@@ -315,6 +315,26 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s var(--ease), transform .5s var(--ease); }
 .reveal.in { opacity: 1; transform: translateY(0); }
 
+/* ── launchpad (overview capability index) ───────────────────────────── */
+.launch-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+@media (max-width: 1100px) { .launch-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px)  { .launch-grid { grid-template-columns: 1fr; } }
+.launch-card {
+  position: relative; overflow: hidden; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line-dim); border-radius: var(--r);
+  padding: 15px 16px; opacity: 0; transform: translateY(14px) scale(.98);
+  transition: border-color .2s, transform .18s var(--ease), box-shadow .2s;
+}
+.launch-card.in { animation: card-pop .5s var(--ease) forwards; }
+.launch-card:hover { border-color: var(--lc, var(--accent)); transform: translateY(-3px); box-shadow: 0 12px 30px -12px var(--lc, var(--accent-glow)); }
+.launch-card::after { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--lc, var(--accent)); opacity: .85; }
+.launch-card .ico { font-size: 20px; line-height: 1; }
+.launch-card .lt { font-size: 13.5px; font-weight: 700; color: var(--text); margin: 9px 0 3px; letter-spacing: -.01em; }
+.launch-card .ld { font-size: 11px; color: var(--text-dim); line-height: 1.5; min-height: 32px; }
+.launch-card .lm { display: inline-block; margin-top: 9px; font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--lc, var(--accent)); padding: 2px 9px; border-radius: 999px; background: rgba(255,255,255,.04); }
+.launch-card .go { position: absolute; top: 14px; right: 14px; color: var(--text-muted); transition: transform .18s var(--ease), color .18s; }
+.launch-card:hover .go { transform: translateX(3px); color: var(--lc, var(--accent)); }
+
 /* ── Index Health ────────────────────────────────────────────────────── */
 .health-bar { display: flex; height: 26px; border-radius: var(--r-sm); overflow: hidden; border: 1px solid var(--line-dim); background: var(--panel-2); }
 .health-bar .seg-f { height: 100%; transition: width .7s var(--ease); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 10px; color: rgba(0,0,0,.6); font-weight: 700; overflow: hidden; }
@@ -389,6 +409,8 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 <section class="panel active" id="panel-overview">
   <h2>Vectro Vector Database Studio</h2>
   <p class="sub">Real-time compression, search, and analysis — every number measured live on this machine.</p>
+
+  <div class="launch-grid" id="launchpad"></div>
 
   <div class="g3">
     <!-- Compression calculator -->
@@ -2205,6 +2227,31 @@ $('iv-run-btn').addEventListener('click', runIvf);
 window.addEventListener('resize', ()=>{ if($('panel-ivf').classList.contains('active')){ drawCellMap(1); drawSweep(); } });
 
 // ═══════════════════════════════════════════════════════════════════
+// LAUNCHPAD — capability index on the Overview
+// ═══════════════════════════════════════════════════════════════════
+const LAUNCH = [
+  {p:'lab',        ic:'◆',  t:'Quantize Lab',  d:'Six codecs race on one accuracy / compression frontier.', m:'up to 64×',      c:'#7c3aed'},
+  {p:'ivf',        ic:'▦',  t:'IVF Search',    d:'Probe a fraction of cells — watch recall vs work scanned.', m:'scan a fraction', c:'#22d3ee'},
+  {p:'lora',       ic:'⊞',  t:'LoRA Studio',   d:'NF4-compress fine-tuned low-rank adapter factors.',        m:'153× vs dense',  c:'#a78bfa'},
+  {p:'health',     ic:'♥',  t:'Index Health',  d:'Tombstones, compaction & metadata-filtered search.',       m:'live graph',     c:'#10b981'},
+  {p:'search',     ic:'⊙',  t:'kNN Search',    d:'HNSW nearest-neighbour search with a layer trace.',        m:'sub-millisecond', c:'#22d3ee'},
+  {p:'benchmark',  ic:'▮',  t:'Benchmark',     d:'Real latency distribution & QPS, measured on this CPU.',   m:'p50 · p95 · p99', c:'#f59e0b'},
+  {p:'indexes',    ic:'▤',  t:'Indexes',       d:'Create and manage named HNSW indexes.',                    m:'CRUD',           c:'#ec4899'},
+  {p:'projection', ic:'✦',  t:'2D Projection', d:'PCA + k-means map you can zoom, pan and inspect.',         m:'interactive',    c:'#84cc16'},
+];
+function renderLaunchpad() {
+  const wrap = $('launchpad'); if (!wrap) return; wrap.innerHTML = '';
+  LAUNCH.forEach((x, i) => {
+    const c = mk('div', 'launch-card'); c.style.setProperty('--lc', x.c);
+    c.innerHTML = `<span class="go">→</span><div class="ico">${x.ic}</div>
+      <div class="lt">${x.t}</div><div class="ld">${x.d}</div><span class="lm">${x.m}</span>`;
+    c.addEventListener('click', () => document.querySelector(`.tab[data-panel="${x.p}"]`)?.click());
+    wrap.appendChild(c);
+    setTimeout(() => c.classList.add('in'), 55 * i);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // AMBIENT BACKGROUND — a slow vector-space constellation
 // ═══════════════════════════════════════════════════════════════════
 (function ambient() {
@@ -2253,6 +2300,7 @@ window.addEventListener('resize', ()=>{ if($('panel-ivf').classList.contains('ac
 })();
 
 // ── Init ──────────────────────────────────────────────────────────
+renderLaunchpad();
 setTimeout(() => { $('ov-compress-btn').click(); }, 600);
 resizeScatter();
 </script>
