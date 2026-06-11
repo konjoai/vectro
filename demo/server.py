@@ -825,6 +825,7 @@ _LAB_LOCK = threading.Lock()
 # Theme colour per codec — kept identical to index.html so the Pareto
 # plot, the cards, and the geometry panel all agree.
 _LAB_COLORS: Dict[str, str] = {
+    "bf16":   "#38bdf8",
     "int8":   "#22d3ee",
     "nf4":    "#7c3aed",
     "rq":     "#10b981",
@@ -872,6 +873,14 @@ def _enc_int8(data: np.ndarray) -> Tuple[np.ndarray, int]:
     return result.reconstruct_batch(), int(result.total_compressed_bytes)
 
 
+def _enc_bf16(data: np.ndarray) -> Tuple[np.ndarray, int]:
+    from python.bf16_api import Bf16Encoder
+    enc = Bf16Encoder()
+    enc.encode_np(data)
+    rec = np.asarray(enc.decode(), dtype=np.float32)
+    return rec, int(data.shape[0] * data.shape[1] * 2)  # 2 bytes / element
+
+
 def _enc_nf4(data: np.ndarray) -> Tuple[np.ndarray, int]:
     from python.nf4_api import dequantize_nf4, quantize_nf4
     packed, scales = quantize_nf4(data)
@@ -912,8 +921,11 @@ def _enc_rq(data: np.ndarray) -> Tuple[np.ndarray, int]:
     return rec, total
 
 
-# Ordered so the UI renders dense→sparse left to right.
+# Ordered so the UI renders dense→sparse left to right.  bf16 is the
+# highest-fidelity / lowest-ratio anchor; it needs the compiled vectro_py
+# kernel and degrades gracefully (per-codec) when that isn't built.
 _LAB_CODECS: List[Tuple[str, str, Callable[[np.ndarray], Tuple[np.ndarray, int]]]] = [
+    ("bf16",   "BF16",   _enc_bf16),
     ("int8",   "INT8",   _enc_int8),
     ("nf4",    "NF4",    _enc_nf4),
     ("rq",     "RQ",     _enc_rq),

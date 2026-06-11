@@ -283,8 +283,8 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .pareto-cap { position: absolute; bottom: 8px; left: 14px; font-size: 10px; color: var(--text-muted); letter-spacing: .08em; text-transform: uppercase; }
 
 /* codec result cards */
-.codec-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 18px; }
-@media (max-width: 1100px) { .codec-grid { grid-template-columns: repeat(2, 1fr); } }
+.codec-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-top: 18px; }
+@media (max-width: 1100px) { .codec-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 560px)  { .codec-grid { grid-template-columns: 1fr; } }
 .codec-card { background: var(--panel); border: 1px solid var(--line-dim); border-radius: var(--r); padding: 16px 14px; text-align: center; position: relative; overflow: hidden; opacity: 0; transform: translateY(16px) scale(.97); }
 .codec-card.in { animation: card-pop .5s var(--ease) forwards; }
@@ -303,8 +303,8 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .codec-card.na.in { animation: none; opacity: .5; transform: none; }
 
 /* geometry small-multiples */
-.geo-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
-@media (max-width: 1100px) { .geo-grid { grid-template-columns: repeat(3, 1fr); } }
+.geo-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; }
+@media (max-width: 1100px) { .geo-grid { grid-template-columns: repeat(4, 1fr); } }
 @media (max-width: 560px)  { .geo-grid { grid-template-columns: repeat(2, 1fr); } }
 .geo-cell { background: var(--panel-2); border: 1px solid var(--line-dim); border-radius: var(--r-sm); padding: 8px; }
 .geo-cell canvas { display: block; width: 100%; border-radius: var(--r-sm); background: #07071a; }
@@ -710,7 +710,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 <!-- ─────────────── QUANTIZE LAB ──────────────────────────────────── -->
 <section class="panel" id="panel-lab">
   <h2>Quantize Lab</h2>
-  <p class="sub">Every Vectro codec — INT8 · NF4 · RQ · PQ · Binary — encoding the <b>same batch</b> on this CPU, right now. Each dot is real: bytes counted, vectors reconstructed, cosine fidelity measured live.</p>
+  <p class="sub">Every Vectro codec — BF16 · INT8 · NF4 · RQ · PQ · Binary — encoding the <b>same batch</b> on this CPU, right now. Each dot is real: bytes counted, vectors reconstructed, cosine fidelity measured live.</p>
 
   <div class="lab-hero">
     <!-- Controls -->
