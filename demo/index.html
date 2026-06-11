@@ -339,6 +339,21 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .cmdk-item.sel .kind { color: #a78bfa; }
 .cmdk-empty { padding: 22px; text-align: center; color: var(--text-muted); font-size: 13px; }
 
+/* ── guided tour ─────────────────────────────────────────────────────── */
+#tour-backdrop { position: fixed; inset: 0; z-index: 300; display: none; }
+#tour-backdrop.open { display: block; }
+#tour-spot { position: absolute; border-radius: 12px; border: 1px solid var(--accent); box-shadow: 0 0 0 9999px rgba(4,4,12,.74), 0 0 24px 2px var(--accent-glow); transition: all .38s var(--ease); pointer-events: none; }
+#tour-pop { position: absolute; width: 308px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; box-shadow: 0 26px 64px -16px rgba(0,0,0,.72); z-index: 301; transition: top .38s var(--ease), left .38s var(--ease); }
+#tour-pop h4 { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 6px; letter-spacing: -.01em; }
+#tour-pop p { font-size: 12.5px; color: var(--text-dim); line-height: 1.6; }
+#tour-pop .tour-foot { display: flex; align-items: center; gap: 8px; margin-top: 15px; }
+.tour-dots { display: flex; gap: 5px; margin-right: auto; }
+.tour-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line); transition: background .2s, transform .2s; }
+.tour-dot.on { background: var(--accent); transform: scale(1.25); }
+#tour-pop .btn.sm { padding: 5px 11px; }
+#tour-skip { background: none; border: none; color: var(--text-muted); font-size: 11px; cursor: pointer; font-family: var(--sans); }
+#tour-skip:hover { color: var(--text-dim); }
+
 /* ── launchpad (overview capability index) ───────────────────────────── */
 .launch-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
 @media (max-width: 1100px) { .launch-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -433,6 +448,21 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
   <div id="cmdk" role="dialog" aria-label="Command palette">
     <input id="cmdk-input" type="text" placeholder="Jump to a panel or run an action…" autocomplete="off" spellcheck="false" />
     <div id="cmdk-list"></div>
+  </div>
+</div>
+
+<!-- ── guided tour ─────────────────────────────────────────────────── -->
+<div id="tour-backdrop">
+  <div id="tour-spot"></div>
+  <div id="tour-pop" role="dialog" aria-label="Guided tour">
+    <h4 id="tour-title"></h4>
+    <p id="tour-body"></p>
+    <div class="tour-foot">
+      <div class="tour-dots" id="tour-dots"></div>
+      <button id="tour-skip">Skip</button>
+      <button class="btn sm" id="tour-back">Back</button>
+      <button class="btn sm primary" id="tour-next">Next</button>
+    </div>
   </div>
 </div>
 
@@ -2341,6 +2371,7 @@ const CMDS = [
   {ic:'▶', t:'Compress LoRA',      h:'NF4-compress an adapter',          k:'run', run:()=>{gotoPanel('lora');runLora();}},
   {ic:'⚙', t:'Compact index',      h:'Soft-delete + reclaim tombstones', k:'run', run:()=>{gotoPanel('health');setTimeout(()=>$('hl-compact-btn').click(),120);}},
   {ic:'⎘', t:'Copy share link',    h:'Shareable URL to this exact view', k:'do',  run:()=>copyShareLink()},
+  {ic:'❓', t:'Take a tour',        h:'Replay the guided walkthrough',    k:'do',  run:()=>startTour()},
 ];
 
 let cmdkSel = 0, cmdkFiltered = CMDS;
@@ -2469,11 +2500,84 @@ function renderLaunchpad() {
   resize(); frame();
 })();
 
+// ═══════════════════════════════════════════════════════════════════
+// GUIDED TOUR — first-run spotlight walkthrough (replayable via ⌘K)
+// ═══════════════════════════════════════════════════════════════════
+const TOUR = [
+  {sel:'#launchpad',  title:'Your launchpad',     body:'Every Vectro capability lives here. Click any card to dive into a live, fully-measured demo.'},
+  {sel:'#tabs',       title:'Nine live tools',    body:'Switch panels anytime — compression, the Quantize Lab, IVF, LoRA, HNSW health, benchmarking and more.'},
+  {sel:'#cmdk-hint',  title:'Command palette',    body:'Press ⌘K (or Ctrl-K) to jump to any panel or run an action instantly — no mouse needed.'},
+  {sel:'#share-btn',  title:'Share any view',     body:'Tuned a sweep you like? Copy a deep-link that reproduces this exact panel and its parameters.'},
+  {sel:'#status-pill',title:'Everything is live', body:'This pill shows the real backend. Every number on every panel is measured on this machine, right now — nothing precomputed.'},
+];
+const TOUR_KEY = 'vectro_tour_done_v1';
+let tourIdx = 0;
+
+function positionTour() {
+  const step = TOUR[tourIdx], el = document.querySelector(step.sel);
+  const spot = $('tour-spot'), pop = $('tour-pop');
+  if (!el) { endTour(); return; }
+  const r = el.getBoundingClientRect(), pad = 7;
+  spot.style.left = (r.left - pad) + 'px'; spot.style.top = (r.top - pad) + 'px';
+  spot.style.width = (r.width + pad*2) + 'px'; spot.style.height = (r.height + pad*2) + 'px';
+  const pw = pop.offsetWidth || 308, ph = pop.offsetHeight || 140;
+  let top = r.bottom + 14;
+  if (top + ph > window.innerHeight - 12) top = Math.max(12, r.top - ph - 14);
+  let left = Math.min(Math.max(12, r.left), window.innerWidth - pw - 12);
+  pop.style.top = top + 'px'; pop.style.left = left + 'px';
+}
+
+function renderTour() {
+  const step = TOUR[tourIdx];
+  $('tour-title').textContent = step.title;
+  $('tour-body').textContent = step.body;
+  $('tour-dots').innerHTML = TOUR.map((_, i) => `<span class="tour-dot${i===tourIdx?' on':''}"></span>`).join('');
+  $('tour-back').style.visibility = tourIdx === 0 ? 'hidden' : 'visible';
+  $('tour-next').textContent = tourIdx === TOUR.length - 1 ? 'Done' : 'Next';
+  positionTour();
+}
+
+function startTour() {
+  gotoPanel('overview');
+  tourIdx = 0;
+  $('tour-backdrop').classList.add('open');
+  requestAnimationFrame(renderTour);
+}
+function endTour() {
+  $('tour-backdrop').classList.remove('open');
+  try { localStorage.setItem(TOUR_KEY, '1'); } catch (e) { /* private mode */ }
+}
+function tourStep(d) {
+  const n = tourIdx + d;
+  if (n < 0) return;
+  if (n >= TOUR.length) { endTour(); return; }
+  tourIdx = n; renderTour();
+}
+
+$('tour-next').addEventListener('click', () => tourStep(1));
+$('tour-back').addEventListener('click', () => tourStep(-1));
+$('tour-skip').addEventListener('click', endTour);
+$('tour-backdrop').addEventListener('click', e => { if (e.target.id === 'tour-backdrop') endTour(); });
+window.addEventListener('keydown', e => {
+  if (!$('tour-backdrop').classList.contains('open')) return;
+  if (e.key === 'Escape') endTour();
+  else if (e.key === 'ArrowRight' || e.key === 'Enter') tourStep(1);
+  else if (e.key === 'ArrowLeft') tourStep(-1);
+});
+window.addEventListener('resize', () => { if ($('tour-backdrop').classList.contains('open')) positionTour(); });
+
+function maybeStartTour() {
+  let done = false;
+  try { done = localStorage.getItem(TOUR_KEY) === '1'; } catch (e) { done = false; }
+  if (!done && !location.hash) setTimeout(startTour, 1300);
+}
+
 // ── Init ──────────────────────────────────────────────────────────
 renderLaunchpad();
 setTimeout(() => { $('ov-compress-btn').click(); }, 600);
 resizeScatter();
 applyHash();   // restore a deep-linked panel + params, if any
+maybeStartTour();   // first-run walkthrough (skipped if seen, or if deep-linked)
 </script>
 </body>
 </html>
