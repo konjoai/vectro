@@ -318,6 +318,8 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 /* ── command palette ─────────────────────────────────────────────────── */
 #cmdk-hint { display: flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 10px; color: var(--text-muted); padding: 3px 8px; border: 1px solid var(--line-dim); border-radius: 6px; cursor: pointer; transition: color .15s, border-color .15s; }
 #cmdk-hint:hover { color: var(--text); border-color: var(--line); }
+#share-btn { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); padding: 4px 9px; border: 1px solid var(--line-dim); border-radius: 6px; background: transparent; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+#share-btn:hover { color: var(--accent-2); border-color: var(--line); background: rgba(34,211,238,.06); }
 #cmdk-hint kbd { font-family: var(--mono); background: rgba(255,255,255,.06); border-radius: 3px; padding: 0 4px; }
 #cmdk-overlay { position: fixed; inset: 0; z-index: 200; display: none; background: rgba(4,4,12,.62); backdrop-filter: blur(3px); align-items: flex-start; justify-content: center; }
 #cmdk-overlay.open { display: flex; animation: cmdk-fade .14s var(--ease); }
@@ -419,6 +421,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
     <button class="tab" data-panel="projection">2D Projection</button>
   </nav>
   <div id="cmdk-hint" title="Command palette"><kbd>⌘</kbd><kbd>K</kbd></div>
+  <button id="share-btn" title="Copy a shareable link to this view">⎘ Share</button>
   <div id="status-pill">
     <div id="status-dot"></div>
     <span id="status-txt">connecting…</span>
@@ -1131,8 +1134,64 @@ document.querySelectorAll('.tab').forEach(t => {
     if (t.dataset.panel === 'health') { hlInit(); loadHealth(); }
     if (t.dataset.panel === 'lora' && !loraAutoRan) { loraAutoRan = true; setTimeout(runLora, 200); }
     if (t.dataset.panel === 'ivf') { if (!ivfAutoRan) { ivfAutoRan = true; setTimeout(runIvf, 200); } else { requestAnimationFrame(()=>{drawCellMap(1);drawSweep();}); } }
+    updateHash();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// DEEP LINKS — encode the active panel + key params in the URL hash
+// ═══════════════════════════════════════════════════════════════════
+const PANEL_PARAMS = {
+  overview: [['n','ov-n'],['d','ov-d'],['k','ov-k']],
+  lab:      [['n','lab-n'],['d','lab-d']],
+  ivf:      [['n','iv-n'],['d','iv-d'],['l','iv-l'],['p','iv-p']],   // l before p (p's max depends on l)
+  lora:     [['r','lr-rank'],['in','lr-in'],['out','lr-out']],
+};
+let restoringHash = false;
+
+function currentHash() {
+  const active = document.querySelector('.tab.active')?.dataset.panel || 'overview';
+  const parts = [];
+  (PANEL_PARAMS[active] || []).forEach(([k, id]) => { const el = $(id); if (el) parts.push(`${k}=${el.value}`); });
+  if (active === 'overview') parts.push('mode=' + $('ov-mode').value);
+  if (active === 'lab') parts.push('dist=' + labDist);
+  return '#' + active + (parts.length ? '?' + parts.join('&') : '');
+}
+
+function updateHash() {
+  if (restoringHash) return;
+  const h = currentHash();
+  if (location.hash !== h) history.replaceState(null, '', h);
+}
+
+function applyHash() {
+  const raw = location.hash.slice(1);
+  if (!raw) return;
+  const [panel, qs] = raw.split('?');
+  const tab = document.querySelector(`.tab[data-panel="${panel}"]`);
+  if (!tab) return;
+  const params = new URLSearchParams(qs || '');
+  restoringHash = true;
+  // Apply params to controls *before* switching, so a panel's auto-run uses them.
+  (PANEL_PARAMS[panel] || []).forEach(([k, id]) => {
+    if (params.has(k)) { const el = $(id); if (el) { el.value = params.get(k); el.dispatchEvent(new Event('input')); } }
+  });
+  if (panel === 'overview' && params.has('mode')) $('ov-mode').value = params.get('mode');
+  if (panel === 'lab' && params.has('dist')) document.querySelector(`#lab-dist button[data-dist="${params.get('dist')}"]`)?.click();
+  tab.click();
+  restoringHash = false;
+}
+
+function copyShareLink() {
+  updateHash();
+  const url = location.href;
+  const done = () => toast('Share link copied to clipboard', 'success');
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url).then(done).catch(() => prompt('Copy this link:', url));
+  else prompt('Copy this link:', url);
+}
+
+window.addEventListener('hashchange', () => { if (!restoringHash) applyHash(); });
+$('share-btn').addEventListener('click', copyShareLink);
 
 // ═══════════════════════════════════════════════════════════════════
 // OVERVIEW PANEL
@@ -1145,6 +1204,7 @@ $('ov-k').addEventListener('input', e => $('ov-k-val').textContent = e.target.va
 $('ov-compress-btn').addEventListener('click', async () => {
   const btn = $('ov-compress-btn'), spin = $('ov-spin'), err = $('ov-err');
   btn.disabled = true; spin.style.display = 'inline-block'; err.classList.remove('show');
+  if (document.querySelector('.tab.active')?.dataset.panel === 'overview') updateHash();
   try {
     const r = await api('POST', '/api/compress', {
       n_vecs: +ovN.value, dim: +ovD.value, mode: $('ov-mode').value,
@@ -1910,6 +1970,7 @@ function renderLabGeometry(geo, codecs) {
 async function runLab() {
   const btn = $('lab-run-btn'), spin = $('lab-spin'), err = $('lab-err');
   btn.disabled = true; spin.style.display = 'inline-block'; err.classList.remove('show');
+  updateHash();
   try {
     const r = await api('POST', '/api/quantize-lab', {
       n_vecs: +labN.value, dim: +labD.value, dist: labDist,
@@ -2117,6 +2178,7 @@ function renderLoraBars(dense, fp32, nf4) {
 async function runLora() {
   const btn = $('lr-run-btn'), spin = $('lr-spin'), err = $('lr-err');
   btn.disabled = true; spin.style.display = 'inline-block'; err.classList.remove('show');
+  updateHash();
   try {
     const r = await api('POST', '/api/lora', {
       rank: +$('lr-rank').value, in_features: +$('lr-in').value, out_features: +$('lr-out').value,
@@ -2239,6 +2301,7 @@ function animateCellMap() {
 async function runIvf() {
   const btn=$('iv-run-btn'), spin=$('iv-spin'), err=$('iv-err');
   btn.disabled=true; spin.style.display='inline-block'; err.classList.remove('show');
+  updateHash();
   try {
     const r = await api('POST','/api/ivf',{ n_vecs:+ivN.value, dim:+ivD.value, n_lists:+ivL.value, n_probe:+ivP.value, k:10 });
     ivfData = r;
@@ -2277,6 +2340,7 @@ const CMDS = [
   {ic:'▶', t:'Build + probe IVF',  h:'Coarse quantiser + n_probe search', k:'run', run:()=>{gotoPanel('ivf');runIvf();}},
   {ic:'▶', t:'Compress LoRA',      h:'NF4-compress an adapter',          k:'run', run:()=>{gotoPanel('lora');runLora();}},
   {ic:'⚙', t:'Compact index',      h:'Soft-delete + reclaim tombstones', k:'run', run:()=>{gotoPanel('health');setTimeout(()=>$('hl-compact-btn').click(),120);}},
+  {ic:'⎘', t:'Copy share link',    h:'Shareable URL to this exact view', k:'do',  run:()=>copyShareLink()},
 ];
 
 let cmdkSel = 0, cmdkFiltered = CMDS;
@@ -2409,6 +2473,7 @@ function renderLaunchpad() {
 renderLaunchpad();
 setTimeout(() => { $('ov-compress-btn').click(); }, 600);
 resizeScatter();
+applyHash();   // restore a deep-linked panel + params, if any
 </script>
 </body>
 </html>
