@@ -314,6 +314,32 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 /* reveal helper for sections */
 .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s var(--ease), transform .5s var(--ease); }
 .reveal.in { opacity: 1; transform: translateY(0); }
+
+/* ── Index Health ────────────────────────────────────────────────────── */
+.health-bar { display: flex; height: 26px; border-radius: var(--r-sm); overflow: hidden; border: 1px solid var(--line-dim); background: var(--panel-2); }
+.health-bar .seg-f { height: 100%; transition: width .7s var(--ease); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 10px; color: rgba(0,0,0,.6); font-weight: 700; overflow: hidden; }
+.health-bar .seg-alive { background: linear-gradient(90deg, var(--green), #6ee7b7); }
+.health-bar .seg-del   { background: linear-gradient(90deg, var(--warn), #fcd34d); }
+.health-legend { display: flex; gap: 16px; margin-top: 8px; font-size: 11px; color: var(--text-dim); }
+.health-legend span { display: flex; align-items: center; gap: 6px; }
+.health-legend .sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+/* node grid — one cell per vector */
+.node-grid { display: grid; grid-template-columns: repeat(auto-fill, 16px); gap: 4px; padding: 4px 0; }
+.node-cell { width: 16px; height: 16px; border-radius: 4px; background: var(--green); box-shadow: 0 0 0 0 transparent; transition: background .4s var(--ease), transform .4s var(--ease), opacity .4s var(--ease); }
+.node-cell.deleted { background: var(--warn); }
+.node-cell.orphan  { background: var(--red); box-shadow: 0 0 8px rgba(239,68,68,.7); }
+.node-cell.removing { animation: node-remove .55s var(--ease) forwards; }
+@keyframes node-remove { to { transform: scale(0) rotate(45deg); opacity: 0; } }
+.node-cell.repaired { animation: node-repair .6s var(--ease); }
+@keyframes node-repair { 0%{ box-shadow:0 0 0 0 rgba(16,185,129,.9);} 50%{ box-shadow:0 0 0 6px rgba(16,185,129,0);} 100%{ box-shadow:0 0 0 0 transparent;} }
+
+/* compaction flow result chips */
+.flow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.flow .chip { flex: 1; min-width: 90px; text-align: center; padding: 14px 10px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--line-dim); }
+.flow .chip .v { font-family: var(--mono); font-size: 24px; font-weight: 800; letter-spacing: -.03em; }
+.flow .chip .l { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .1em; margin-top: 3px; }
+.flow .arrow { color: var(--text-muted); font-size: 18px; }
 </style>
 </head>
 <body>
@@ -329,6 +355,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
     <button class="tab" data-panel="indexes">Indexes</button>
     <button class="tab" data-panel="search">Search</button>
     <button class="tab" data-panel="benchmark">Benchmark</button>
+    <button class="tab" data-panel="health">Index Health</button>
     <button class="tab" data-panel="projection">2D Projection</button>
   </nav>
   <div id="status-pill">
@@ -726,6 +753,94 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
   </div>
 </section>
 
+<!-- ─────────────── INDEX HEALTH ──────────────────────────────────── -->
+<section class="panel" id="panel-health">
+  <h2>Index Health</h2>
+  <p class="sub">The live demo HNSW graph (26 passages). Watch tombstones accumulate and a real compaction sweep reclaim them — then run a metadata-filtered nearest-neighbour query. Every count is read straight from the graph.</p>
+
+  <div class="g2" style="align-items:start">
+    <!-- Health + compaction -->
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <h3 style="margin-bottom:0">Graph health</h3>
+        <button class="btn sm" id="hl-refresh-btn">↻ Refresh</button>
+        <span id="hl-timing" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-dim)"></span>
+      </div>
+      <div class="health-bar" id="hl-bar"><div class="seg-f seg-alive" style="width:100%"></div></div>
+      <div class="health-legend">
+        <span><span class="sw" style="background:var(--green)"></span>alive <b id="hl-alive" style="color:var(--text)">—</b></span>
+        <span><span class="sw" style="background:var(--warn)"></span>tombstoned <b id="hl-del" style="color:var(--text)">—</b></span>
+        <span><span class="sw" style="background:var(--red)"></span>orphans <b id="hl-orphan" style="color:var(--text)">—</b></span>
+      </div>
+
+      <div class="stats-grid" style="margin-top:16px">
+        <div class="stat-cell"><div class="v" id="hl-total">—</div><div class="l">total nodes</div></div>
+        <div class="stat-cell"><div class="v" id="hl-layers">—</div><div class="l">layers</div></div>
+        <div class="stat-cell"><div class="v" id="hl-degree">—</div><div class="l">avg degree</div></div>
+        <div class="stat-cell"><div class="v" id="hl-space">—</div><div class="l">space</div></div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--line-dim);margin:18px 0"/>
+
+      <h3>Compaction sweep</h3>
+      <div class="field">
+        <label>Soft-delete before compacting <span id="hl-deln-val" style="float:right;color:var(--text)">5</span></label>
+        <input type="range" id="hl-deln" min="0" max="12" value="5" />
+      </div>
+      <button class="btn primary" id="hl-compact-btn" style="width:100%">
+        <span class="spin" id="hl-spin" style="display:none"></span>
+        ⚙ Soft-delete + compact (live)
+      </button>
+      <div class="err-msg" id="hl-err"></div>
+
+      <div id="hl-flow" style="margin-top:16px;display:none">
+        <div class="flow">
+          <div class="chip"><div class="v" id="hl-tomb" style="color:var(--warn)">0</div><div class="l">tombstones cleared</div></div>
+          <div class="arrow">→</div>
+          <div class="chip"><div class="v" id="hl-removed" style="color:var(--accent-2)">0</div><div class="l">stale links pruned</div></div>
+          <div class="arrow">→</div>
+          <div class="chip"><div class="v" id="hl-repaired" style="color:var(--green)">0</div><div class="l">orphans repaired</div></div>
+          <div class="arrow">·</div>
+          <div class="chip"><div class="v" id="hl-ms" style="color:#a78bfa">0</div><div class="l">ms</div></div>
+        </div>
+      </div>
+
+      <div style="margin-top:18px">
+        <h3>Node map</h3>
+        <div class="node-grid" id="hl-nodes"></div>
+      </div>
+    </div>
+
+    <!-- Filtered search -->
+    <div class="card">
+      <h3>Metadata-filtered search</h3>
+      <p style="font-size:11.5px;color:var(--text-dim);line-height:1.6;margin:-4px 0 14px">
+        HNSW pre-filters by metadata <i>during</i> graph traversal — not a slow post-filter. Pick a category to constrain the candidate set, then search.
+      </p>
+      <div class="field">
+        <label>Query</label>
+        <input id="hl-query" type="text" placeholder="capital city, train, food…" value="capital" />
+      </div>
+      <div class="row" style="gap:12px">
+        <div class="field" style="flex:1">
+          <label>Category filter</label>
+          <select id="hl-filter"><option value="">— any —</option></select>
+        </div>
+        <div class="field" style="width:90px">
+          <label>k <span id="hl-k-val" style="float:right;color:var(--text)">5</span></label>
+          <input type="range" id="hl-k" min="1" max="10" value="5" />
+        </div>
+      </div>
+      <button class="btn primary" id="hl-search-btn" style="width:100%">⊙ Filtered search</button>
+      <div style="display:flex;align-items:center;gap:8px;margin:14px 0 8px">
+        <h3 style="margin-bottom:0">Results</h3>
+        <span id="hl-srch-timing" style="font-family:var(--mono);font-size:11px;color:var(--text-dim)"></span>
+      </div>
+      <div id="hl-results"><div class="empty"><div class="icon">⊙</div>Run a search to see filtered neighbours.</div></div>
+    </div>
+  </div>
+</section>
+
 </div><!-- #main -->
 </div><!-- #app -->
 
@@ -825,6 +940,7 @@ document.querySelectorAll('.tab').forEach(t => {
       requestAnimationFrame(resizePareto);
       if (!labData && !labAutoRan) { labAutoRan = true; setTimeout(runLab, 250); }
     }
+    if (t.dataset.panel === 'health') { hlInit(); loadHealth(); }
   });
 });
 
@@ -1642,6 +1758,103 @@ $('pareto-canvas').addEventListener('mousemove', e => {
 });
 $('pareto-canvas').addEventListener('mouseleave', () => $('pareto-tip').classList.remove('vis'));
 window.addEventListener('resize', () => { if ($('panel-lab').classList.contains('active')) resizePareto(); });
+
+// ═══════════════════════════════════════════════════════════════════
+// INDEX HEALTH — tombstones, compaction, metadata-filtered search
+// ═══════════════════════════════════════════════════════════════════
+const HL_CATEGORIES = ['paris','berlin','tokyo','athens','rome','madrid','london','cairo','moscow','france','japan','greece','italy'];
+let hlInited = false;
+$('hl-deln').addEventListener('input', e => $('hl-deln-val').textContent = e.target.value);
+$('hl-k').addEventListener('input',    e => $('hl-k-val').textContent = e.target.value);
+
+function hlInit() {
+  if (hlInited) return; hlInited = true;
+  const sel = $('hl-filter');
+  HL_CATEGORIES.forEach(c => { const o = mk('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+}
+
+function renderHealth(s) {
+  const total = s.n_total || 0, alive = s.n_alive || 0, del = s.n_deleted || 0, orph = s.orphan_count || 0;
+  $('hl-alive').textContent  = alive;
+  $('hl-del').textContent    = del;
+  $('hl-orphan').textContent = orph;
+  $('hl-total').textContent  = total;
+  $('hl-layers').textContent = (s.max_level != null ? s.max_level + 1 : '—');
+  $('hl-degree').textContent = (s.avg_degree_l0 != null ? s.avg_degree_l0.toFixed(1) : '—');
+  $('hl-space').textContent  = s.space || '—';
+  // stacked bar
+  const bar = $('hl-bar'); bar.innerHTML = '';
+  const aPct = total ? (alive/total)*100 : 100, dPct = total ? (del/total)*100 : 0;
+  const sa = mk('div', 'seg-f seg-alive'); sa.style.width = '0%'; sa.textContent = alive ? `${alive} alive` : '';
+  const sd = mk('div', 'seg-f seg-del');   sd.style.width = '0%'; sd.textContent = del ? `${del}` : '';
+  bar.appendChild(sa); bar.appendChild(sd);
+  requestAnimationFrame(() => { sa.style.width = aPct+'%'; sd.style.width = dPct+'%'; });
+  // node grid
+  const grid = $('hl-nodes'); grid.innerHTML = '';
+  for (let i = 0; i < total; i++) {
+    const cell = mk('div', 'node-cell');
+    if (i < del) cell.classList.add('deleted');
+    else if (i < del + orph) cell.classList.add('orphan');
+    grid.appendChild(cell);
+  }
+}
+
+async function loadHealth() {
+  try {
+    const t0 = performance.now();
+    const s = await api('GET', '/api/hnsw-stats');
+    $('hl-timing').textContent = (performance.now()-t0).toFixed(1)+' ms';
+    renderHealth(s);
+  } catch(e) { toast(e.message, 'error'); }
+}
+$('hl-refresh-btn').addEventListener('click', loadHealth);
+
+$('hl-compact-btn').addEventListener('click', async () => {
+  const btn = $('hl-compact-btn'), spin = $('hl-spin'), err = $('hl-err');
+  btn.disabled = true; spin.style.display = 'inline-block'; err.classList.remove('show');
+  try {
+    const r = await api('POST', '/api/compact', { delete_n: +$('hl-deln').value });
+    // Narrate the sweep on the node map: mark live cells as tombstoned,
+    // then watch compaction reclaim them.
+    const live = Array.from(document.querySelectorAll('#hl-nodes .node-cell:not(.deleted):not(.orphan)'));
+    const tomb = live.sort(() => Math.random()-0.5).slice(0, r.deleted_count_before);
+    tomb.forEach((c, i) => setTimeout(() => c.classList.add('deleted'), 30*i));
+    setTimeout(() => tomb.forEach((c, i) => setTimeout(() => c.classList.add('removing'), 35*i)), 520);
+    $('hl-flow').style.display = 'block';
+    countUp('hl-tomb',     r.deleted_count_before, '', 0);
+    countUp('hl-removed',  r.removed,   '', 0);
+    countUp('hl-repaired', r.repaired,  '', 0);
+    countUp('hl-ms',       r.timing_ms, '', 2);
+    toast(`Compacted ${r.deleted_count_before} tombstones · ${r.removed} stale links pruned · ${r.repaired} orphans repaired in ${r.timing_ms.toFixed(2)}ms`, 'success');
+    setTimeout(loadHealth, 1300);
+  } catch(e) { err.textContent = e.message; err.classList.add('show'); toast(e.message, 'error'); }
+  finally { btn.disabled = false; spin.style.display = 'none'; }
+});
+
+$('hl-search-btn').addEventListener('click', async () => {
+  const btn = $('hl-search-btn');
+  btn.disabled = true;
+  const filt = $('hl-filter').value ? { category: $('hl-filter').value } : null;
+  try {
+    const r = await api('POST', '/api/filtered-search', {
+      query_text: $('hl-query').value.trim() || 'capital',
+      k: +$('hl-k').value, filter: filt,
+    });
+    $('hl-srch-timing').textContent = `${r.timing_ms?.toFixed(2)} ms · ${r.results.length} hits`;
+    const wrap = $('hl-results'); wrap.innerHTML = '';
+    if (!r.results.length) { wrap.innerHTML = '<div class="empty"><div class="icon">⊘</div>No matches for that filter.</div>'; return; }
+    r.results.forEach((res, i) => {
+      const row = mk('div', 'result-row');
+      const tags = (res.tags||[]).map(t => `<span class="badge purple" style="margin-left:4px;font-size:9px">${t}</span>`).join('');
+      row.innerHTML = `<div class="result-rank">#${i+1}</div>
+        <div class="result-body">${res.text || 'ID '+res.id}<div style="margin-top:3px">${tags}</div></div>
+        <div class="result-score">${(res.similarity*100).toFixed(0)}%</div>`;
+      wrap.appendChild(row);
+      setTimeout(() => row.classList.add('in'), 55*i);
+    });
+  } catch(e) { toast(e.message, 'error'); }
+  finally { btn.disabled = false; }
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // AMBIENT BACKGROUND — a slow vector-space constellation
