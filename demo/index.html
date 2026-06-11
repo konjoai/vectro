@@ -315,6 +315,28 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s var(--ease), transform .5s var(--ease); }
 .reveal.in { opacity: 1; transform: translateY(0); }
 
+/* ── command palette ─────────────────────────────────────────────────── */
+#cmdk-hint { display: flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 10px; color: var(--text-muted); padding: 3px 8px; border: 1px solid var(--line-dim); border-radius: 6px; cursor: pointer; transition: color .15s, border-color .15s; }
+#cmdk-hint:hover { color: var(--text); border-color: var(--line); }
+#cmdk-hint kbd { font-family: var(--mono); background: rgba(255,255,255,.06); border-radius: 3px; padding: 0 4px; }
+#cmdk-overlay { position: fixed; inset: 0; z-index: 200; display: none; background: rgba(4,4,12,.62); backdrop-filter: blur(3px); align-items: flex-start; justify-content: center; }
+#cmdk-overlay.open { display: flex; animation: cmdk-fade .14s var(--ease); }
+@keyframes cmdk-fade { from { opacity: 0; } }
+#cmdk { width: min(560px, 92vw); margin-top: 12vh; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 30px 80px -20px rgba(0,0,0,.7); overflow: hidden; animation: cmdk-pop .18s var(--ease); }
+@keyframes cmdk-pop { from { opacity: 0; transform: translateY(-10px) scale(.98); } }
+#cmdk-input { width: 100%; padding: 16px 18px; background: transparent; border: none; border-bottom: 1px solid var(--line-dim); color: var(--text); font-size: 15px; font-family: var(--sans); outline: none; }
+#cmdk-input::placeholder { color: var(--text-muted); }
+#cmdk-list { max-height: 52vh; overflow-y: auto; padding: 6px; }
+.cmdk-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; cursor: pointer; }
+.cmdk-item .ic { width: 22px; text-align: center; font-size: 15px; color: var(--ci, var(--accent)); }
+.cmdk-item .tx { flex: 1; }
+.cmdk-item .tx b { font-size: 13px; font-weight: 600; color: var(--text); display: block; }
+.cmdk-item .tx span { font-size: 11px; color: var(--text-dim); }
+.cmdk-item .kind { font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); padding: 2px 7px; border-radius: 999px; background: rgba(255,255,255,.04); }
+.cmdk-item.sel { background: var(--accent-glow); }
+.cmdk-item.sel .kind { color: #a78bfa; }
+.cmdk-empty { padding: 22px; text-align: center; color: var(--text-muted); font-size: 13px; }
+
 /* ── launchpad (overview capability index) ───────────────────────────── */
 .launch-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
 @media (max-width: 1100px) { .launch-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -396,9 +418,18 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
     <button class="tab" data-panel="ivf">IVF</button>
     <button class="tab" data-panel="projection">2D Projection</button>
   </nav>
+  <div id="cmdk-hint" title="Command palette"><kbd>⌘</kbd><kbd>K</kbd></div>
   <div id="status-pill">
     <div id="status-dot"></div>
     <span id="status-txt">connecting…</span>
+  </div>
+</div>
+
+<!-- ── command palette ─────────────────────────────────────────────── -->
+<div id="cmdk-overlay">
+  <div id="cmdk" role="dialog" aria-label="Command palette">
+    <input id="cmdk-input" type="text" placeholder="Jump to a panel or run an action…" autocomplete="off" spellcheck="false" />
+    <div id="cmdk-list"></div>
   </div>
 </div>
 
@@ -2225,6 +2256,81 @@ async function runIvf() {
 }
 $('iv-run-btn').addEventListener('click', runIvf);
 window.addEventListener('resize', ()=>{ if($('panel-ivf').classList.contains('active')){ drawCellMap(1); drawSweep(); } });
+
+// ═══════════════════════════════════════════════════════════════════
+// COMMAND PALETTE (⌘K) — fast navigation + quick actions
+// ═══════════════════════════════════════════════════════════════════
+function gotoPanel(p) { document.querySelector(`.tab[data-panel="${p}"]`)?.click(); }
+
+const CMDS = [
+  {ic:'⌂', t:'Overview',           h:'Home & launchpad',                 k:'go',  run:()=>gotoPanel('overview')},
+  {ic:'◆', t:'Quantize Lab',       h:'Six-codec Pareto frontier',        k:'go',  run:()=>gotoPanel('lab')},
+  {ic:'▦', t:'IVF Search',         h:'Inverted-file cell map',           k:'go',  run:()=>gotoPanel('ivf')},
+  {ic:'⊞', t:'LoRA Studio',        h:'Adapter factor compression',      k:'go',  run:()=>gotoPanel('lora')},
+  {ic:'♥', t:'Index Health',       h:'Tombstones & compaction',         k:'go',  run:()=>gotoPanel('health')},
+  {ic:'⊙', t:'kNN Search',         h:'HNSW search with trace',          k:'go',  run:()=>gotoPanel('search')},
+  {ic:'▮', t:'Benchmark',          h:'Latency distribution & QPS',      k:'go',  run:()=>gotoPanel('benchmark')},
+  {ic:'▤', t:'Indexes',            h:'Create & manage HNSW indexes',    k:'go',  run:()=>gotoPanel('indexes')},
+  {ic:'✦', t:'2D Projection',      h:'PCA + k-means map',               k:'go',  run:()=>gotoPanel('projection')},
+  {ic:'▶', t:'Run compression',    h:'Compress a batch on the Overview', k:'run', run:()=>{gotoPanel('overview');$('ov-compress-btn').click();}},
+  {ic:'▶', t:'Run Quantize sweep', h:'Encode with every codec live',     k:'run', run:()=>{gotoPanel('lab');runLab();}},
+  {ic:'▶', t:'Build + probe IVF',  h:'Coarse quantiser + n_probe search', k:'run', run:()=>{gotoPanel('ivf');runIvf();}},
+  {ic:'▶', t:'Compress LoRA',      h:'NF4-compress an adapter',          k:'run', run:()=>{gotoPanel('lora');runLora();}},
+  {ic:'⚙', t:'Compact index',      h:'Soft-delete + reclaim tombstones', k:'run', run:()=>{gotoPanel('health');setTimeout(()=>$('hl-compact-btn').click(),120);}},
+];
+
+let cmdkSel = 0, cmdkFiltered = CMDS;
+const cmdkOverlay = $('cmdk-overlay'), cmdkInput = $('cmdk-input'), cmdkList = $('cmdk-list');
+
+function cmdkRender() {
+  cmdkList.innerHTML = '';
+  if (!cmdkFiltered.length) { cmdkList.innerHTML = '<div class="cmdk-empty">No matching commands</div>'; return; }
+  cmdkFiltered.forEach((c, i) => {
+    const el = mk('div', 'cmdk-item' + (i === cmdkSel ? ' sel' : ''));
+    el.innerHTML = `<span class="ic">${c.ic}</span><span class="tx"><b>${c.t}</b><span>${c.h}</span></span><span class="kind">${c.k==='go'?'jump':'run'}</span>`;
+    el.addEventListener('mousemove', () => { if (cmdkSel !== i) { cmdkSel = i; cmdkRender(); } });
+    el.addEventListener('click', () => cmdkExec(i));
+    cmdkList.appendChild(el);
+  });
+  const sel = cmdkList.children[cmdkSel];
+  if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+}
+
+function cmdkFilter(q) {
+  const s = q.trim().toLowerCase();
+  cmdkFiltered = !s ? CMDS : CMDS.filter(c => (c.t + ' ' + c.h).toLowerCase().includes(s));
+  cmdkSel = 0; cmdkRender();
+}
+
+function cmdkOpen() {
+  cmdkOverlay.classList.add('open');
+  cmdkInput.value = ''; cmdkFilter('');
+  setTimeout(() => cmdkInput.focus(), 0);
+}
+function cmdkClose() { cmdkOverlay.classList.remove('open'); }
+function cmdkExec(i) {
+  const c = cmdkFiltered[i]; if (!c) return;
+  cmdkClose();
+  c.run();
+}
+
+$('cmdk-hint').addEventListener('click', cmdkOpen);
+cmdkInput.addEventListener('input', e => cmdkFilter(e.target.value));
+cmdkOverlay.addEventListener('mousedown', e => { if (e.target === cmdkOverlay) cmdkClose(); });
+cmdkInput.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); cmdkSel = Math.min(cmdkSel + 1, cmdkFiltered.length - 1); cmdkRender(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); cmdkSel = Math.max(cmdkSel - 1, 0); cmdkRender(); }
+  else if (e.key === 'Enter') { e.preventDefault(); cmdkExec(cmdkSel); }
+  else if (e.key === 'Escape') { e.preventDefault(); cmdkClose(); }
+});
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if ((e.metaKey || e.ctrlKey) && k === 'k') { e.preventDefault(); cmdkOverlay.classList.contains('open') ? cmdkClose() : cmdkOpen(); }
+  else if (k === '/' && !cmdkOverlay.classList.contains('open')) {
+    const tag = (document.activeElement?.tagName || '').toLowerCase();
+    if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') { e.preventDefault(); cmdkOpen(); }
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // LAUNCHPAD — capability index on the Overview
