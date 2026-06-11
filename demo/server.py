@@ -1105,6 +1105,170 @@ def _api_lora(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# IVF — inverted-file ANN: coarse quantiser, inverted lists, n_probe sweep
+# ─────────────────────────────────────────────────────────────────────────
+#
+# The coarse quantiser, inverted lists and n_probe search are run in NumPy
+# (this *is* the IVF algorithm — recall is measured against brute force).
+# When the compiled vectro_py kernel is present we also time its native
+# IVFIndex.search on the same data, so the headline latency/speed-up is
+# produced by real Vectro Rust code.
+
+_IVF_LOCK = threading.Lock()
+
+
+def _kmeans_full(data: np.ndarray, k: int, seed: int, n_iter: int = 12) -> Tuple[np.ndarray, np.ndarray]:
+    """Lloyd's k-means on full-dimensional data. Returns (centroids, labels)."""
+    n = data.shape[0]
+    k = min(k, n)
+    rng = np.random.default_rng(seed)
+    centroids = data[rng.choice(n, k, replace=False)].copy()
+    labels = np.zeros(n, dtype=np.int32)
+    for _ in range(n_iter):
+        # cosine distance on L2-normalised data == 1 - dot
+        sims = data @ centroids.T
+        labels = sims.argmax(axis=1).astype(np.int32)
+        for ci in range(k):
+            mask = labels == ci
+            if mask.any():
+                v = data[mask].mean(axis=0)
+                nrm = np.linalg.norm(v)
+                centroids[ci] = v / nrm if nrm > 0 else centroids[ci]
+    return centroids, labels
+
+
+def _ivf_topk(query: np.ndarray, data: np.ndarray, cand: np.ndarray, k: int) -> List[int]:
+    """Top-k (cosine) within a candidate index set."""
+    if cand.size == 0:
+        return []
+    sims = data[cand] @ query
+    order = np.argsort(-sims)[:k]
+    return cand[order].tolist()
+
+
+def _ivf_native_latency(
+    data: np.ndarray, queries: np.ndarray, n_lists: int, n_probe: int, k: int,
+) -> Optional[Dict[str, Any]]:
+    """Time the compiled vectro_py IVF kernel, if available."""
+    try:
+        from python.ivf_api import IVFIndex
+    except ImportError as exc:
+        tracing_warn(f"native IVF unavailable: {exc}")
+        return None
+    try:
+        idx = IVFIndex(n_lists=n_lists, n_probe=n_probe)
+        idx.train_np(data)
+        idx.add_np(data)
+        for q in queries[:5]:
+            idx.search_np(q, k)
+        t0 = time.perf_counter()
+        for q in queries:
+            idx.search_np(q, k)
+        native_ms = (time.perf_counter() - t0) / len(queries) * 1000.0
+    except Exception as exc:  # noqa: BLE001 — surface, never mask
+        tracing_warn(f"native IVF search failed: {exc}")
+        return None
+    return {"per_query_ms": round(native_ms, 4),
+            "qps": round(1000.0 / native_ms, 0) if native_ms > 0 else None}
+
+
+def _ivf_probe_sweep(
+    data: np.ndarray, queries: np.ndarray, centroids: np.ndarray,
+    lists: Dict[int, np.ndarray], truth: List[List[int]], n_lists: int, k: int,
+) -> List[Dict[str, Any]]:
+    """Recall@k and scanned-fraction for a geometric ladder of n_probe."""
+    probes = sorted({p for p in (1, 2, 4, 8, 16, 32, n_lists) if p <= n_lists})
+    qcent = queries @ centroids.T  # (Q, n_lists)
+    sweep = []
+    for npr in probes:
+        probed = np.argsort(-qcent, axis=1)[:, :npr]
+        hits = 0
+        scanned = 0
+        for qi in range(len(queries)):
+            cand = np.concatenate([lists[c] for c in probed[qi] if c in lists]) \
+                if any(c in lists for c in probed[qi]) else np.array([], dtype=int)
+            scanned += cand.size
+            got = set(_ivf_topk(queries[qi], data, cand, k))
+            hits += len(got & set(truth[qi]))
+        sweep.append({
+            "n_probe":     int(npr),
+            "recall":      round(hits / (len(queries) * k), 4),
+            "scanned_pct": round(scanned / (len(queries) * data.shape[0]) * 100, 2),
+        })
+    return sweep
+
+
+def _api_ivf(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Full IVF demonstration: cell map, n_probe sweep, native kernel timing."""
+    n_vecs  = max(500, min(int(payload.get("n_vecs", 4000)), 12_000))
+    dim     = max(8,   min(int(payload.get("dim", 64)),      512))
+    n_lists = max(4,   min(int(payload.get("n_lists", 32)),  96))
+    n_probe = max(1,   min(int(payload.get("n_probe", 4)),   n_lists))
+    k       = max(1,   min(int(payload.get("k", 10)),        50))
+
+    with _IVF_LOCK:
+        data = _lab_batch(n_vecs, dim, "clustered", seed=11)
+        centroids, labels = _kmeans_full(data, n_lists, seed=11)
+        n_lists = centroids.shape[0]
+        n_probe = min(n_probe, n_lists)
+        lists = {c: np.where(labels == c)[0] for c in range(n_lists)}
+
+        rng = np.random.default_rng(99)
+        n_q = 60
+        qd = rng.standard_normal((n_q, dim)).astype(np.float32)
+        qd /= np.linalg.norm(qd, axis=1, keepdims=True)
+
+        # brute-force ground truth
+        truth = [np.argsort(-(data @ q))[:k].tolist() for q in qd]
+
+        # selected-n_probe single-query view (first query) for the cell map
+        qcent0 = qd[0] @ centroids.T
+        probed0 = np.argsort(-qcent0)[:n_probe].tolist()
+        cand0 = np.concatenate([lists[c] for c in probed0 if lists[c].size]) \
+            if any(lists[c].size for c in probed0) else np.array([], dtype=int)
+        result0 = _ivf_topk(qd[0], data, cand0, k)
+
+        # brute-force latency baseline
+        t0 = time.perf_counter()
+        for q in qd:
+            np.argsort(-(data @ q))[:k]
+        brute_ms = (time.perf_counter() - t0) / n_q * 1000.0
+
+        sweep = _ivf_probe_sweep(data, qd, centroids, lists, truth, n_lists, k)
+        native = _ivf_native_latency(data, qd, n_lists, n_probe, k)
+
+        # shared 2-D projection of points + centroids + query
+        mu, comps = _pca_basis(data)
+        take = min(700, n_vecs)
+        idx_s = np.linspace(0, n_vecs - 1, take).astype(int)
+        pts_xy = ((data[idx_s] - mu) @ comps.T).astype(np.float32)
+        cen_xy = ((centroids - mu) @ comps.T).astype(np.float32)
+        q_xy = ((qd[0] - mu) @ comps.T).astype(np.float32)
+        scale = float(np.abs(pts_xy).max()) or 1.0
+
+    sel = next((s for s in sweep if s["n_probe"] == n_probe), sweep[0])
+    return {
+        "n_vecs": n_vecs, "dim": dim, "n_lists": n_lists, "n_probe": n_probe, "k": k,
+        "recall": sel["recall"], "scanned_pct": sel["scanned_pct"],
+        "sweep": sweep,
+        "brute_ms": round(brute_ms, 4),
+        "native": native,
+        "speedup": round(brute_ms / native["per_query_ms"], 1) if native and native["per_query_ms"] else None,
+        "points": [
+            {"x": round(float(pts_xy[i, 0] / scale), 4), "y": round(float(pts_xy[i, 1] / scale), 4),
+             "c": int(labels[idx_s[i]])}
+            for i in range(take)
+        ],
+        "centroids": [[round(float(cen_xy[c, 0] / scale), 4), round(float(cen_xy[c, 1] / scale), 4)]
+                      for c in range(n_lists)],
+        "probed": probed0,
+        "query": [round(float(q_xy[0] / scale), 4), round(float(q_xy[1] / scale), 4)],
+        "result_cells": sorted({int(labels[r]) for r in result0}),
+        "platform": f"{platform.system()} / {platform.machine()}",
+    }
+
+
 ROUTES_POST: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/compress":         _api_compress,
     "/api/search":           _api_search,
@@ -1113,6 +1277,7 @@ ROUTES_POST: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/filtered-search":  _api_filtered_search,
     "/api/recall_estimate":  _api_recall_estimate,
     "/api/quantize-lab":     _api_quantize_lab,
+    "/api/ivf":              _api_ivf,
     "/api/lora":             _api_lora,
 }
 ROUTES_GET: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {

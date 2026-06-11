@@ -334,6 +334,12 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .node-cell.repaired { animation: node-repair .6s var(--ease); }
 @keyframes node-repair { 0%{ box-shadow:0 0 0 0 rgba(16,185,129,.9);} 50%{ box-shadow:0 0 0 6px rgba(16,185,129,0);} 100%{ box-shadow:0 0 0 0 transparent;} }
 
+/* ── IVF cell map ────────────────────────────────────────────────────── */
+#ivf-wrap { position: relative; background: radial-gradient(120% 120% at 70% 10%, rgba(34,211,238,.08), transparent 55%), var(--panel); border: 1px solid var(--line-dim); border-radius: var(--r); overflow: hidden; min-height: 360px; }
+#ivf-canvas { display: block; width: 100%; }
+#ivf-sweep-canvas { display: block; width: 100%; }
+.ivf-cap { position: absolute; bottom: 8px; left: 14px; font-size: 10px; color: var(--text-muted); letter-spacing: .06em; text-transform: uppercase; }
+
 /* ── LoRA factorization diagram ──────────────────────────────────────── */
 .lora-diagram { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 22px 0 6px; flex-wrap: wrap; }
 .lora-stack { display: flex; flex-direction: column; align-items: center; gap: 6px; }
@@ -367,6 +373,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
     <button class="tab" data-panel="benchmark">Benchmark</button>
     <button class="tab" data-panel="health">Index Health</button>
     <button class="tab" data-panel="lora">LoRA</button>
+    <button class="tab" data-panel="ivf">IVF</button>
     <button class="tab" data-panel="projection">2D Projection</button>
   </nav>
   <div id="status-pill">
@@ -911,6 +918,64 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
   </div>
 </section>
 
+<!-- ─────────────── IVF ───────────────────────────────────────────── -->
+<section class="panel" id="panel-ivf">
+  <h2>IVF — Inverted-File Search</h2>
+  <p class="sub">A coarse quantiser splits the space into <b>cells</b>; each vector lands in one cell's inverted list. A query only scans its <b>n_probe</b> nearest cells — so you trade recall for a fraction of the work. Recall is measured against brute force; the native latency is timed on Vectro's Rust IVF kernel.</p>
+
+  <div class="lab-hero">
+    <!-- Controls -->
+    <div>
+      <div class="card">
+        <h3>Index &amp; probe</h3>
+        <div class="field">
+          <label>Vectors <span id="iv-n-val" style="float:right;color:var(--text)">4,000</span></label>
+          <input type="range" id="iv-n" min="500" max="12000" step="500" value="4000" />
+        </div>
+        <div class="field">
+          <label>Dimensions <span id="iv-d-val" style="float:right;color:var(--text)">64</span></label>
+          <input type="range" id="iv-d" min="8" max="512" step="8" value="64" />
+        </div>
+        <div class="field">
+          <label>n_lists (cells) <span id="iv-l-val" style="float:right;color:var(--text)">32</span></label>
+          <input type="range" id="iv-l" min="4" max="96" step="2" value="32" />
+        </div>
+        <div class="field">
+          <label>n_probe (cells scanned) <span id="iv-p-val" style="float:right;color:var(--accent-2)">4</span></label>
+          <input type="range" id="iv-p" min="1" max="96" value="4" />
+        </div>
+        <button class="btn primary" id="iv-run-btn" style="width:100%;margin-top:4px">
+          <span class="spin" id="iv-spin" style="display:none"></span>
+          ▶ Build + probe (live)
+        </button>
+        <div class="err-msg" id="iv-err"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div class="stats-grid">
+          <div class="stat-cell"><div class="v" id="iv-recall">—</div><div class="l">recall@k</div></div>
+          <div class="stat-cell"><div class="v" id="iv-scanned">—</div><div class="l">% scanned</div></div>
+          <div class="stat-cell"><div class="v" id="iv-qps">—</div><div class="l">native QPS</div></div>
+          <div class="stat-cell"><div class="v" id="iv-saved">—</div><div class="l">work skipped</div></div>
+        </div>
+        <div class="kv-row" style="margin-top:10px"><span class="k">native kernel</span><span class="v" id="iv-native">—</span></div>
+        <div class="kv-row" style="border:none"><span class="k">brute-force</span><span class="v" id="iv-brute">—</span></div>
+      </div>
+    </div>
+
+    <!-- Cell map -->
+    <div id="ivf-wrap">
+      <canvas id="ivf-canvas" height="360"></canvas>
+      <div class="ivf-cap">● probed cells lit · ○ centroids · ✦ query — only lit cells are scanned</div>
+    </div>
+  </div>
+
+  <!-- n_probe sweep -->
+  <div class="card" style="margin-top:18px">
+    <h3>The n_probe trade-off <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted);font-size:11px">— recall climbs as you scan more cells; the goal is the knee</span></h3>
+    <canvas id="ivf-sweep-canvas" height="200"></canvas>
+  </div>
+</section>
+
 </div><!-- #main -->
 </div><!-- #app -->
 
@@ -1012,6 +1077,7 @@ document.querySelectorAll('.tab').forEach(t => {
     }
     if (t.dataset.panel === 'health') { hlInit(); loadHealth(); }
     if (t.dataset.panel === 'lora' && !loraAutoRan) { loraAutoRan = true; setTimeout(runLora, 200); }
+    if (t.dataset.panel === 'ivf') { if (!ivfAutoRan) { ivfAutoRan = true; setTimeout(runIvf, 200); } else { requestAnimationFrame(()=>{drawCellMap(1);drawSweep();}); } }
   });
 });
 
@@ -2015,6 +2081,128 @@ async function runLora() {
   finally { btn.disabled = false; spin.style.display = 'none'; }
 }
 $('lr-run-btn').addEventListener('click', runLora);
+
+// ═══════════════════════════════════════════════════════════════════
+// IVF — cell map + n_probe trade-off
+// ═══════════════════════════════════════════════════════════════════
+let ivfData = null, ivfAutoRan = false;
+const ivN=$('iv-n'), ivD=$('iv-d'), ivL=$('iv-l'), ivP=$('iv-p');
+ivN.addEventListener('input', ()=> $('iv-n-val').textContent=(+ivN.value).toLocaleString());
+ivD.addEventListener('input', ()=> $('iv-d-val').textContent=+ivD.value);
+ivL.addEventListener('input', ()=>{ $('iv-l-val').textContent=+ivL.value; ivP.max=+ivL.value; if (+ivP.value>+ivL.value){ivP.value=ivL.value;$('iv-p-val').textContent=ivP.value;} });
+ivP.addEventListener('input', ()=> $('iv-p-val').textContent=+ivP.value);
+
+function cellColor(i, n) { return `hsl(${Math.round((i*360/Math.max(1,n) + 205) % 360)}, 70%, 60%)`; }
+
+function ivfMap(W, H) {
+  const pad = 26;
+  return ([x,y]) => [pad + (x*0.5+0.5)*(W-2*pad), pad + (0.5-y*0.5)*(H-2*pad)];
+}
+
+function drawCellMap(prog) {
+  const c = $('ivf-canvas'); if (!c || !ivfData) return;
+  const dpr = window.devicePixelRatio||1, W = c.clientWidth||c.width, H = 360;
+  if (c.width !== W*dpr) { c.width=W*dpr; c.height=H*dpr; c.style.height=H+'px'; }
+  const ctx = c.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  const map = ivfMap(W,H), nL = ivfData.n_lists;
+  const probed = new Set(ivfData.probed);
+  // points
+  ivfData.points.forEach(p => {
+    const [sx,sy] = map([p.x,p.y]);
+    const on = probed.has(p.c);
+    ctx.globalAlpha = (on ? 0.92 : 0.13) * prog;
+    ctx.fillStyle = cellColor(p.c, nL);
+    ctx.beginPath(); ctx.arc(sx, sy, on?2.6:2, 0, 2*Math.PI); ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+  // lines query → probed centroids
+  const [qx,qy] = map(ivfData.query);
+  ivfData.probed.forEach(ci => {
+    const [cx,cy] = map(ivfData.centroids[ci]);
+    ctx.strokeStyle = `rgba(34,211,238,${0.5*prog})`; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(qx,qy); ctx.lineTo(cx,cy); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  // centroids
+  ivfData.centroids.forEach((cc, ci) => {
+    const [cx,cy] = map(cc), on = probed.has(ci);
+    ctx.save();
+    if (on) { ctx.shadowBlur=12*prog; ctx.shadowColor=cellColor(ci,nL); }
+    ctx.strokeStyle = on ? cellColor(ci,nL) : 'rgba(255,255,255,.22)';
+    ctx.lineWidth = on ? 2 : 1;
+    ctx.beginPath(); ctx.arc(cx, cy, on?9:5, 0, 2*Math.PI); ctx.stroke();
+    ctx.restore();
+  });
+  // query star
+  ctx.save(); ctx.shadowBlur=14*prog; ctx.shadowColor='#fff'; ctx.fillStyle='#fff';
+  ctx.font='700 16px ui-monospace, monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.globalAlpha=prog; ctx.fillText('✦', qx, qy); ctx.restore();
+  ctx.textAlign='start'; ctx.textBaseline='alphabetic';
+}
+
+function drawSweep() {
+  const c = $('ivf-sweep-canvas'); if (!c || !ivfData) return;
+  const dpr = window.devicePixelRatio||1, W = c.clientWidth||c.width, H = 200;
+  if (c.width !== W*dpr) { c.width=W*dpr; c.height=H*dpr; c.style.height=H+'px'; }
+  const ctx = c.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  const sw = ivfData.sweep, padL=40, padR=16, padT=14, padB=30;
+  const xs = sw.map(s=>Math.log2(s.n_probe));
+  const xMin=Math.min(...xs), xMax=Math.max(...xs)||1;
+  const xOf = lp => padL + (xMax===xMin?0.5:(lp-xMin)/(xMax-xMin))*(W-padL-padR);
+  const yOf = v => padT + (1-v)*(H-padT-padB);  // v in 0..1
+  // grid + y labels
+  ctx.strokeStyle='rgba(255,255,255,.05)'; ctx.fillStyle='#4a5568'; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='right';
+  for (let i=0;i<=4;i++){ const v=i/4, y=yOf(v); ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke(); ctx.fillText((v*100).toFixed(0)+'%', padL-6, y+3); }
+  ctx.textAlign='center';
+  sw.forEach(s=>{ const x=xOf(Math.log2(s.n_probe)); ctx.fillText(s.n_probe, x, H-padB+15); });
+  // selected marker
+  const selX = xOf(Math.log2(ivfData.n_probe));
+  ctx.strokeStyle='rgba(124,58,237,.6)'; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(selX,padT); ctx.lineTo(selX,H-padB); ctx.stroke(); ctx.setLineDash([]);
+  // series helper
+  const line = (key, color, fill) => {
+    ctx.beginPath();
+    sw.forEach((s,i)=>{ const x=xOf(xs[i]), y=yOf(key==='recall'?s.recall:s.scanned_pct/100); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+    ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke();
+    if (fill){ ctx.lineTo(xOf(xs[xs.length-1]),yOf(0)); ctx.lineTo(xOf(xs[0]),yOf(0)); ctx.closePath(); ctx.fillStyle=fill; ctx.fill(); }
+    sw.forEach((s,i)=>{ const x=xOf(xs[i]), y=yOf(key==='recall'?s.recall:s.scanned_pct/100); ctx.fillStyle=color; ctx.beginPath(); ctx.arc(x,y,2.5,0,2*Math.PI); ctx.fill(); });
+  };
+  line('scanned','#22d3ee', null);
+  line('recall','#10b981','rgba(16,185,129,.10)');
+  // legend
+  ctx.font='10px ui-monospace,monospace'; ctx.textAlign='left';
+  ctx.fillStyle='#10b981'; ctx.fillText('● recall@k', W-150, padT+4);
+  ctx.fillStyle='#22d3ee'; ctx.fillText('● % scanned', W-150, padT+18);
+  ctx.textAlign='start';
+}
+
+function animateCellMap() {
+  const t0=performance.now(), dur=700;
+  const step=t=>{ const p=Math.min(1,(t-t0)/dur); drawCellMap(p); if(p<1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
+
+async function runIvf() {
+  const btn=$('iv-run-btn'), spin=$('iv-spin'), err=$('iv-err');
+  btn.disabled=true; spin.style.display='inline-block'; err.classList.remove('show');
+  try {
+    const r = await api('POST','/api/ivf',{ n_vecs:+ivN.value, dim:+ivD.value, n_lists:+ivL.value, n_probe:+ivP.value, k:10 });
+    ivfData = r;
+    countUp('iv-recall', r.recall*100, '%', 1);
+    countUp('iv-scanned', r.scanned_pct, '%', 1);
+    countUp('iv-saved', 100-r.scanned_pct, '%', 1);
+    $('iv-qps').textContent = r.native?.qps ? fmtNum(r.native.qps) : 'n/a';
+    $('iv-native').textContent = r.native ? r.native.per_query_ms.toFixed(3)+' ms/q' : 'not built';
+    $('iv-brute').textContent = r.brute_ms.toFixed(3)+' ms/q';
+    animateCellMap();
+    drawSweep();
+    toast(`IVF: ${(r.recall*100).toFixed(1)}% recall scanning only ${r.scanned_pct.toFixed(1)}% of vectors (${r.n_probe}/${r.n_lists} cells)`, 'success');
+  } catch(e){ err.textContent=e.message; err.classList.add('show'); toast(e.message,'error'); }
+  finally { btn.disabled=false; spin.style.display='none'; }
+}
+$('iv-run-btn').addEventListener('click', runIvf);
+window.addEventListener('resize', ()=>{ if($('panel-ivf').classList.contains('active')){ drawCellMap(1); drawSweep(); } });
 
 // ═══════════════════════════════════════════════════════════════════
 // AMBIENT BACKGROUND — a slow vector-space constellation
