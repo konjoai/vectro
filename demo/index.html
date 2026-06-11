@@ -354,6 +354,20 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 #tour-skip { background: none; border: none; color: var(--text-muted); font-size: 11px; cursor: pointer; font-family: var(--sans); }
 #tour-skip:hover { color: var(--text-dim); }
 
+/* ── embeddings playground ───────────────────────────────────────────── */
+.emb-row { padding: 11px 14px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--line-dim); margin-bottom: 8px; opacity: 0; transform: translateX(-10px); transition: opacity .25s var(--ease), transform .25s var(--ease), border-color .15s; }
+.emb-row.in { opacity: 1; transform: translateX(0); }
+.emb-row:hover { border-color: var(--line); }
+.emb-head { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+.emb-rank { font-family: var(--mono); font-size: 11px; color: var(--accent); width: 22px; }
+.emb-scoretrack { flex: 1; height: 5px; background: rgba(255,255,255,.06); border-radius: 999px; overflow: hidden; }
+.emb-scorefill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; width: 0; transition: width .6s var(--ease); }
+.emb-score { font-family: var(--mono); font-size: 11px; color: var(--text-dim); width: 52px; text-align: right; }
+.emb-doc { font-size: 13px; color: var(--text); line-height: 1.55; }
+.emb-doc mark { background: rgba(124,58,237,.32); color: #d8c9ff; border-radius: 3px; padding: 0 2px; }
+.emb-terms { margin-top: 6px; }
+.emb-terms .badge { margin-right: 4px; font-size: 9px; }
+
 /* ── launchpad (overview capability index) ───────────────────────────── */
 .launch-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
 @media (max-width: 1100px) { .launch-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -429,6 +443,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
     <button class="tab" data-panel="lab">Quantize Lab</button>
     <button class="tab" data-panel="indexes">Indexes</button>
     <button class="tab" data-panel="search">Search</button>
+    <button class="tab" data-panel="embed">Embeddings</button>
     <button class="tab" data-panel="benchmark">Benchmark</button>
     <button class="tab" data-panel="health">Index Health</button>
     <button class="tab" data-panel="lora">LoRA</button>
@@ -1062,6 +1077,49 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
   </div>
 </section>
 
+<!-- ─────────────── EMBEDDINGS ────────────────────────────────────── -->
+<section class="panel" id="panel-embed">
+  <h2>Embeddings Playground</h2>
+  <p class="sub">Bring your own text. It's turned into <b>real TF-IDF vectors</b>, INT8-compressed by Vectro, and searched by cosine similarity <i>against the compressed vectors</i> — so you can watch retrieval survive 4× compression. The whole pipeline, on your words, live.</p>
+
+  <div class="row" style="align-items:flex-start;gap:20px">
+    <div style="width:380px;flex-shrink:0">
+      <div class="card">
+        <h3>Documents <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted);font-size:11px">— one per line</span></h3>
+        <div class="field">
+          <textarea id="emb-docs" style="min-height:150px" spellcheck="false"></textarea>
+        </div>
+        <div class="field">
+          <label>Query</label>
+          <input id="emb-query" type="text" placeholder="what are you looking for?" value="caffeine drinks" />
+        </div>
+        <div class="field">
+          <label>Top-k <span id="emb-k-val" style="float:right;color:var(--text)">5</span></label>
+          <input type="range" id="emb-k" min="1" max="10" value="5" />
+        </div>
+        <button class="btn primary" id="emb-run-btn" style="width:100%">
+          <span class="spin" id="emb-spin" style="display:none"></span>
+          ⊙ Embed + compress + search
+        </button>
+        <div class="err-msg" id="emb-err"></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="stats-grid" id="emb-stats" style="margin-bottom:14px">
+        <div class="stat-cell"><div class="v" id="emb-docs-n">—</div><div class="l">documents</div></div>
+        <div class="stat-cell"><div class="v" id="emb-dim">—</div><div class="l">dim (vocab)</div></div>
+        <div class="stat-cell"><div class="v" id="emb-ratio">—</div><div class="l">INT8 ratio</div></div>
+        <div class="stat-cell"><div class="v" id="emb-fid">—</div><div class="l">fidelity</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <h3 style="margin-bottom:0">Ranked results</h3>
+        <span id="emb-note" style="font-family:var(--mono);font-size:10.5px;color:var(--text-muted)"></span>
+      </div>
+      <div id="emb-results"><div class="empty"><div class="icon">⊙</div>Enter documents and a query, then search.</div></div>
+    </div>
+  </div>
+</section>
+
 </div><!-- #main -->
 </div><!-- #app -->
 
@@ -1162,6 +1220,7 @@ document.querySelectorAll('.tab').forEach(t => {
       if (!labData && !labAutoRan) { labAutoRan = true; setTimeout(runLab, 250); }
     }
     if (t.dataset.panel === 'health') { hlInit(); loadHealth(); }
+    if (t.dataset.panel === 'embed' && !embAutoRan) { embAutoRan = true; setTimeout(runEmbed, 200); }
     if (t.dataset.panel === 'lora' && !loraAutoRan) { loraAutoRan = true; setTimeout(runLora, 200); }
     if (t.dataset.panel === 'ivf') { if (!ivfAutoRan) { ivfAutoRan = true; setTimeout(runIvf, 200); } else { requestAnimationFrame(()=>{drawCellMap(1);drawSweep();}); } }
     updateHash();
@@ -2362,6 +2421,8 @@ const CMDS = [
   {ic:'⊞', t:'LoRA Studio',        h:'Adapter factor compression',      k:'go',  run:()=>gotoPanel('lora')},
   {ic:'♥', t:'Index Health',       h:'Tombstones & compaction',         k:'go',  run:()=>gotoPanel('health')},
   {ic:'⊙', t:'kNN Search',         h:'HNSW search with trace',          k:'go',  run:()=>gotoPanel('search')},
+  {ic:'✎', t:'Embeddings',         h:'TF-IDF → INT8 → search your text', k:'go',  run:()=>gotoPanel('embed')},
+  {ic:'▶', t:'Embed + search',     h:'Run the text embedding pipeline',  k:'run', run:()=>{gotoPanel('embed');setTimeout(runEmbed,120);}},
   {ic:'▮', t:'Benchmark',          h:'Latency distribution & QPS',      k:'go',  run:()=>gotoPanel('benchmark')},
   {ic:'▤', t:'Indexes',            h:'Create & manage HNSW indexes',    k:'go',  run:()=>gotoPanel('indexes')},
   {ic:'✦', t:'2D Projection',      h:'PCA + k-means map',               k:'go',  run:()=>gotoPanel('projection')},
@@ -2436,6 +2497,7 @@ const LAUNCH = [
   {p:'lora',       ic:'⊞',  t:'LoRA Studio',   d:'NF4-compress fine-tuned low-rank adapter factors.',        m:'153× vs dense',  c:'#a78bfa'},
   {p:'health',     ic:'♥',  t:'Index Health',  d:'Tombstones, compaction & metadata-filtered search.',       m:'live graph',     c:'#10b981'},
   {p:'search',     ic:'⊙',  t:'kNN Search',    d:'HNSW nearest-neighbour search with a layer trace.',        m:'sub-millisecond', c:'#22d3ee'},
+  {p:'embed',      ic:'✎',  t:'Embeddings',    d:'Turn your text into TF-IDF vectors, compress & search.',    m:'real NLP',       c:'#f472b6'},
   {p:'benchmark',  ic:'▮',  t:'Benchmark',     d:'Real latency distribution & QPS, measured on this CPU.',   m:'p50 · p95 · p99', c:'#f59e0b'},
   {p:'indexes',    ic:'▤',  t:'Indexes',       d:'Create and manage named HNSW indexes.',                    m:'CRUD',           c:'#ec4899'},
   {p:'projection', ic:'✦',  t:'2D Projection', d:'PCA + k-means map you can zoom, pan and inspect.',         m:'interactive',    c:'#84cc16'},
@@ -2499,6 +2561,67 @@ function renderLaunchpad() {
   });
   resize(); frame();
 })();
+
+// ═══════════════════════════════════════════════════════════════════
+// EMBEDDINGS PLAYGROUND — real TF-IDF → INT8 → cosine search
+// ═══════════════════════════════════════════════════════════════════
+const EMB_SAMPLE = [
+  'The cat dozed on the warm windowsill in the afternoon sun.',
+  'Dogs are loyal companions that love long walks in the park.',
+  'Neural networks learn useful representations directly from data.',
+  'Transformers use self-attention to model long sequences of tokens.',
+  'Espresso is a concentrated coffee brewed under high pressure.',
+  'Green tea contains antioxidants and a gentle amount of caffeine.',
+  'Mount Fuji is the tallest volcano on the island of Honshu.',
+  'High-speed trains connect Paris to Marseille at 320 km per hour.',
+];
+let embAutoRan = false;
+$('emb-docs').value = EMB_SAMPLE.join('\n');
+$('emb-k').addEventListener('input', e => $('emb-k-val').textContent = e.target.value);
+
+function escHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function highlightTerms(text, terms) {
+  let html = escHtml(text);
+  (terms || []).forEach(t => {
+    if (!t) return;
+    const re = new RegExp('\\b(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')\\b', 'gi');
+    html = html.replace(re, '<mark>$1</mark>');
+  });
+  return html;
+}
+
+async function runEmbed() {
+  const btn = $('emb-run-btn'), spin = $('emb-spin'), err = $('emb-err');
+  btn.disabled = true; spin.style.display = 'inline-block'; err.classList.remove('show');
+  const docs = $('emb-docs').value.split('\n').map(s => s.trim()).filter(Boolean);
+  try {
+    const r = await api('POST', '/api/embed-search', { docs, query: $('emb-query').value, k: +$('emb-k').value });
+    $('emb-docs-n').textContent = r.n_docs;
+    $('emb-dim').textContent = r.dim;
+    countUp('emb-ratio', r.compress.ratio, '×', 2);
+    $('emb-fid').textContent = (r.compress.fidelity * 100).toFixed(2) + '%';
+    $('emb-note').textContent = `${r.compress.original_kb}KB → ${r.compress.compressed_kb}KB · searched on compressed vectors` + (r.used_sample ? ' · using sample docs' : '');
+    const wrap = $('emb-results'); wrap.innerHTML = '';
+    if (!r.results.length) { wrap.innerHTML = '<div class="empty"><div class="icon">⊘</div>No results.</div>'; return; }
+    const max = Math.max(...r.results.map(x => x.score), 0.0001);
+    r.results.forEach((res, i) => {
+      const row = mk('div', 'emb-row');
+      const terms = (res.matched || []).map(t => `<span class="badge purple">${escHtml(t)}</span>`).join('');
+      row.innerHTML = `<div class="emb-head"><span class="emb-rank">#${i+1}</span>
+        <div class="emb-scoretrack"><div class="emb-scorefill"></div></div>
+        <span class="emb-score">${res.score.toFixed(3)}</span></div>
+        <div class="emb-doc">${highlightTerms(res.doc, res.matched)}</div>
+        ${terms ? `<div class="emb-terms">${terms}</div>` : ''}`;
+      wrap.appendChild(row);
+      setTimeout(() => { row.classList.add('in'); row.querySelector('.emb-scorefill').style.width = Math.round(res.score / max * 100) + '%'; }, 55 * i);
+    });
+    toast(`Embedded ${r.n_docs} docs (dim ${r.dim}) · INT8 ${r.compress.ratio}× @ ${(r.compress.fidelity*100).toFixed(1)}% fidelity`, 'success');
+  } catch (e) { err.textContent = e.message; err.classList.add('show'); toast(e.message, 'error'); }
+  finally { btn.disabled = false; spin.style.display = 'none'; }
+}
+$('emb-run-btn').addEventListener('click', runEmbed);
 
 // ═══════════════════════════════════════════════════════════════════
 // GUIDED TOUR — first-run spotlight walkthrough (replayable via ⌘K)
