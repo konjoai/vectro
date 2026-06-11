@@ -1281,6 +1281,85 @@ def _api_ivf(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Embeddings playground — real TF-IDF text embeddings, compressed & searched
+# ─────────────────────────────────────────────────────────────────────────
+#
+# The one place the demo used to be synthetic.  Here, the user's own
+# documents are turned into *real* TF-IDF vectors, INT8-compressed by
+# Vectro, and queried by cosine similarity against the reconstructed
+# (compressed) vectors — so you can see retrieval survive 4× compression.
+
+_EMBED_SAMPLE_DOCS = [
+    "The cat dozed on the warm windowsill in the afternoon sun.",
+    "Dogs are loyal companions that love long walks in the park.",
+    "Neural networks learn useful representations directly from data.",
+    "Transformers use self-attention to model long sequences of tokens.",
+    "Espresso is a concentrated coffee brewed under high pressure.",
+    "Green tea contains antioxidants and a gentle amount of caffeine.",
+    "Mount Fuji is the tallest volcano on the island of Honshu.",
+    "High-speed trains connect Paris to Marseille at 320 km per hour.",
+]
+
+
+def _api_embed_search(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Embed user text with TF-IDF, INT8-compress it, and cosine-search."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    raw = payload.get("docs") or []
+    docs = [str(d).strip()[:400] for d in raw if str(d).strip()][:60]
+    used_sample = len(docs) < 2
+    if used_sample:
+        docs = list(_EMBED_SAMPLE_DOCS)
+    query = str(payload.get("query", "")).strip()[:200] or "machine learning models"
+    k = max(1, min(int(payload.get("k", 5)), len(docs)))
+
+    vec = TfidfVectorizer()
+    mat = vec.fit_transform(docs).toarray().astype(np.float32)
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    embeds = (mat / norms).astype(np.float32)
+
+    res = VECTRO.compress(embeds, precision_mode="int8")
+    rec = res.reconstruct_batch()
+    fidelity = _mean_cosine(embeds, rec)
+
+    q = vec.transform([query]).toarray().astype(np.float32).ravel()
+    qn = q / (np.linalg.norm(q) + 1e-9)
+    sims = rec @ qn  # search against the *compressed* vectors
+
+    analyzer = vec.build_analyzer()
+    vocab = set(vec.vocabulary_.keys())
+    q_terms = set(analyzer(query)) & vocab
+
+    order = np.argsort(-sims)[:k]
+    results = []
+    for raw_i in order:
+        i = int(raw_i)
+        matched = sorted(q_terms & (set(analyzer(docs[i])) & vocab))
+        results.append({
+            "doc":     docs[i],
+            "score":   round(float(sims[i]), 4),
+            "matched": matched,
+        })
+
+    return {
+        "query":       query,
+        "n_docs":      len(docs),
+        "dim":         int(embeds.shape[1]),
+        "vocab_size":  len(vocab),
+        "k":           k,
+        "used_sample": used_sample,
+        "compress": {
+            "ratio":         round(float(res.compression_ratio), 2),
+            "fidelity":      round(fidelity, 5),
+            "original_kb":   round(int(embeds.nbytes) / 1024, 2),
+            "compressed_kb": round(int(res.total_compressed_bytes) / 1024, 2),
+        },
+        "results": results,
+    }
+
+
 ROUTES_POST: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/compress":         _api_compress,
     "/api/search":           _api_search,
@@ -1289,6 +1368,7 @@ ROUTES_POST: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/filtered-search":  _api_filtered_search,
     "/api/recall_estimate":  _api_recall_estimate,
     "/api/quantize-lab":     _api_quantize_lab,
+    "/api/embed-search":     _api_embed_search,
     "/api/ivf":              _api_ivf,
     "/api/lora":             _api_lora,
 }
