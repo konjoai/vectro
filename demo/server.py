@@ -1022,6 +1022,89 @@ def _api_quantize_lab(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# LoRA adapter compression — NF4-quantise the low-rank fine-tuning factors
+# ─────────────────────────────────────────────────────────────────────────
+#
+# A LoRA adapter stores, per attention projection, two low-rank factors
+# A (rank × in) and B (out × rank) whose product B·A is the weight delta.
+# compress_lora_adapter() NF4-quantises every factor; we report the real
+# per-factor cosine fidelity, the reconstructed-delta cosine, and the byte
+# savings vs both the float32 factors and the equivalent dense weight.
+
+_LORA_MODULES = ("q_proj", "k_proj", "v_proj", "o_proj")
+
+
+def _nf4_payload_bytes(payload: Dict[str, Any]) -> int:
+    """Sum the byte footprint of an NF4 payload dict ({packed, scales, ...})."""
+    return int(sum(v.nbytes for v in payload.values() if hasattr(v, "nbytes")))
+
+
+def _matrix_cosine(a: np.ndarray, b: np.ndarray) -> float:
+    """Flattened cosine similarity between two matrices."""
+    av, bv = a.ravel(), b.ravel()
+    denom = float(np.linalg.norm(av) * np.linalg.norm(bv)) + 1e-9
+    return float(np.clip((av @ bv) / denom, -1.0, 1.0))
+
+
+def _api_lora(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Compress a synthetic LoRA adapter and return measured fidelity + size."""
+    from python.lora_api import compress_lora_adapter, decompress_lora
+
+    rank = max(2,  min(int(payload.get("rank", 16)),          128))
+    din  = max(32, min(int(payload.get("in_features", 768)),  4096))
+    dout = max(32, min(int(payload.get("out_features", 768)), 4096))
+
+    rng = np.random.default_rng(7)
+    adapter = {
+        m: (
+            rng.standard_normal((rank, din)).astype(np.float32),
+            rng.standard_normal((dout, rank)).astype(np.float32),
+        )
+        for m in _LORA_MODULES
+    }
+
+    t0 = time.perf_counter()
+    results = compress_lora_adapter(adapter, profile="lora-nf4")
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    modules: List[Dict[str, Any]] = []
+    tot_orig = tot_comp = 0
+    for name, (a_mat, b_mat) in adapter.items():
+        res = results[name]
+        orig = int(a_mat.nbytes + b_mat.nbytes)
+        comp = _nf4_payload_bytes(res.A_data) + _nf4_payload_bytes(res.B_data)
+        a2, b2 = decompress_lora(res)
+        delta_cos = _matrix_cosine(b_mat @ a_mat, b2 @ a2)
+        tot_orig += orig
+        tot_comp += comp
+        modules.append({
+            "module":      name,
+            "rank":        int(res.rank),
+            "cos_A":       round(float(res.cosine_sim_A), 5),
+            "cos_B":       round(float(res.cosine_sim_B), 5),
+            "delta_cos":   round(delta_cos, 5),
+            "orig_bytes":  orig,
+            "comp_bytes":  comp,
+            "ratio":       round(orig / comp, 3) if comp else 0.0,
+        })
+
+    dense_bytes = len(_LORA_MODULES) * dout * din * 4
+    return {
+        "rank":             rank,
+        "in_features":      din,
+        "out_features":     dout,
+        "modules":          modules,
+        "total_orig_bytes": tot_orig,
+        "total_comp_bytes": tot_comp,
+        "ratio":            round(tot_orig / tot_comp, 3) if tot_comp else 0.0,
+        "dense_bytes":      dense_bytes,
+        "vs_dense_ratio":   round(dense_bytes / tot_comp, 1) if tot_comp else 0.0,
+        "timing_ms":        round(elapsed_ms, 3),
+        "platform":         f"{platform.system()} / {platform.machine()}",
+    }
+
+
 ROUTES_POST: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/compress":         _api_compress,
     "/api/search":           _api_search,
@@ -1030,6 +1113,7 @@ ROUTES_POST: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/filtered-search":  _api_filtered_search,
     "/api/recall_estimate":  _api_recall_estimate,
     "/api/quantize-lab":     _api_quantize_lab,
+    "/api/lora":             _api_lora,
 }
 ROUTES_GET: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/index-stats":  _api_index_stats,

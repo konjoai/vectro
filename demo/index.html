@@ -334,6 +334,16 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .node-cell.repaired { animation: node-repair .6s var(--ease); }
 @keyframes node-repair { 0%{ box-shadow:0 0 0 0 rgba(16,185,129,.9);} 50%{ box-shadow:0 0 0 6px rgba(16,185,129,0);} 100%{ box-shadow:0 0 0 0 transparent;} }
 
+/* ── LoRA factorization diagram ──────────────────────────────────────── */
+.lora-diagram { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 22px 0 6px; flex-wrap: wrap; }
+.lora-stack { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.lora-box { display: flex; align-items: center; justify-content: center; border-radius: 6px; font-family: var(--mono); font-size: 9px; color: rgba(255,255,255,.9); box-shadow: 0 4px 18px -6px rgba(0,0,0,.6); transition: width .6s var(--ease), height .6s var(--ease); }
+.lora-W { background: linear-gradient(135deg, rgba(124,58,237,.30), rgba(34,211,238,.14)); border: 1px solid var(--line); }
+.lora-B { background: linear-gradient(160deg, var(--green), #6ee7b7); color: rgba(0,0,0,.6); font-weight: 700; }
+.lora-A { background: linear-gradient(135deg, var(--accent), #a78bfa); font-weight: 700; }
+.lora-op { font-size: 24px; color: var(--text-muted); }
+.lora-cap { font-size: 9.5px; color: var(--text-muted); letter-spacing: .04em; }
+
 /* compaction flow result chips */
 .flow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .flow .chip { flex: 1; min-width: 90px; text-align: center; padding: 14px 10px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--line-dim); }
@@ -356,6 +366,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
     <button class="tab" data-panel="search">Search</button>
     <button class="tab" data-panel="benchmark">Benchmark</button>
     <button class="tab" data-panel="health">Index Health</button>
+    <button class="tab" data-panel="lora">LoRA</button>
     <button class="tab" data-panel="projection">2D Projection</button>
   </nav>
   <div id="status-pill">
@@ -841,6 +852,65 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
   </div>
 </section>
 
+<!-- ─────────────── LoRA STUDIO ───────────────────────────────────── -->
+<section class="panel" id="panel-lora">
+  <h2>LoRA Adapter Compression</h2>
+  <p class="sub">A fine-tuned LoRA adapter stores, per attention projection, two low-rank factors <b>A</b> (rank × in) and <b>B</b> (out × rank) whose product is the weight delta. Vectro NF4-quantises every factor — here's the real fidelity and size reduction, measured on this machine.</p>
+
+  <div class="lab-hero">
+    <!-- Controls -->
+    <div>
+      <div class="card">
+        <h3>Adapter shape</h3>
+        <div class="field">
+          <label>Rank <span id="lr-rank-val" style="float:right;color:var(--text)">16</span></label>
+          <input type="range" id="lr-rank" min="2" max="128" step="2" value="16" />
+        </div>
+        <div class="field">
+          <label>In features <span id="lr-in-val" style="float:right;color:var(--text)">768</span></label>
+          <input type="range" id="lr-in" min="64" max="4096" step="64" value="768" />
+        </div>
+        <div class="field">
+          <label>Out features <span id="lr-out-val" style="float:right;color:var(--text)">768</span></label>
+          <input type="range" id="lr-out" min="64" max="4096" step="64" value="768" />
+        </div>
+        <button class="btn primary" id="lr-run-btn" style="width:100%;margin-top:6px">
+          <span class="spin" id="lr-spin" style="display:none"></span>
+          ▶ Compress adapter (live)
+        </button>
+        <div class="err-msg" id="lr-err"></div>
+        <div class="kv-row" style="margin-top:14px"><span class="k">modules</span><span class="v">q_proj · k_proj · v_proj · o_proj</span></div>
+        <div class="kv-row"><span class="k">profile</span><span class="v">lora-nf4</span></div>
+        <div class="kv-row" style="border:none"><span class="k">encode</span><span class="v" id="lr-ms">—</span></div>
+      </div>
+    </div>
+
+    <!-- Big metrics + factorization -->
+    <div>
+      <div class="g2">
+        <div class="card big-metric"><div class="v" id="lr-ratio">—</div><div class="l">adapter compression</div></div>
+        <div class="card big-metric"><div class="v" id="lr-dense">—</div><div class="l">vs dense weight</div></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h3>Low-rank factorization</h3>
+        <div class="lora-diagram" id="lr-diagram"></div>
+        <div style="text-align:center;font-size:11px;color:var(--text-dim);margin-top:4px">
+          A dense <b id="lr-wdim" style="color:var(--text)">768×768</b> weight delta is just two skinny NF4 factors — that's why it's <span id="lr-dense2" style="color:#a78bfa">153×</span> smaller than the full weight.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Per-module fidelity cards -->
+  <div class="codec-grid" id="lr-cards" style="grid-template-columns:repeat(4,1fr)"></div>
+
+  <!-- Storage comparison -->
+  <div class="card" style="margin-top:18px">
+    <h3>Storage footprint <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted);font-size:11px">— bar width ∝ √bytes for visibility; labels are exact</span></h3>
+    <div id="lr-bars"></div>
+  </div>
+</section>
+
 </div><!-- #main -->
 </div><!-- #app -->
 
@@ -941,6 +1011,7 @@ document.querySelectorAll('.tab').forEach(t => {
       if (!labData && !labAutoRan) { labAutoRan = true; setTimeout(runLab, 250); }
     }
     if (t.dataset.panel === 'health') { hlInit(); loadHealth(); }
+    if (t.dataset.panel === 'lora' && !loraAutoRan) { loraAutoRan = true; setTimeout(runLora, 200); }
   });
 });
 
@@ -1855,6 +1926,95 @@ $('hl-search-btn').addEventListener('click', async () => {
   } catch(e) { toast(e.message, 'error'); }
   finally { btn.disabled = false; }
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// LoRA STUDIO — NF4-compress low-rank adapter factors
+// ═══════════════════════════════════════════════════════════════════
+let loraAutoRan = false;
+$('lr-rank').addEventListener('input', e => $('lr-rank-val').textContent = e.target.value);
+$('lr-in').addEventListener('input',   e => $('lr-in-val').textContent = e.target.value);
+$('lr-out').addEventListener('input',  e => $('lr-out-val').textContent = e.target.value);
+
+function loraBox(cls, w, h, label) {
+  const b = mk('div', 'lora-box ' + cls, label);
+  b.style.width = Math.max(8, w) + 'px';
+  b.style.height = Math.max(8, h) + 'px';
+  return b;
+}
+
+function renderLoraDiagram(din, dout, rank) {
+  const wrap = $('lr-diagram'); wrap.innerHTML = '';
+  const maxDim = Math.max(din, dout), S = 96;
+  const wIn = din / maxDim * S, wOut = dout / maxDim * S, wRank = Math.max(7, rank / maxDim * S);
+  const stack = (box, cap) => { const s = mk('div', 'lora-stack'); s.appendChild(box); s.appendChild(mk('div', 'lora-cap', cap)); return s; };
+  wrap.appendChild(stack(loraBox('lora-W', wIn, wOut, 'ΔW'), `${dout}×${din}`));
+  wrap.appendChild(mk('div', 'lora-op', '≈'));
+  wrap.appendChild(stack(loraBox('lora-B', wRank, wOut, 'B'), `${dout}×${rank}`));
+  wrap.appendChild(mk('div', 'lora-op', '×'));
+  wrap.appendChild(stack(loraBox('lora-A', wIn, wRank, 'A'), `${rank}×${din}`));
+}
+
+function renderLoraCards(modules) {
+  const wrap = $('lr-cards'); wrap.innerHTML = '';
+  modules.forEach((m, i) => {
+    const card = mk('div', 'codec-card');
+    card.style.setProperty('--cc', '#a78bfa');
+    const pct = Math.round(m.delta_cos * 1000) / 10;
+    card.innerHTML = `
+      <div class="nm">${m.module}</div>
+      <div class="ring-wrap"><canvas></canvas>
+        <div class="ring-pct"><b>${pct.toFixed(1)}%</b><span>ΔW fidelity</span></div></div>
+      <div class="ratio">${m.ratio.toFixed(1)}×</div>
+      <div class="ratio-l">factor compression</div>
+      <div class="foot"><span>A ${(m.cos_A*100).toFixed(1)}%</span><span>B ${(m.cos_B*100).toFixed(1)}%</span></div>
+      <div class="foot" style="border:none;padding-top:4px;margin-top:2px"><span style="color:var(--text-muted)">stored</span><span>${fmtBytes(m.comp_bytes)}</span></div>`;
+    wrap.appendChild(card);
+    setTimeout(() => {
+      card.classList.add('in');
+      const cv = card.querySelector('canvas');
+      const t0 = performance.now(), dur = 800;
+      const step = t => { const p = Math.min(1, (t-t0)/dur); drawRing(cv, pct*easeOutCubic(p), '#a78bfa'); if (p<1) requestAnimationFrame(step); };
+      requestAnimationFrame(step);
+    }, 70*i);
+  });
+}
+
+function renderLoraBars(dense, fp32, nf4) {
+  const wrap = $('lr-bars'); wrap.innerHTML = '';
+  const maxB = Math.max(dense, fp32, nf4);
+  [['Dense ΔW (float32)', dense, 'var(--text-muted)'],
+   ['LoRA factors (float32)', fp32, 'var(--accent-2)'],
+   ['LoRA factors (NF4)', nf4, 'var(--accent)']].forEach(([lbl, bytes, col]) => {
+    const pct = Math.sqrt(bytes / maxB) * 100;
+    const row = mk('div', 'hist-bar'); row.style.margin = '7px 0';
+    row.innerHTML = `<span style="width:170px;color:var(--text-dim)">${lbl}</span>
+      <div class="hist-track" style="height:9px"><div class="hist-fill" style="width:0%;background:${col}"></div></div>
+      <span style="width:74px;text-align:right;font-family:var(--mono);font-size:11px;color:var(--text)">${fmtBytes(bytes)}</span>`;
+    wrap.appendChild(row);
+    requestAnimationFrame(() => { row.querySelector('.hist-fill').style.width = pct + '%'; });
+  });
+}
+
+async function runLora() {
+  const btn = $('lr-run-btn'), spin = $('lr-spin'), err = $('lr-err');
+  btn.disabled = true; spin.style.display = 'inline-block'; err.classList.remove('show');
+  try {
+    const r = await api('POST', '/api/lora', {
+      rank: +$('lr-rank').value, in_features: +$('lr-in').value, out_features: +$('lr-out').value,
+    });
+    countUp('lr-ratio', r.ratio, '×', 2);
+    countUp('lr-dense', r.vs_dense_ratio, '×', 0);
+    $('lr-dense2').textContent = r.vs_dense_ratio.toFixed(0) + '×';
+    $('lr-wdim').textContent = `${r.out_features}×${r.in_features}`;
+    $('lr-ms').textContent = r.timing_ms.toFixed(2) + ' ms';
+    renderLoraDiagram(r.in_features, r.out_features, r.rank);
+    renderLoraCards(r.modules);
+    renderLoraBars(r.dense_bytes, r.total_orig_bytes, r.total_comp_bytes);
+    toast(`LoRA adapter: ${r.ratio.toFixed(2)}× over fp32 factors · ${r.vs_dense_ratio.toFixed(0)}× vs dense weight`, 'success');
+  } catch(e) { err.textContent = e.message; err.classList.add('show'); toast(e.message, 'error'); }
+  finally { btn.disabled = false; spin.style.display = 'none'; }
+}
+$('lr-run-btn').addEventListener('click', runLora);
 
 // ═══════════════════════════════════════════════════════════════════
 // AMBIENT BACKGROUND — a slow vector-space constellation
