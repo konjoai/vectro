@@ -261,16 +261,71 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 /* ── inline error ────────────────────────────────────────────────────── */
 .err-msg { color: var(--red); font-size: 12px; font-family: var(--mono); margin-top: 8px; display: none; }
 .err-msg.show { display: block; }
+
+/* ── ambient animated background ─────────────────────────────────────── */
+#bg-canvas { position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: 0.55; }
+#app { position: relative; z-index: 1; }
+
+/* ── segmented control ───────────────────────────────────────────────── */
+.seg { display: inline-flex; background: var(--panel-2); border: 1px solid var(--line-dim); border-radius: 999px; padding: 3px; gap: 2px; }
+.seg button { border: none; background: transparent; color: var(--text-dim); font-size: 11.5px; font-weight: 600; padding: 5px 13px; border-radius: 999px; cursor: pointer; transition: color .15s, background .15s; font-family: var(--sans); }
+.seg button.on { background: var(--accent); color: #fff; box-shadow: 0 2px 10px -2px var(--accent-glow); }
+.seg button:not(.on):hover { color: var(--text); }
+
+/* ── Quantize Lab ────────────────────────────────────────────────────── */
+.lab-hero { display: grid; grid-template-columns: 300px 1fr; gap: 20px; align-items: stretch; }
+@media (max-width: 1000px) { .lab-hero { grid-template-columns: 1fr; } }
+
+#pareto-wrap { position: relative; background: radial-gradient(120% 120% at 30% 10%, rgba(124,58,237,.10), transparent 55%), var(--panel); border: 1px solid var(--line-dim); border-radius: var(--r); overflow: hidden; min-height: 340px; }
+#pareto-canvas { display: block; width: 100%; }
+#pareto-tip { position: absolute; pointer-events: none; background: rgba(13,13,32,.94); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 7px 11px; font-family: var(--mono); font-size: 11px; color: var(--text); backdrop-filter: blur(8px); opacity: 0; transition: opacity .12s; z-index: 5; }
+#pareto-tip.vis { opacity: 1; }
+.pareto-cap { position: absolute; bottom: 8px; left: 14px; font-size: 10px; color: var(--text-muted); letter-spacing: .08em; text-transform: uppercase; }
+
+/* codec result cards */
+.codec-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 18px; }
+@media (max-width: 1100px) { .codec-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px)  { .codec-grid { grid-template-columns: 1fr; } }
+.codec-card { background: var(--panel); border: 1px solid var(--line-dim); border-radius: var(--r); padding: 16px 14px; text-align: center; position: relative; overflow: hidden; opacity: 0; transform: translateY(16px) scale(.97); }
+.codec-card.in { animation: card-pop .5s var(--ease) forwards; }
+@keyframes card-pop { to { opacity: 1; transform: translateY(0) scale(1); } }
+.codec-card::before { content: ''; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--cc, var(--accent)); opacity: .9; }
+.codec-card .nm { font-weight: 800; font-size: 14px; letter-spacing: .05em; color: var(--text); }
+.codec-card .ring-wrap { position: relative; width: 84px; height: 84px; margin: 10px auto 6px; }
+.codec-card .ring-wrap canvas { width: 84px; height: 84px; }
+.codec-card .ring-pct { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: var(--mono); }
+.codec-card .ring-pct b { font-size: 17px; color: var(--text); }
+.codec-card .ring-pct span { font-size: 8.5px; color: var(--text-muted); letter-spacing: .1em; text-transform: uppercase; }
+.codec-card .ratio { font-family: var(--mono); font-size: 26px; font-weight: 800; letter-spacing: -.03em; color: var(--cc, var(--accent)); }
+.codec-card .ratio-l { font-size: 9.5px; color: var(--text-muted); letter-spacing: .12em; text-transform: uppercase; margin-bottom: 8px; }
+.codec-card .foot { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; color: var(--text-dim); border-top: 1px solid var(--line-dim); padding-top: 8px; margin-top: 8px; }
+.codec-card.na { opacity: .5; }
+.codec-card.na.in { animation: none; opacity: .5; transform: none; }
+
+/* geometry small-multiples */
+.geo-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+@media (max-width: 1100px) { .geo-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 560px)  { .geo-grid { grid-template-columns: repeat(2, 1fr); } }
+.geo-cell { background: var(--panel-2); border: 1px solid var(--line-dim); border-radius: var(--r-sm); padding: 8px; }
+.geo-cell canvas { display: block; width: 100%; border-radius: var(--r-sm); background: #07071a; }
+.geo-cell .lbl { display: flex; justify-content: space-between; align-items: center; font-size: 10.5px; font-family: var(--mono); color: var(--text-dim); margin-top: 6px; }
+.geo-cell .lbl .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+/* reveal helper for sections */
+.reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s var(--ease), transform .5s var(--ease); }
+.reveal.in { opacity: 1; transform: translateY(0); }
 </style>
 </head>
 <body>
+<canvas id="bg-canvas"></canvas>
 <div id="app">
 
 <!-- ── top bar ─────────────────────────────────────────────────────── -->
 <div id="topbar">
-  <div class="logo">V<span>E</span>CTRO <sup>v5.2</sup></div>
+  <div class="logo">V<span>E</span>CTRO <sup id="logo-ver">live</sup></div>
   <nav id="tabs">
     <button class="tab active" data-panel="overview">Overview</button>
+    <button class="tab" data-panel="lab">Quantize Lab</button>
     <button class="tab" data-panel="indexes">Indexes</button>
     <button class="tab" data-panel="search">Search</button>
     <button class="tab" data-panel="benchmark">Benchmark</button>
@@ -607,6 +662,70 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
   </div>
 </section>
 
+<!-- ─────────────── QUANTIZE LAB ──────────────────────────────────── -->
+<section class="panel" id="panel-lab">
+  <h2>Quantize Lab</h2>
+  <p class="sub">Every Vectro codec — INT8 · NF4 · RQ · PQ · Binary — encoding the <b>same batch</b> on this CPU, right now. Each dot is real: bytes counted, vectors reconstructed, cosine fidelity measured live.</p>
+
+  <div class="lab-hero">
+    <!-- Controls -->
+    <div>
+      <div class="card">
+        <h3>Run a sweep</h3>
+        <div class="field">
+          <label>Vectors <span id="lab-n-val" style="float:right;color:var(--text)">2,500</span></label>
+          <input type="range" id="lab-n" min="256" max="12000" step="256" value="2500" />
+        </div>
+        <div class="field">
+          <label>Dimensions <span id="lab-d-val" style="float:right;color:var(--text)">256</span></label>
+          <input type="range" id="lab-d" min="16" max="1024" step="16" value="256" />
+        </div>
+        <div class="field">
+          <label>Distribution</label>
+          <div class="seg" id="lab-dist">
+            <button data-dist="gaussian" class="on">Gaussian</button>
+            <button data-dist="clustered">Clustered</button>
+          </div>
+        </div>
+        <button class="btn primary" id="lab-run-btn" style="width:100%;margin-top:6px">
+          <span class="spin" id="lab-spin" style="display:none"></span>
+          ▶ Run live sweep
+        </button>
+        <div class="err-msg" id="lab-err"></div>
+        <div id="lab-meta" style="margin-top:14px;display:none">
+          <div class="kv-row"><span class="k">original</span><span class="v" id="lab-orig">—</span></div>
+          <div class="kv-row"><span class="k">platform</span><span class="v" id="lab-plat" style="font-size:10px">—</span></div>
+          <div class="kv-row" style="border:none;font-size:10.5px;color:var(--text-muted)"><span>↑ left = better fidelity · → right = smaller</span></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h3>What am I seeing?</h3>
+        <p style="font-size:11.5px;color:var(--text-dim);line-height:1.65;margin:0">
+          The frontier maps the eternal trade-off: <b style="color:var(--text)">shrink more</b> (right) and you usually
+          <b style="color:var(--text)">lose fidelity</b> (down). The codec sitting closest to the top-right corner wins
+          for your data. Clustered data lets the codebook methods (PQ, RQ) leap ahead.
+        </p>
+      </div>
+    </div>
+
+    <!-- Pareto frontier -->
+    <div id="pareto-wrap">
+      <canvas id="pareto-canvas" height="380"></canvas>
+      <div id="pareto-tip"></div>
+      <div class="pareto-cap">compression ratio  →   ·   fidelity (cosine)  ↑</div>
+    </div>
+  </div>
+
+  <!-- Codec cards -->
+  <div class="codec-grid" id="lab-cards"></div>
+
+  <!-- Geometry preservation -->
+  <div class="reveal" id="lab-geo-section" style="margin-top:26px;display:none">
+    <h3>Geometry preservation <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted);font-size:11px">— same PCA plane, so distortion is directly comparable</span></h3>
+    <div class="geo-grid" id="lab-geo"></div>
+  </div>
+</section>
+
 </div><!-- #main -->
 </div><!-- #app -->
 
@@ -681,6 +800,7 @@ async function checkStatus() {
     const h = await api('GET', '/api/health');
     $('status-dot').className = 'online';
     $('status-txt').textContent = `live · v${h.version} · ${h.platform}`;
+    const ver = $('logo-ver'); if (ver) ver.textContent = 'v' + h.version;
   } catch {
     $('status-dot').className = 'error';
     $('status-txt').textContent = 'offline — run python demo/server.py';
@@ -701,6 +821,10 @@ document.querySelectorAll('.tab').forEach(t => {
     if (t.dataset.panel === 'search')  populateIndexSelects();
     if (t.dataset.panel === 'benchmark') populateIndexSelects();
     if (t.dataset.panel === 'projection') populateIndexSelects();
+    if (t.dataset.panel === 'lab') {
+      requestAnimationFrame(resizePareto);
+      if (!labData && !labAutoRan) { labAutoRan = true; setTimeout(runLab, 250); }
+    }
   });
 });
 
@@ -883,7 +1007,7 @@ async function showIndexStats(name) {
     cells.forEach(([k, l]) => {
       if (s[k] !== undefined) {
         const cell = mk('div', 'stat-cell');
-        cell.innerHTML = `<div class="v">${typeof s[k]==='number'?s[k].toFixed?.(s[k]%1?2:0):s[k]:'—'}</div><div class="l">${l}</div>`;
+        cell.innerHTML = `<div class="v">${typeof s[k]==='number'?s[k].toFixed(s[k]%1?2:0):s[k]}</div><div class="l">${l}</div>`;
         sg.appendChild(cell);
       }
     });
@@ -1247,6 +1371,325 @@ async function populateIndexSelects() {
     });
   } catch {}
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// QUANTIZE LAB
+// ═══════════════════════════════════════════════════════════════════
+const labN = $('lab-n'), labD = $('lab-d');
+labN.addEventListener('input', () => $('lab-n-val').textContent = (+labN.value).toLocaleString());
+labD.addEventListener('input', () => $('lab-d-val').textContent = +labD.value);
+let labDist = 'gaussian';
+$('lab-dist').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  labDist = b.dataset.dist;
+  document.querySelectorAll('#lab-dist button').forEach(x => x.classList.toggle('on', x === b));
+});
+
+let labData = null;          // last sweep response
+let labNodes = [];           // {codec, sx, sy, ...} screen positions for hover
+let labAnimId = null;
+let labAutoRan = false;      // auto-run the first time the tab opens
+
+function easeOutCubic(p) { return 1 - Math.pow(1 - p, 3); }
+
+// fidelity domain → keep the top fixed at 1.0, floor adapts to the data
+function labFidDomain(codecs) {
+  const fids = codecs.filter(c => c.available).map(c => c.fidelity);
+  const lo = Math.min(0.78, (Math.min(...fids) || 0.7) - 0.03);
+  return [Math.max(0, lo), 1.0];
+}
+
+function resizePareto() {
+  const c = $('pareto-canvas'), wrap = $('pareto-wrap');
+  if (!c || !wrap) return;
+  const dpr = window.devicePixelRatio || 1;
+  c.width  = wrap.clientWidth * dpr;
+  c.height = 380 * dpr;
+  c.style.height = '380px';
+  const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawPareto(1);
+}
+
+function drawPareto(prog) {
+  const c = $('pareto-canvas'); if (!c) return;
+  const ctx = c.getContext('2d');
+  const W = c.clientWidth || c.width, H = 380;
+  const padL = 64, padR = 30, padT = 26, padB = 44;
+  ctx.clearRect(0, 0, W, H);
+
+  if (!labData) {
+    ctx.fillStyle = '#4a5568'; ctx.font = '13px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('▶ Run a sweep to plot the accuracy / compression frontier', W/2, H/2);
+    ctx.textAlign = 'start';
+    return;
+  }
+
+  const codecs = labData.codecs.filter(c => c.available);
+  const [fLo, fHi] = labFidDomain(codecs);
+  const xMin = 1, xMax = Math.log2(Math.max(64, ...codecs.map(c => c.ratio)) * 1.15);
+  const xOf = r => padL + (Math.log2(r) - xMin) / (xMax - xMin) * (W - padL - padR);
+  const yOf = f => padT + (1 - (f - fLo) / (fHi - fLo)) * (H - padT - padB);
+
+  // grid + axes
+  ctx.strokeStyle = 'rgba(255,255,255,.05)'; ctx.lineWidth = 1;
+  ctx.fillStyle = '#4a5568'; ctx.font = '10px ui-monospace, monospace';
+  [2, 4, 8, 16, 32, 64].forEach(r => {
+    if (r < 2) return;
+    const x = xOf(r);
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, H - padB); ctx.stroke();
+    ctx.textAlign = 'center'; ctx.fillText(r + '×', x, H - padB + 16);
+  });
+  const fSteps = 5;
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= fSteps; i++) {
+    const f = fLo + (fHi - fLo) * i / fSteps, y = yOf(f);
+    ctx.strokeStyle = 'rgba(255,255,255,.05)';
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(f.toFixed(2), padL - 8, y + 3);
+  }
+  ctx.textAlign = 'start';
+
+  // frontier polyline (sorted by ratio), revealed by prog
+  const sorted = [...codecs].sort((a, b) => a.ratio - b.ratio);
+  ctx.beginPath();
+  sorted.forEach((cd, i) => {
+    const x = xOf(cd.ratio), yEnd = yOf(cd.fidelity), yB = H - padB;
+    const y = yB + (yEnd - yB) * easeOutCubic(prog);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  const grad = ctx.createLinearGradient(padL, 0, W - padR, 0);
+  grad.addColorStop(0, 'rgba(34,211,238,.7)'); grad.addColorStop(1, 'rgba(239,68,68,.7)');
+  ctx.strokeStyle = grad; ctx.lineWidth = 2; ctx.setLineDash([6, 5]);
+  ctx.globalAlpha = 0.5 * prog; ctx.stroke();
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+
+  // nodes
+  labNodes = [];
+  codecs.forEach(cd => {
+    const x = xOf(cd.ratio), yEnd = yOf(cd.fidelity), yB = H - padB;
+    const y = yB + (yEnd - yB) * easeOutCubic(prog);
+    const rad = 7 + 4 * easeOutCubic(prog);
+    ctx.save();
+    ctx.shadowBlur = 18 * prog; ctx.shadowColor = cd.color;
+    ctx.fillStyle = cd.color; ctx.globalAlpha = 0.9;
+    ctx.beginPath(); ctx.arc(x, y, rad, 0, 2*Math.PI); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = '#0b0b1c'; ctx.beginPath(); ctx.arc(x, y, rad*0.4, 0, 2*Math.PI); ctx.fill();
+    if (prog > 0.8) {
+      ctx.fillStyle = cd.color; ctx.font = '700 11px ui-monospace, monospace';
+      ctx.globalAlpha = (prog - 0.8) / 0.2;
+      ctx.fillText(cd.label, x + rad + 5, y + 4);
+      ctx.globalAlpha = 1;
+    }
+    labNodes.push({ ...cd, sx: x, sy: y, r: rad });
+  });
+}
+
+function animatePareto() {
+  cancelAnimationFrame(labAnimId);
+  const t0 = performance.now(), dur = 900;
+  const step = t => {
+    const p = Math.min(1, (t - t0) / dur);
+    drawPareto(p);
+    if (p < 1) labAnimId = requestAnimationFrame(step);
+  };
+  labAnimId = requestAnimationFrame(step);
+}
+
+// fidelity ring for codec cards (full circle, animated by countUp separately)
+function drawRing(canvas, pct, color) {
+  const c = canvas; if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  if (c.width !== 84*dpr) { c.width = 84*dpr; c.height = 84*dpr; }
+  const ctx = c.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+  const w = 84, cx = w/2, cy = w/2, r = cx - 7;
+  ctx.clearRect(0, 0, w, w);
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2*Math.PI);
+  ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 6; ctx.stroke();
+  if (pct > 0) {
+    const end = -Math.PI/2 + 2*Math.PI*(pct/100);
+    ctx.beginPath(); ctx.arc(cx, cy, r, -Math.PI/2, end);
+    ctx.strokeStyle = color; ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.shadowBlur = 10; ctx.shadowColor = color; ctx.stroke();
+  }
+}
+
+function renderLabCards(codecs) {
+  const wrap = $('lab-cards'); wrap.innerHTML = '';
+  codecs.forEach((cd, i) => {
+    const card = mk('div', 'codec-card' + (cd.available ? '' : ' na'));
+    card.style.setProperty('--cc', cd.color);
+    if (!cd.available) {
+      card.innerHTML = `<div class="nm">${cd.label}</div>
+        <div style="padding:24px 4px;color:var(--text-muted);font-size:11px">unavailable<br><span style="font-size:10px">${cd.reason||''}</span></div>`;
+      wrap.appendChild(card);
+      setTimeout(() => card.classList.add('in'), 70*i);
+      return;
+    }
+    const pct = Math.round(cd.fidelity * 1000) / 10;
+    const tput = cd.throughput_M_vec_s != null ? cd.throughput_M_vec_s.toFixed(2)+' M/s' : '—';
+    card.innerHTML = `
+      <div class="nm">${cd.label}</div>
+      <div class="ring-wrap"><canvas></canvas>
+        <div class="ring-pct"><b>${pct.toFixed(1)}%</b><span>fidelity</span></div></div>
+      <div class="ratio">${cd.ratio.toFixed(1)}×</div>
+      <div class="ratio-l">compression</div>
+      <div class="foot"><span>${fmtBytes(cd.compressed_bytes)}</span><span>${cd.timing_ms.toFixed(0)}ms</span></div>
+      <div class="foot" style="border:none;padding-top:4px;margin-top:2px"><span style="color:var(--text-muted)">throughput</span><span>${tput}</span></div>`;
+    wrap.appendChild(card);
+    setTimeout(() => {
+      card.classList.add('in');
+      // animate ring sweep
+      const cv = card.querySelector('canvas');
+      const t0 = performance.now(), dur = 800;
+      const step = t => {
+        const p = Math.min(1, (t-t0)/dur);
+        drawRing(cv, pct * easeOutCubic(p), cd.color);
+        if (p < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }, 70*i);
+  });
+}
+
+function renderLabGeometry(geo, codecs) {
+  const sec = $('lab-geo-section'), grid = $('lab-geo');
+  if (!geo || !geo.original?.length) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+  grid.innerHTML = '';
+  const dpr = window.devicePixelRatio || 1;
+  const cells = [{ name: '__orig', label: 'Original', color: '#94a3b8', pts: geo.original }]
+    .concat(codecs.filter(c => c.available && geo.reconstructions[c.name])
+      .map(c => ({ name: c.name, label: c.label, color: c.color, pts: geo.reconstructions[c.name] })));
+  cells.forEach((cell, ci) => {
+    const div = mk('div', 'geo-cell');
+    const fid = cell.name === '__orig' ? '' :
+      `<span>${(codecs.find(c=>c.name===cell.name).fidelity*100).toFixed(1)}%</span>`;
+    div.innerHTML = `<canvas></canvas><div class="lbl"><span><span class="dot" style="background:${cell.color}"></span> ${cell.label}</span>${fid}</div>`;
+    grid.appendChild(div);
+    const cv = div.querySelector('canvas');
+    const size = div.clientWidth - 16;
+    cv.width = size*dpr; cv.height = size*dpr; cv.style.height = size+'px';
+    const ctx = cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+    const map = ([x,y]) => [size/2 + x*size*0.42, size/2 - y*size*0.42];
+    // faint original reference under reconstructions
+    if (cell.name !== '__orig') {
+      ctx.fillStyle = 'rgba(148,163,184,.18)';
+      geo.original.forEach(p => { const [sx,sy]=map(p); ctx.beginPath(); ctx.arc(sx,sy,1.5,0,2*Math.PI); ctx.fill(); });
+    }
+    // animated reveal of this layer
+    const t0 = performance.now(), dur = 650 + ci*60;
+    const step = t => {
+      const p = Math.min(1, (t-t0)/dur), e = easeOutCubic(p);
+      ctx.clearRect(0,0,size,size);
+      if (cell.name !== '__orig') {
+        ctx.fillStyle = 'rgba(148,163,184,.16)';
+        geo.original.forEach(pt => { const [sx,sy]=map(pt); ctx.beginPath(); ctx.arc(sx,sy,1.5,0,2*Math.PI); ctx.fill(); });
+      }
+      cell.pts.forEach((pt, idx) => {
+        const o = geo.original[idx] || pt;
+        const x = o[0] + (pt[0]-o[0])*e, y = o[1] + (pt[1]-o[1])*e;
+        const [sx,sy] = map([x,y]);
+        ctx.fillStyle = cell.color; ctx.globalAlpha = 0.8;
+        ctx.beginPath(); ctx.arc(sx,sy,2,0,2*Math.PI); ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+async function runLab() {
+  const btn = $('lab-run-btn'), spin = $('lab-spin'), err = $('lab-err');
+  btn.disabled = true; spin.style.display = 'inline-block'; err.classList.remove('show');
+  try {
+    const r = await api('POST', '/api/quantize-lab', {
+      n_vecs: +labN.value, dim: +labD.value, dist: labDist,
+    });
+    labData = r;
+    $('lab-meta').style.display = 'block';
+    $('lab-orig').textContent = r.original_mb.toFixed(2) + ' MB';
+    $('lab-plat').textContent = r.platform;
+    resizePareto();
+    animatePareto();
+    renderLabCards(r.codecs);
+    requestAnimationFrame(() => $('lab-geo-section').classList.add('in'));
+    renderLabGeometry(r.geometry, r.codecs);
+    const best = [...r.codecs].filter(c=>c.available)
+      .sort((a,b)=> (b.fidelity*Math.log2(b.ratio)) - (a.fidelity*Math.log2(a.ratio)))[0];
+    if (best) toast(`Swept ${r.codecs.filter(c=>c.available).length} codecs · best balance: ${best.label} (${best.ratio.toFixed(1)}× @ ${(best.fidelity*100).toFixed(1)}%)`, 'success');
+  } catch(e) { err.textContent = e.message; err.classList.add('show'); toast(e.message, 'error'); }
+  finally { btn.disabled = false; spin.style.display = 'none'; }
+}
+$('lab-run-btn').addEventListener('click', runLab);
+
+// Pareto hover tooltip
+$('pareto-canvas').addEventListener('mousemove', e => {
+  const c = $('pareto-canvas'), rect = c.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let hit = null;
+  labNodes.forEach(n => { if (Math.hypot(n.sx-mx, n.sy-my) < n.r + 6) hit = n; });
+  const tip = $('pareto-tip');
+  if (hit) {
+    tip.innerHTML = `<b style="color:${hit.color}">${hit.label}</b><br>${hit.ratio.toFixed(1)}× smaller<br>${(hit.fidelity*100).toFixed(2)}% fidelity<br>${fmtBytes(hit.compressed_bytes)} · ${hit.timing_ms.toFixed(0)}ms`;
+    tip.classList.add('vis');
+    tip.style.left = Math.min(mx + 14, rect.width - 150) + 'px';
+    tip.style.top  = (my + 12) + 'px';
+    c.style.cursor = 'pointer';
+  } else { tip.classList.remove('vis'); c.style.cursor = 'default'; }
+});
+$('pareto-canvas').addEventListener('mouseleave', () => $('pareto-tip').classList.remove('vis'));
+window.addEventListener('resize', () => { if ($('panel-lab').classList.contains('active')) resizePareto(); });
+
+// ═══════════════════════════════════════════════════════════════════
+// AMBIENT BACKGROUND — a slow vector-space constellation
+// ═══════════════════════════════════════════════════════════════════
+(function ambient() {
+  const c = $('bg-canvas'); if (!c) return;
+  const ctx = c.getContext('2d');
+  let pts = [], W = 0, H = 0, raf = null;
+  function resize() {
+    W = c.width = window.innerWidth; H = c.height = window.innerHeight;
+    const n = Math.min(70, Math.round(W*H/26000));
+    pts = Array.from({length: n}, () => ({
+      x: Math.random()*W, y: Math.random()*H,
+      vx: (Math.random()-0.5)*0.18, vy: (Math.random()-0.5)*0.18,
+    }));
+  }
+  function frame() {
+    ctx.clearRect(0, 0, W, H);
+    for (const p of pts) {
+      p.x += p.vx; p.y += p.vy;
+      if (p.x < 0 || p.x > W) p.vx *= -1;
+      if (p.y < 0 || p.y > H) p.vy *= -1;
+    }
+    // links between near neighbours
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i+1; j < pts.length; j++) {
+        const dx = pts[i].x-pts[j].x, dy = pts[i].y-pts[j].y;
+        const d2 = dx*dx + dy*dy;
+        if (d2 < 19000) {
+          ctx.strokeStyle = `rgba(124,58,237,${0.12*(1 - d2/19000)})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(pts[i].x, pts[i].y); ctx.lineTo(pts[j].x, pts[j].y); ctx.stroke();
+        }
+      }
+    }
+    for (const p of pts) {
+      ctx.fillStyle = 'rgba(34,211,238,.5)';
+      ctx.beginPath(); ctx.arc(p.x, p.y, 1.4, 0, 2*Math.PI); ctx.fill();
+    }
+    raf = requestAnimationFrame(frame);
+  }
+  window.addEventListener('resize', resize);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { cancelAnimationFrame(raf); raf = null; }
+    else if (!raf) frame();
+  });
+  resize(); frame();
+})();
 
 // ── Init ──────────────────────────────────────────────────────────
 setTimeout(() => { $('ov-compress-btn').click(); }, 600);

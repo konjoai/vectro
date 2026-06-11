@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+import logging
 import platform
 import re
 import socketserver
@@ -43,6 +43,14 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+logging.basicConfig(level=logging.INFO, format="[vectro-demo] %(message)s")
+_LOG = logging.getLogger("vectro.demo")
+
+
+def tracing_warn(msg: str) -> None:
+    """Surface a swallowed fallback — never fail silently (CLAUDE.md)."""
+    _LOG.warning(msg)
 
 # DSPy isn't required to be installed — the retriever falls back to a
 # plain object when it's missing.  Install a tiny stub so the demo
@@ -394,7 +402,6 @@ def _api_compact(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     delete_n = max(0, min(int(payload.get("delete_n", 3)), len(_DEMO_HNSW) - 2))
     with _HNSW_LOCK:
-        pre_stats = _DEMO_HNSW.stats()
         # Soft-delete a few random live vectors
         alive = [i for i in range(len(_DEMO_HNSW._vectors))
                  if i not in _DEMO_HNSW._deleted]
@@ -798,6 +805,220 @@ def _idx_cluster(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "centers": [[round(float(c[0]), 5), round(float(c[1]), 5)] for c in centers],
         "k":       k,
         "n":       len(proj["points"]),
+        "timing_ms": proj.get("timing_ms", 0.0),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Quantization Lab — every Vectro codec, measured side-by-side on one batch
+# ─────────────────────────────────────────────────────────────────────────
+#
+# This is the flagship "show every feature live" endpoint.  A single batch
+# of vectors is encoded with INT8, NF4, Product Quantization, Residual
+# Quantization, and Binary.  For each codec we report *measured* numbers:
+# real compressed byte count, reconstruction cosine fidelity (encode →
+# decode → compare), and wall-clock build+encode time.  Nothing is
+# precomputed — every value is produced on this machine, on request.
+
+_LAB_LOCK = threading.Lock()
+
+# Theme colour per codec — kept identical to index.html so the Pareto
+# plot, the cards, and the geometry panel all agree.
+_LAB_COLORS: Dict[str, str] = {
+    "int8":   "#22d3ee",
+    "nf4":    "#7c3aed",
+    "rq":     "#10b981",
+    "pq":     "#f59e0b",
+    "binary": "#ef4444",
+}
+
+
+def _lab_batch(n: int, dim: int, dist: str, seed: int = 42) -> np.ndarray:
+    """Allocate a fresh, L2-normalised batch for the lab.
+
+    ``dist='clustered'`` plants 8 Gaussian blobs so codecs that exploit
+    structure (PQ, RQ) visibly pull ahead of the data-agnostic ones.
+    """
+    rng = np.random.default_rng(seed)
+    if dist == "clustered":
+        n_clusters = 8
+        centers = rng.standard_normal((n_clusters, dim)).astype(np.float32)
+        labels = rng.integers(0, n_clusters, size=n)
+        data = centers[labels] + 0.22 * rng.standard_normal((n, dim)).astype(np.float32)
+    else:
+        data = rng.standard_normal((n, dim)).astype(np.float32)
+    norms = np.linalg.norm(data, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return (data / norms).astype(np.float32)
+
+
+def _mean_cosine(orig: np.ndarray, rec: np.ndarray) -> float:
+    """Mean cosine similarity between originals and reconstructions."""
+    a = orig / (np.linalg.norm(orig, axis=1, keepdims=True) + 1e-9)
+    b = rec / (np.linalg.norm(rec, axis=1, keepdims=True) + 1e-9)
+    return float(np.clip((a * b).sum(axis=1), -1.0, 1.0).mean())
+
+
+def _pick_divisor(dim: int, target: int) -> int:
+    """Largest divisor of ``dim`` not exceeding ``target`` (≥ 1)."""
+    for m in range(min(target, dim), 0, -1):
+        if dim % m == 0:
+            return m
+    return 1
+
+
+def _enc_int8(data: np.ndarray) -> Tuple[np.ndarray, int]:
+    result = VECTRO.compress(data, precision_mode="int8")
+    return result.reconstruct_batch(), int(result.total_compressed_bytes)
+
+
+def _enc_nf4(data: np.ndarray) -> Tuple[np.ndarray, int]:
+    from python.nf4_api import dequantize_nf4, quantize_nf4
+    packed, scales = quantize_nf4(data)
+    rec = dequantize_nf4(packed, scales, data.shape[1])
+    return rec, int(packed.nbytes + scales.nbytes)
+
+
+def _enc_binary(data: np.ndarray) -> Tuple[np.ndarray, int]:
+    from python.binary_api import dequantize_binary, quantize_binary
+    packed = quantize_binary(data)
+    rec = dequantize_binary(packed, data.shape[1])
+    return rec, int(packed.nbytes)
+
+
+# Codebook codecs (PQ/RQ) train on a capped subsample so the lab stays
+# interactive — codebooks generalise, so a few thousand vectors fit them
+# well, and we still *encode the whole batch* for honest ratio/fidelity.
+_LAB_TRAIN_CAP = 1500
+
+
+def _enc_pq(data: np.ndarray) -> Tuple[np.ndarray, int]:
+    import python.pq_api as pq
+    m = _pick_divisor(data.shape[1], 16)
+    train = data[:_LAB_TRAIN_CAP]
+    cb = pq.train_pq_codebook(train, n_subspaces=m, n_centroids=256, random_state=0)
+    codes = pq.pq_encode(data, cb)
+    return pq.pq_decode(codes, cb), int(codes.nbytes)
+
+
+def _enc_rq(data: np.ndarray) -> Tuple[np.ndarray, int]:
+    from python.rq_api import ResidualQuantizer
+    m = _pick_divisor(data.shape[1], 8)
+    rq = ResidualQuantizer(n_passes=4, n_subspaces=m, n_centroids=64, seed=0)
+    rq.train(data[:_LAB_TRAIN_CAP])
+    codes = rq.encode(data)
+    rec = rq.decode(codes)
+    total = sum(int(c.nbytes) for c in codes) if isinstance(codes, list) else int(codes.nbytes)
+    return rec, total
+
+
+# Ordered so the UI renders dense→sparse left to right.
+_LAB_CODECS: List[Tuple[str, str, Callable[[np.ndarray], Tuple[np.ndarray, int]]]] = [
+    ("int8",   "INT8",   _enc_int8),
+    ("nf4",    "NF4",    _enc_nf4),
+    ("rq",     "RQ",     _enc_rq),
+    ("pq",     "PQ",     _enc_pq),
+    ("binary", "Binary", _enc_binary),
+]
+
+
+def _pca_basis(vectors: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Return ``(mean, top-2 components)`` for projecting onto a shared 2-D plane."""
+    mu = vectors.mean(axis=0)
+    _, _, vt = np.linalg.svd(vectors - mu, full_matrices=False)
+    return mu, vt[:2]
+
+
+def _run_one_codec(
+    name: str, label: str, fn: Callable[[np.ndarray], Tuple[np.ndarray, int]],
+    data: np.ndarray, original_bytes: int,
+) -> Dict[str, Any]:
+    """Encode/decode with a single codec and collect measured metrics."""
+    try:
+        t0 = time.perf_counter()
+        rec, comp_bytes = fn(data)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    except ImportError as exc:
+        tracing_warn(f"lab codec {name!r} unavailable: {exc}")
+        return {"name": name, "label": label, "available": False,
+                "reason": "optional dependency missing", "color": _LAB_COLORS[name]}
+    except Exception as exc:  # noqa: BLE001 — surface, never mask (CLAUDE.md)
+        tracing_warn(f"lab codec {name!r} failed: {exc}")
+        return {"name": name, "label": label, "available": False,
+                "reason": str(exc), "color": _LAB_COLORS[name]}
+
+    fidelity = _mean_cosine(data, rec)
+    ratio = original_bytes / comp_bytes if comp_bytes else 0.0
+    n = data.shape[0]
+    return {
+        "name":          name,
+        "label":         label,
+        "available":     True,
+        "color":         _LAB_COLORS[name],
+        "ratio":         round(ratio, 3),
+        "fidelity":      round(fidelity, 5),
+        "compressed_bytes": comp_bytes,
+        "compressed_mb": round(comp_bytes / (1024 ** 2), 5),
+        "timing_ms":     round(elapsed_ms, 3),
+        "throughput_M_vec_s": round((n / (elapsed_ms / 1000.0)) / 1e6, 4) if elapsed_ms > 0 else None,
+        "_rec":          rec,   # consumed by the geometry projection, then dropped
+    }
+
+
+def _lab_geometry(
+    data: np.ndarray, codecs: List[Dict[str, Any]], max_points: int = 140,
+) -> Dict[str, Any]:
+    """Project originals and every reconstruction onto one shared PCA plane.
+
+    Sharing the basis makes the distortion comparable across codecs — you
+    can literally watch Binary collapse the cloud while INT8 leaves it
+    untouched.
+    """
+    n = data.shape[0]
+    take = min(max_points, n)
+    idx = np.linspace(0, n - 1, take).astype(int)
+    sample = data[idx]
+    mu, comps = _pca_basis(sample)
+
+    def project(mat: np.ndarray) -> np.ndarray:
+        return ((mat[idx] - mu) @ comps.T).astype(np.float32)
+
+    orig_xy = project(data)
+    layers: Dict[str, List[List[float]]] = {}
+    scale = float(np.abs(orig_xy).max()) or 1.0
+    for c in codecs:
+        if c.get("available") and c.get("_rec") is not None:
+            xy = project(c["_rec"]) / scale
+            layers[c["name"]] = [[round(float(x), 4), round(float(y), 4)] for x, y in xy]
+    orig_norm = [[round(float(x / scale), 4), round(float(y / scale), 4)] for x, y in orig_xy]
+    return {"original": orig_norm, "reconstructions": layers, "n": take}
+
+
+def _api_quantize_lab(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Encode one batch with every codec; return measured comparison + geometry."""
+    n_vecs = max(256, min(int(payload.get("n_vecs", 2500)), 12_000))
+    dim    = max(16,  min(int(payload.get("dim",    256)),  1024))
+    dist   = "clustered" if str(payload.get("dist", "gaussian")) == "clustered" else "gaussian"
+
+    with _LAB_LOCK:
+        data = _lab_batch(n_vecs, dim, dist)
+        original_bytes = int(data.nbytes)
+        codecs = [_run_one_codec(name, label, fn, data, original_bytes)
+                  for name, label, fn in _LAB_CODECS]
+        geometry = _lab_geometry(data, codecs)
+
+    for c in codecs:
+        c.pop("_rec", None)  # never serialise raw arrays
+
+    return {
+        "n_vecs":         n_vecs,
+        "dim":            dim,
+        "dist":           dist,
+        "original_bytes": original_bytes,
+        "original_mb":    round(original_bytes / (1024 ** 2), 4),
+        "codecs":         codecs,
+        "geometry":       geometry,
+        "platform":       f"{platform.system()} / {platform.machine()}",
     }
 
 
@@ -808,6 +1029,7 @@ ROUTES_POST: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/compact":          _api_compact,
     "/api/filtered-search":  _api_filtered_search,
     "/api/recall_estimate":  _api_recall_estimate,
+    "/api/quantize-lab":     _api_quantize_lab,
 }
 ROUTES_GET: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/index-stats":  _api_index_stats,
@@ -977,15 +1199,15 @@ def main() -> int:
     httpd = ThreadingServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}/"
     print()
-    print(f"  ╔════════════════════════════════════════════════════╗")
+    print("  ╔════════════════════════════════════════════════════╗")
     print(f"  ║  Vectro live demo — v{vectro.__version__:<8}                      ║")
-    print(f"  ║                                                    ║")
+    print("  ║                                                    ║")
     print(f"  ║  open: {url:<43}║")
     print(f"  ║  api:  {url + 'api/health':<43}║")
-    print(f"  ║                                                    ║")
-    print(f"  ║  every number on the page is measured here, now    ║")
-    print(f"  ╚════════════════════════════════════════════════════╝")
-    print(f"  Ctrl-C to stop", flush=True)
+    print("  ║                                                    ║")
+    print("  ║  every number on the page is measured here, now    ║")
+    print("  ╚════════════════════════════════════════════════════╝")
+    print("  Ctrl-C to stop", flush=True)
     print()
     try:
         httpd.serve_forever()
