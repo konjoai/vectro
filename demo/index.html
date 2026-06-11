@@ -30,6 +30,13 @@
 }
 html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); overflow: hidden; }
 
+/* ── accessibility: keyboard focus + reduced motion ──────────────────── */
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 4px; }
+.tab:focus:not(:focus-visible), .btn:focus:not(:focus-visible) { outline: none; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+}
+
 /* ── scrollable inner panels ────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -450,8 +457,8 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
     <button class="tab" data-panel="ivf">IVF</button>
     <button class="tab" data-panel="projection">2D Projection</button>
   </nav>
-  <div id="cmdk-hint" title="Command palette"><kbd>⌘</kbd><kbd>K</kbd></div>
-  <button id="share-btn" title="Copy a shareable link to this view">⎘ Share</button>
+  <div id="cmdk-hint" title="Command palette" role="button" tabindex="0" aria-label="Open command palette"><kbd>⌘</kbd><kbd>K</kbd></div>
+  <button id="share-btn" title="Copy a shareable link to this view" aria-label="Copy a shareable link to this view">⎘ Share</button>
   <div id="status-pill">
     <div id="status-dot"></div>
     <span id="status-txt">connecting…</span>
@@ -1133,6 +1140,7 @@ const API = window.location.origin;
 
 // ── Utilities ────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
+const REDUCED = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 const mk = (tag, cls, txt) => {
   const el = document.createElement(tag);
   if (cls) el.className = cls;
@@ -1165,6 +1173,7 @@ function fmtNum(n) {
 let animFrames = {};
 function countUp(elId, to, unit = '', decimals = 0) {
   const el = $(elId); if (!el) return;
+  if (REDUCED) { el.textContent = to.toFixed(decimals) + unit; el.dataset.val = to; return; }
   cancelAnimationFrame(animFrames[elId]);
   const from = parseFloat(el.dataset.val || 0);
   const dur = 700, t0 = performance.now();
@@ -1206,9 +1215,9 @@ checkStatus();
 // ── Tab routing ──────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(t => {
   t.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(x => { x.classList.remove('active'); x.removeAttribute('aria-current'); });
     document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
+    t.classList.add('active'); t.setAttribute('aria-current', 'page');
     const id = 'panel-' + t.dataset.panel;
     document.getElementById(id).classList.add('active');
     if (t.dataset.panel === 'indexes') loadIndexList();
@@ -2471,6 +2480,7 @@ function cmdkExec(i) {
 }
 
 $('cmdk-hint').addEventListener('click', cmdkOpen);
+$('cmdk-hint').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cmdkOpen(); } });
 cmdkInput.addEventListener('input', e => cmdkFilter(e.target.value));
 cmdkOverlay.addEventListener('mousedown', e => { if (e.target === cmdkOverlay) cmdkClose(); });
 cmdkInput.addEventListener('keydown', e => {
@@ -2506,9 +2516,12 @@ function renderLaunchpad() {
   const wrap = $('launchpad'); if (!wrap) return; wrap.innerHTML = '';
   LAUNCH.forEach((x, i) => {
     const c = mk('div', 'launch-card'); c.style.setProperty('--lc', x.c);
-    c.innerHTML = `<span class="go">→</span><div class="ico">${x.ic}</div>
+    c.setAttribute('role', 'button'); c.tabIndex = 0; c.setAttribute('aria-label', `${x.t} — ${x.d}`);
+    c.innerHTML = `<span class="go" aria-hidden="true">→</span><div class="ico" aria-hidden="true">${x.ic}</div>
       <div class="lt">${x.t}</div><div class="ld">${x.d}</div><span class="lm">${x.m}</span>`;
-    c.addEventListener('click', () => document.querySelector(`.tab[data-panel="${x.p}"]`)?.click());
+    const go = () => document.querySelector(`.tab[data-panel="${x.p}"]`)?.click();
+    c.addEventListener('click', go);
+    c.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
     wrap.appendChild(c);
     setTimeout(() => c.classList.add('in'), 55 * i);
   });
@@ -2552,12 +2565,12 @@ function renderLaunchpad() {
       ctx.fillStyle = 'rgba(34,211,238,.5)';
       ctx.beginPath(); ctx.arc(p.x, p.y, 1.4, 0, 2*Math.PI); ctx.fill();
     }
-    raf = requestAnimationFrame(frame);
+    if (!REDUCED) raf = requestAnimationFrame(frame);   // reduced motion → one static frame
   }
-  window.addEventListener('resize', resize);
+  window.addEventListener('resize', () => { resize(); frame(); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { cancelAnimationFrame(raf); raf = null; }
-    else if (!raf) frame();
+    else if (!raf && !REDUCED) frame();
   });
   resize(); frame();
 })();
@@ -2660,15 +2673,18 @@ function renderTour() {
   positionTour();
 }
 
+let tourReturnFocus = null;
 function startTour() {
   gotoPanel('overview');
   tourIdx = 0;
+  tourReturnFocus = document.activeElement;
   $('tour-backdrop').classList.add('open');
-  requestAnimationFrame(renderTour);
+  requestAnimationFrame(() => { renderTour(); $('tour-next').focus(); });
 }
 function endTour() {
   $('tour-backdrop').classList.remove('open');
   try { localStorage.setItem(TOUR_KEY, '1'); } catch (e) { /* private mode */ }
+  if (tourReturnFocus && tourReturnFocus.focus) tourReturnFocus.focus();
 }
 function tourStep(d) {
   const n = tourIdx + d;
