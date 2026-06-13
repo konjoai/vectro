@@ -414,6 +414,13 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .node-cell.repaired { animation: node-repair .6s var(--ease); }
 @keyframes node-repair { 0%{ box-shadow:0 0 0 0 rgba(16,185,129,.9);} 50%{ box-shadow:0 0 0 6px rgba(16,185,129,0);} 100%{ box-shadow:0 0 0 0 transparent;} }
 
+/* ── HNSW explorer ───────────────────────────────────────────────────── */
+#hx-wrap { position: relative; background: radial-gradient(120% 120% at 30% 0%, rgba(124,58,237,.10), transparent 55%), var(--panel); border: 1px solid var(--line-dim); border-radius: var(--r); overflow: hidden; min-height: 440px; }
+#hx-canvas { display: block; width: 100%; cursor: crosshair; }
+#hx-tip { position: absolute; pointer-events: none; background: rgba(13,13,32,.94); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 10px; font-family: var(--mono); font-size: 11px; color: var(--text); opacity: 0; transition: opacity .12s; z-index: 6; }
+#hx-tip.vis { opacity: 1; }
+.hx-cap { position: absolute; bottom: 8px; left: 14px; font-size: 10px; color: var(--text-muted); letter-spacing: .05em; }
+
 /* ── IVF cell map ────────────────────────────────────────────────────── */
 #ivf-wrap { position: relative; background: radial-gradient(120% 120% at 70% 10%, rgba(34,211,238,.08), transparent 55%), var(--panel); border: 1px solid var(--line-dim); border-radius: var(--r); overflow: hidden; min-height: 360px; }
 #ivf-canvas { display: block; width: 100%; }
@@ -450,6 +457,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
     <button class="tab" data-panel="lab">Quantize Lab</button>
     <button class="tab" data-panel="indexes">Indexes</button>
     <button class="tab" data-panel="search">Search</button>
+    <button class="tab" data-panel="hnsw">HNSW Explorer</button>
     <button class="tab" data-panel="embed">Embeddings</button>
     <button class="tab" data-panel="benchmark">Benchmark</button>
     <button class="tab" data-panel="health">Index Health</button>
@@ -1084,6 +1092,57 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
   </div>
 </section>
 
+<!-- ─────────────── HNSW EXPLORER ─────────────────────────────────── -->
+<section class="panel" id="panel-hnsw">
+  <h2>HNSW Explorer</h2>
+  <p class="sub">Watch a <b>real</b> nearest-neighbour search walk the graph. Build a graph, then click any node — the entry point, the descent through upper layers, and the greedy layer-0 walk all replay from Vectro's live search trace. Only the lit nodes are ever touched.</p>
+
+  <div class="lab-hero">
+    <div>
+      <div class="card">
+        <h3>Build graph</h3>
+        <div class="field">
+          <label>Nodes <span id="hx-n-val" style="float:right;color:var(--text)">300</span></label>
+          <input type="range" id="hx-n" min="60" max="1200" step="20" value="300" />
+        </div>
+        <div class="field">
+          <label>Dimensions <span id="hx-d-val" style="float:right;color:var(--text)">24</span></label>
+          <input type="range" id="hx-d" min="4" max="64" step="4" value="24" />
+        </div>
+        <button class="btn primary" id="hx-build-btn" style="width:100%">
+          <span class="spin" id="hx-spin" style="display:none"></span>
+          ⊕ Build graph
+        </button>
+        <div class="err-msg" id="hx-err"></div>
+        <hr style="border:none;border-top:1px solid var(--line-dim);margin:14px 0"/>
+        <div class="field">
+          <label>k (neighbours) <span id="hx-k-val" style="float:right;color:var(--text)">5</span></label>
+          <input type="range" id="hx-k" min="1" max="20" value="5" />
+        </div>
+        <div class="field">
+          <label>ef (beam width) <span id="hx-ef-val" style="float:right;color:var(--accent-2)">40</span></label>
+          <input type="range" id="hx-ef" min="5" max="200" value="40" />
+        </div>
+        <button class="btn" id="hx-rand-btn" style="width:100%">⚂ Search from a random node</button>
+        <p style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:10px">…or click any node in the graph to search from it.</p>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div class="stats-grid">
+          <div class="stat-cell"><div class="v" id="hx-scanned">—</div><div class="l">nodes visited</div></div>
+          <div class="stat-cell"><div class="v" id="hx-skipped">—</div><div class="l">% skipped</div></div>
+          <div class="stat-cell"><div class="v" id="hx-layers">—</div><div class="l">layers</div></div>
+          <div class="stat-cell"><div class="v" id="hx-hops">—</div><div class="l">l0 hops</div></div>
+        </div>
+      </div>
+    </div>
+    <div id="hx-wrap">
+      <canvas id="hx-canvas" height="440"></canvas>
+      <div id="hx-tip"></div>
+      <div class="hx-cap">✦ query · ◎ entry point · ● visited (greedy walk) · ◯ result — grey nodes are never touched</div>
+    </div>
+  </div>
+</section>
+
 <!-- ─────────────── EMBEDDINGS ────────────────────────────────────── -->
 <section class="panel" id="panel-embed">
   <h2>Embeddings Playground</h2>
@@ -1230,6 +1289,10 @@ document.querySelectorAll('.tab').forEach(t => {
     }
     if (t.dataset.panel === 'health') { hlInit(); loadHealth(); }
     if (t.dataset.panel === 'embed' && !embAutoRan) { embAutoRan = true; setTimeout(runEmbed, 200); }
+    if (t.dataset.panel === 'hnsw') {
+      if (!hxAutoBuilt) { hxAutoBuilt = true; setTimeout(async () => { await hxBuild(); hxRunSearch(Math.floor(Math.random()*(hxData?hxData.n:1))); }, 250); }
+      else requestAnimationFrame(() => hxDraw(hxLastProg));
+    }
     if (t.dataset.panel === 'lora' && !loraAutoRan) { loraAutoRan = true; setTimeout(runLora, 200); }
     if (t.dataset.panel === 'ivf') { if (!ivfAutoRan) { ivfAutoRan = true; setTimeout(runIvf, 200); } else { requestAnimationFrame(()=>{drawCellMap(1);drawSweep();}); } }
     updateHash();
@@ -2430,6 +2493,7 @@ const CMDS = [
   {ic:'⊞', t:'LoRA Studio',        h:'Adapter factor compression',      k:'go',  run:()=>gotoPanel('lora')},
   {ic:'♥', t:'Index Health',       h:'Tombstones & compaction',         k:'go',  run:()=>gotoPanel('health')},
   {ic:'⊙', t:'kNN Search',         h:'HNSW search with trace',          k:'go',  run:()=>gotoPanel('search')},
+  {ic:'◈', t:'HNSW Explorer',      h:'Animate a search walking the graph', k:'go', run:()=>gotoPanel('hnsw')},
   {ic:'✎', t:'Embeddings',         h:'TF-IDF → INT8 → search your text', k:'go',  run:()=>gotoPanel('embed')},
   {ic:'▶', t:'Embed + search',     h:'Run the text embedding pipeline',  k:'run', run:()=>{gotoPanel('embed');setTimeout(runEmbed,120);}},
   {ic:'▮', t:'Benchmark',          h:'Latency distribution & QPS',      k:'go',  run:()=>gotoPanel('benchmark')},
@@ -2507,6 +2571,7 @@ const LAUNCH = [
   {p:'lora',       ic:'⊞',  t:'LoRA Studio',   d:'NF4-compress fine-tuned low-rank adapter factors.',        m:'153× vs dense',  c:'#a78bfa'},
   {p:'health',     ic:'♥',  t:'Index Health',  d:'Tombstones, compaction & metadata-filtered search.',       m:'live graph',     c:'#10b981'},
   {p:'search',     ic:'⊙',  t:'kNN Search',    d:'HNSW nearest-neighbour search with a layer trace.',        m:'sub-millisecond', c:'#22d3ee'},
+  {p:'hnsw',       ic:'◈',  t:'HNSW Explorer', d:'Watch a real nearest-neighbour search walk the graph.',     m:'live traversal', c:'#7c3aed'},
   {p:'embed',      ic:'✎',  t:'Embeddings',    d:'Turn your text into TF-IDF vectors, compress & search.',    m:'real NLP',       c:'#f472b6'},
   {p:'benchmark',  ic:'▮',  t:'Benchmark',     d:'Real latency distribution & QPS, measured on this CPU.',   m:'p50 · p95 · p99', c:'#f59e0b'},
   {p:'indexes',    ic:'▤',  t:'Indexes',       d:'Create and manage named HNSW indexes.',                    m:'CRUD',           c:'#ec4899'},
@@ -2574,6 +2639,151 @@ function renderLaunchpad() {
   });
   resize(); frame();
 })();
+
+// ═══════════════════════════════════════════════════════════════════
+// HNSW EXPLORER — animate the real greedy search over the graph
+// ═══════════════════════════════════════════════════════════════════
+let hxData = null, hxSearch = null, hxNodes = [], hxAnimId = null, hxHover = null;
+let hxAutoBuilt = false, hxLastProg = 1;
+$('hx-n').addEventListener('input', e => $('hx-n-val').textContent = (+e.target.value).toLocaleString());
+$('hx-d').addEventListener('input', e => $('hx-d-val').textContent = +e.target.value);
+$('hx-k').addEventListener('input', e => $('hx-k-val').textContent = +e.target.value);
+$('hx-ef').addEventListener('input', e => $('hx-ef-val').textContent = +e.target.value);
+
+function hxMap(W, H) {
+  const pad = 30;
+  return ([x, y]) => [pad + (x*0.5+0.5)*(W-2*pad), pad + (0.5-y*0.5)*(H-2*pad)];
+}
+function hxById(id) { return hxNodes[id]; }
+function hxDescentPath() {
+  if (!hxSearch) return [];
+  const path = [hxSearch.entry_point];
+  (hxSearch.descents || []).forEach(layer => layer.forEach(id => {
+    if (id !== path[path.length-1]) path.push(id);
+  }));
+  return path;
+}
+
+function hxDraw(prog) {
+  const c = $('hx-canvas'); if (!c || !hxData) return;
+  hxLastProg = prog;
+  const dpr = window.devicePixelRatio||1, W = c.clientWidth||c.width, H = 440;
+  if (c.width !== W*dpr) { c.width = W*dpr; c.height = H*dpr; c.style.height = H+'px'; }
+  const ctx = c.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  const map = hxMap(W,H);
+  hxNodes = hxData.points.map(p => { const [sx,sy] = map([p.x,p.y]); return {...p, sx, sy}; });
+
+  let descentN = 0, walkN = 0, showResult = false;
+  if (hxSearch) {
+    const dCount = hxDescentPath().length, wCount = hxSearch.visited.length;
+    const dF = 0.26, wF = 0.64;
+    if (prog < dF) descentN = Math.floor(prog/dF*dCount);
+    else if (prog < dF+wF) { descentN = dCount; walkN = Math.floor((prog-dF)/wF*wCount); }
+    else { descentN = dCount; walkN = wCount; showResult = true; }
+  }
+  const visited = hxSearch ? hxSearch.visited.slice(0, walkN) : [];
+  const visitedSet = new Set(visited);
+
+  // base nodes
+  hxNodes.forEach(nd => {
+    const lit = visitedSet.has(nd.id);
+    ctx.globalAlpha = lit ? 0.95 : (hxHover && hxHover.id===nd.id ? 0.55 : 0.13);
+    ctx.fillStyle = CLUSTER_COLORS[nd.c % CLUSTER_COLORS.length];
+    ctx.beginPath(); ctx.arc(nd.sx, nd.sy, lit ? 3.2 : 2, 0, 2*Math.PI); ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  // greedy-walk trail
+  if (visited.length > 1) {
+    ctx.strokeStyle = 'rgba(34,211,238,.5)'; ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    visited.forEach((id,i) => { const nd = hxById(id); if(!nd) return; i ? ctx.lineTo(nd.sx,nd.sy) : ctx.moveTo(nd.sx,nd.sy); });
+    ctx.stroke();
+    const cur = hxById(visited[visited.length-1]);
+    if (cur) { ctx.save(); ctx.shadowBlur = 14; ctx.shadowColor = '#22d3ee'; ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cur.sx,cur.sy,7,0,2*Math.PI); ctx.stroke(); ctx.restore(); }
+  }
+  // descent path (upper layers)
+  const dPath = hxDescentPath().slice(0, descentN);
+  if (dPath.length > 1) {
+    ctx.strokeStyle = 'rgba(124,58,237,.65)'; ctx.setLineDash([4,4]); ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    dPath.forEach((id,i) => { const nd = hxById(id); if(!nd) return; i ? ctx.lineTo(nd.sx,nd.sy) : ctx.moveTo(nd.sx,nd.sy); });
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  // entry point ring
+  if (hxSearch) { const ep = hxById(hxSearch.entry_point); if (ep) { ctx.strokeStyle='#f59e0b'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(ep.sx,ep.sy,9,0,2*Math.PI); ctx.stroke(); } }
+  // results
+  if (showResult) hxSearch.result.forEach(id => {
+    const nd = hxById(id); if(!nd) return;
+    ctx.save(); ctx.shadowBlur=12; ctx.shadowColor='#10b981'; ctx.strokeStyle='#10b981'; ctx.lineWidth=2.2;
+    ctx.beginPath(); ctx.arc(nd.sx,nd.sy,8,0,2*Math.PI); ctx.stroke(); ctx.restore();
+  });
+  // query star
+  if (hxSearch) { const q = hxById(hxSearch.query_id); if (q) { ctx.save(); ctx.shadowBlur=14; ctx.shadowColor='#fff'; ctx.fillStyle='#fff'; ctx.font='700 18px ui-monospace,monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('✦', q.sx, q.sy); ctx.restore(); ctx.textAlign='start'; ctx.textBaseline='alphabetic'; } }
+}
+
+function hxAnimate() {
+  cancelAnimationFrame(hxAnimId); hxAnimId = null;
+  if (REDUCED) { hxDraw(1); return; }
+  const total = Math.min(3200, 700 + (hxSearch ? hxSearch.visited.length*42 : 0));
+  const t0 = performance.now();
+  const step = t => { const p = Math.min(1, (t-t0)/total); hxDraw(p); if (p < 1) hxAnimId = requestAnimationFrame(step); else hxAnimId = null; };
+  hxAnimId = requestAnimationFrame(step);
+}
+
+async function hxBuild() {
+  const btn = $('hx-build-btn'), spin = $('hx-spin'), err = $('hx-err');
+  btn.disabled = true; spin.style.display = 'inline-block'; err.classList.remove('show');
+  try {
+    hxData = await api('POST', '/api/hnsw-explore', { n_vecs: +$('hx-n').value, dim: +$('hx-d').value });
+    hxSearch = null;
+    $('hx-layers').textContent = hxData.layers;
+    $('hx-scanned').textContent = '—'; $('hx-skipped').textContent = '—'; $('hx-hops').textContent = '—';
+    hxDraw(1);
+    toast(`Built HNSW graph: ${hxData.n} nodes · ${hxData.layers} layers · M=${hxData.M}`, 'success');
+  } catch(e) { err.textContent = e.message; err.classList.add('show'); toast(e.message, 'error'); }
+  finally { btn.disabled = false; spin.style.display = 'none'; }
+}
+
+async function hxRunSearch(queryId) {
+  if (!hxData) return;
+  try {
+    hxSearch = await api('POST', '/api/hnsw-explore/search', { query_id: queryId, k: +$('hx-k').value, ef: +$('hx-ef').value });
+    const pct = (100 * (1 - hxSearch.n_visited / hxSearch.n_total));
+    $('hx-scanned').textContent = `${hxSearch.n_visited}/${hxSearch.n_total}`;
+    countUp('hx-skipped', pct, '%', 1);
+    $('hx-hops').textContent = hxSearch.n_visited;
+    hxAnimate();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+$('hx-build-btn').addEventListener('click', () => hxBuild());
+$('hx-rand-btn').addEventListener('click', () => { if (hxData) hxRunSearch(Math.floor(Math.random()*hxData.n)); else toast('Build a graph first', 'error'); });
+
+$('hx-canvas').addEventListener('mousemove', e => {
+  if (!hxData) return;
+  const c = $('hx-canvas'), rect = c.getBoundingClientRect();
+  const mx = e.clientX-rect.left, my = e.clientY-rect.top;
+  let hit = null, bd = 11;
+  hxNodes.forEach(nd => { const dd = Math.hypot(nd.sx-mx, nd.sy-my); if (dd < bd) { bd = dd; hit = nd; } });
+  const tip = $('hx-tip');
+  if (hit) {
+    hxHover = hit; tip.innerHTML = `node <b>${hit.id}</b> · cluster ${hit.c}`; tip.classList.add('vis');
+    tip.style.left = Math.min(mx+12, rect.width-120)+'px'; tip.style.top = (my+10)+'px';
+    if (hxAnimId === null) hxDraw(hxLastProg);
+  } else if (hxHover) { hxHover = null; tip.classList.remove('vis'); if (hxAnimId === null) hxDraw(hxLastProg); }
+});
+$('hx-canvas').addEventListener('mouseleave', () => { hxHover = null; $('hx-tip').classList.remove('vis'); });
+$('hx-canvas').addEventListener('click', e => {
+  if (!hxData) return;
+  const c = $('hx-canvas'), rect = c.getBoundingClientRect();
+  const mx = e.clientX-rect.left, my = e.clientY-rect.top;
+  let hit = null, bd = 12;
+  hxNodes.forEach(nd => { const dd = Math.hypot(nd.sx-mx, nd.sy-my); if (dd < bd) { bd = dd; hit = nd; } });
+  if (hit) hxRunSearch(hit.id);
+});
+window.addEventListener('resize', () => { if ($('panel-hnsw').classList.contains('active')) hxDraw(hxLastProg); });
 
 // ═══════════════════════════════════════════════════════════════════
 // EMBEDDINGS PLAYGROUND — real TF-IDF → INT8 → cosine search

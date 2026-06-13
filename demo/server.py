@@ -1360,6 +1360,83 @@ def _api_embed_search(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# HNSW Explorer — animate the real greedy search walking the graph
+# ─────────────────────────────────────────────────────────────────────────
+#
+# A dedicated index is built and projected to 2-D once; a query node's real
+# search trace (entry point, per-layer descents, the layer-0 visit order,
+# and the result) is returned so the UI can replay the traversal step by
+# step.  Every node id in the animation comes from HNSWIndex.search(trace=).
+
+_EXPLORE_LOCK = threading.Lock()
+_EXPLORE: Dict[str, Any] = {"index": None, "coords": None, "n": 0, "dim": 0}
+
+
+def _api_hnsw_explore(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a fresh demo HNSW graph and return its 2-D projection."""
+    n_vecs = max(60, min(int(payload.get("n_vecs", 300)), 1200))
+    dim    = max(4,  min(int(payload.get("dim", 24)),    64))
+
+    rng = np.random.default_rng(7)
+    n_clusters = 6
+    centers = rng.standard_normal((n_clusters, dim)).astype(np.float32)
+    labels = rng.integers(0, n_clusters, size=n_vecs)
+    data = (centers[labels] + 0.25 * rng.standard_normal((n_vecs, dim))).astype(np.float32)
+    data /= np.linalg.norm(data, axis=1, keepdims=True) + 1e-9
+
+    idx = HNSWIndex(M=12, ef_construction=120)
+    idx.add(data)
+    coords = _pca_2d(data)
+    scale = float(np.abs(coords).max()) or 1.0
+    coords = coords / scale
+
+    with _EXPLORE_LOCK:
+        _EXPLORE.update({"index": idx, "coords": coords, "n": n_vecs, "dim": dim})
+
+    s = idx.stats()
+    return {
+        "n":      n_vecs,
+        "dim":    dim,
+        "layers": int(s.get("max_level", 0)) + 1,
+        "M":      idx.M,
+        "ef_construction": idx.ef_construction,
+        "points": [{"id": i, "x": round(float(coords[i, 0]), 4), "y": round(float(coords[i, 1]), 4),
+                    "c": int(labels[i])}
+                   for i in range(n_vecs)],
+    }
+
+
+def _api_hnsw_explore_search(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Run a traced search from a chosen node and return the traversal."""
+    with _EXPLORE_LOCK:
+        idx = _EXPLORE["index"]
+        n = _EXPLORE["n"]
+    if idx is None:
+        raise ValueError("build the explorer graph first")
+
+    qid = max(0, min(int(payload.get("query_id", 0)), n - 1))
+    k   = max(1, min(int(payload.get("k", 5)), n - 1))
+    ef  = max(k, min(int(payload.get("ef", 40)), 200))
+
+    with _EXPLORE_LOCK:
+        query = idx._vectors[qid]
+        indices, distances, tr = idx.search(query, k=k, ef=ef, trace=True)
+
+    return {
+        "query_id":    qid,
+        "entry_point": int(tr.entry_point),
+        "descents":    [[int(x) for x in layer] for layer in tr.layer_descents],
+        "visited":     [int(x) for x in tr.l0_visited],
+        "result":      [int(x) for x in indices.tolist()],
+        "distances":   [round(float(d), 4) for d in distances.tolist()],
+        "n_visited":   len(tr.l0_visited),
+        "n_total":     n,
+        "k":           k,
+        "ef":          ef,
+    }
+
+
 ROUTES_POST: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/compress":         _api_compress,
     "/api/search":           _api_search,
@@ -1369,6 +1446,8 @@ ROUTES_POST: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/recall_estimate":  _api_recall_estimate,
     "/api/quantize-lab":     _api_quantize_lab,
     "/api/embed-search":     _api_embed_search,
+    "/api/hnsw-explore":         _api_hnsw_explore,
+    "/api/hnsw-explore/search":  _api_hnsw_explore_search,
     "/api/ivf":              _api_ivf,
     "/api/lora":             _api_lora,
 }
