@@ -3,6 +3,7 @@
 Uses FastAPI's ``TestClient`` (built on httpx) — drives the ASGI app
 in-process, no server boot, no socket binding.
 """
+
 from __future__ import annotations
 
 import sys

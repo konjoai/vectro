@@ -14,6 +14,7 @@ contract so a regression breaks CI before the wheel build does:
   * the script can be executed twice in the same process without leaking
     state (each call returns a fresh record)
 """
+
 from __future__ import annotations
 
 import json
@@ -36,7 +37,10 @@ SCRIPT = REPO_ROOT / "benchmarks" / "vectro_paper_benchmark.py"
 def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
-        capture_output=True, text=True, check=False, cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(REPO_ROOT),
         timeout=300,
     )
 
@@ -58,17 +62,30 @@ class TestQuickJson(unittest.TestCase):
         rec = json.loads(r.stdout.strip())
         self.assertIn("throughput", rec)
         self.assertIsInstance(rec["throughput"], (int, float))
-        self.assertGreater(rec["throughput"], 0.0,
-                           "throughput must be > 0 — reproduce_paper.{sh,ps1} "
-                           "treats 0 as a sentinel for 'bench failed'")
+        self.assertGreater(
+            rec["throughput"],
+            0.0,
+            "throughput must be > 0 — reproduce_paper.{sh,ps1} "
+            "treats 0 as a sentinel for 'bench failed'",
+        )
         self.assertEqual(rec["throughput_unit"], "M vec/s")
 
     def test_required_headline_fields_present(self):
         r = _run("--quick", "--table", "int8", "--json")
         rec = json.loads(r.stdout.strip())
-        for key in ("version", "platform", "python", "table", "quick",
-                    "throughput", "throughput_unit",
-                    "headline_table", "headline_n", "headline_d", "rows"):
+        for key in (
+            "version",
+            "platform",
+            "python",
+            "table",
+            "quick",
+            "throughput",
+            "throughput_unit",
+            "headline_table",
+            "headline_n",
+            "headline_d",
+            "rows",
+        ):
             self.assertIn(key, rec, f"missing top-level field: {key!r}")
         self.assertGreaterEqual(len(rec["rows"]), 1)
 
@@ -76,12 +93,24 @@ class TestQuickJson(unittest.TestCase):
         r = _run("--quick", "--table", "int8", "--json")
         rec = json.loads(r.stdout.strip())
         row = rec["rows"][0]
-        for key in ("table", "profile", "n", "d", "reps",
-                    "samples_ms", "best_ms", "p50_ms",
-                    "best_throughput_vec_s", "best_M_vec_s",
-                    "p50_throughput_vec_s", "p50_M_vec_s",
-                    "original_bytes", "compressed_bytes",
-                    "ratio", "mean_cosine"):
+        for key in (
+            "table",
+            "profile",
+            "n",
+            "d",
+            "reps",
+            "samples_ms",
+            "best_ms",
+            "p50_ms",
+            "best_throughput_vec_s",
+            "best_M_vec_s",
+            "p50_throughput_vec_s",
+            "p50_M_vec_s",
+            "original_bytes",
+            "compressed_bytes",
+            "ratio",
+            "mean_cosine",
+        ):
             self.assertIn(key, row, f"missing row field: {key!r}")
         self.assertEqual(row["table"], "int8")
         self.assertEqual(row["n"], 10_000)
@@ -101,24 +130,29 @@ class TestTableAll(unittest.TestCase):
         r = _run("--quick", "--table", "binary", "--json")
         rec = json.loads(r.stdout.strip())
         ratio = rec["rows"][0]["ratio"]
-        self.assertGreater(ratio, 16.0,
-                           "binary profile should compress >= 16× (got "
-                           f"{ratio}×) — sanity check on the binary path")
+        self.assertGreater(
+            ratio,
+            16.0,
+            "binary profile should compress >= 16× (got "
+            f"{ratio}×) — sanity check on the binary path",
+        )
 
     def test_int8_preserves_high_cosine(self):
         r = _run("--quick", "--table", "int8", "--json")
         rec = json.loads(r.stdout.strip())
         cos = rec["rows"][0]["mean_cosine"]
         self.assertGreaterEqual(
-            cos, 0.999,
+            cos,
+            0.999,
             f"INT8 mean cosine {cos} < 0.999 — quality regression",
         )
 
 
 class TestShapeOverride(unittest.TestCase):
     def test_n_d_override_runs_one_shape(self):
-        r = _run("--table", "int8", "--n", "2000", "--d", "256",
-                 "--reps", "2", "--warmup", "1", "--json")
+        r = _run(
+            "--table", "int8", "--n", "2000", "--d", "256", "--reps", "2", "--warmup", "1", "--json"
+        )
         self.assertEqual(r.returncode, 0, r.stderr)
         rec = json.loads(r.stdout.strip())
         self.assertEqual(len(rec["rows"]), 1)
@@ -149,15 +183,17 @@ class TestSingleRepIsQuick(unittest.TestCase):
 
     def test_reps_1_warmup_0_completes_within_60s(self):
         import time
+
         t0 = time.time()
-        r = _run("--quick", "--table", "int8",
-                 "--json", "--reps", "1", "--warmup", "0")
+        r = _run("--quick", "--table", "int8", "--json", "--reps", "1", "--warmup", "0")
         elapsed = time.time() - t0
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertLess(
-            elapsed, 60.0,
+            elapsed,
+            60.0,
             f"--quick --reps 1 --warmup 0 took {elapsed:.1f}s — must be < 60s "
-            f"so reproduce_paper.sh does not time out in CI")
+            f"so reproduce_paper.sh does not time out in CI",
+        )
         rec = json.loads(r.stdout.strip())
         self.assertEqual(rec["rows"][0]["reps"], 1)
         self.assertGreater(rec["throughput"], 0.0)

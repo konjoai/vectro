@@ -9,6 +9,7 @@ Covers:
 - LangChainReranker.invoke / ainvoke
 - Edge cases: empty candidates, unknown doc_ids, strategy validation
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,14 +23,15 @@ import numpy as np
 # Inject minimal LangChain stub so top-level import doesn't fail
 # ---------------------------------------------------------------------------
 
+
 def _ensure_lc_stub():
     if "langchain_core" not in sys.modules:
         sys.modules["langchain_core"] = types.ModuleType("langchain_core")
         sys.modules["langchain_core.vectorstores"] = types.ModuleType("langchain_core.vectorstores")
 
+
 _ensure_lc_stub()
 
-import tests._path_setup as _  # noqa: E402
 from python.retrieval.reranker import (  # noqa: E402
     VectroReranker,
     LangChainReranker,
@@ -42,6 +44,7 @@ from python.retrieval.reranker import (  # noqa: E402
 # Minimal fake "document" object
 # ---------------------------------------------------------------------------
 
+
 class _Doc:
     def __init__(self, text, doc_id, meta=None):
         self.page_content = text
@@ -53,13 +56,16 @@ class _Doc:
 # Minimal fake store (mirrors LangChain store structure)
 # ---------------------------------------------------------------------------
 
+
 class _FakeStore:
     def __init__(self, mat: np.ndarray, ids):
         from python.vectro import Vectro
+
         v = Vectro()
         self._compressed = v.compress(mat, profile="fast")
         self._ids = list(ids)
         import threading
+
         self._lock = threading.Lock()
 
     def similarity_search_with_score(self, query, k=4, **kwargs):
@@ -69,6 +75,7 @@ class _FakeStore:
 # ---------------------------------------------------------------------------
 # _cosine_rerank unit tests
 # ---------------------------------------------------------------------------
+
 
 class TestCosineRerankHelper(unittest.TestCase):
     def _setup(self, n=6, dim=32):
@@ -110,6 +117,7 @@ class TestCosineRerankHelper(unittest.TestCase):
 # _rrf_rerank unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestRRFRerankHelper(unittest.TestCase):
     def _setup(self, n=6, dim=32):
         rng = np.random.default_rng(2)
@@ -149,6 +157,7 @@ class TestRRFRerankHelper(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # VectroReranker tests
 # ---------------------------------------------------------------------------
+
 
 class TestVectroReranker(unittest.TestCase):
     def _make_store_and_candidates(self, n=8, dim=32):
@@ -230,8 +239,10 @@ class TestVectroReranker(unittest.TestCase):
 # LangChainReranker tests
 # ---------------------------------------------------------------------------
 
+
 class _FakeEmbedder:
     """Stub embedding model returning a fixed normalised vector."""
+
     def __init__(self, dim=32):
         self._dim = dim
         self._rng = np.random.default_rng(99)

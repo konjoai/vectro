@@ -19,6 +19,7 @@ Standard-library + numpy + the in-tree ``python`` package only.  No
 external bench frameworks; warmup + best-of-N timing per shape per
 table.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -49,12 +50,12 @@ QUICK_SHAPES: List[Tuple[int, int]] = [(10_000, 768)]
 
 # Full mode covers the headline d values from the paper appendix.
 FULL_SHAPES: List[Tuple[int, int]] = [
-    (10_000,  128),
-    (10_000,  384),
-    (10_000,  768),
+    (10_000, 128),
+    (10_000, 384),
+    (10_000, 768),
     (10_000, 1024),
     (10_000, 1536),
-    (50_000,  768),
+    (50_000, 768),
 ]
 
 TABLES: Tuple[str, ...] = ("int8", "nf4", "binary")
@@ -63,8 +64,8 @@ TABLES: Tuple[str, ...] = ("int8", "nf4", "binary")
 # the ``fast`` and ``balanced`` profiles; we use ``balanced`` as the
 # headline, matching v5.0.0's PLAN.md throughput targets.
 PROFILE_BY_TABLE = {
-    "int8":   "balanced",
-    "nf4":    "quality",
+    "int8": "balanced",
+    "nf4": "quality",
     "binary": "binary",
 }
 
@@ -72,6 +73,7 @@ PROFILE_BY_TABLE = {
 # ─────────────────────────────────────────────────────────────────────────
 # Synthetic dataset
 # ─────────────────────────────────────────────────────────────────────────
+
 
 def _make_unit_vectors(n: int, d: int, seed: int = 42) -> np.ndarray:
     """Deterministic L2-normalised f32 matrix.  Same input on every host
@@ -87,6 +89,7 @@ def _make_unit_vectors(n: int, d: int, seed: int = 42) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────
 # Per-table measurement
 # ─────────────────────────────────────────────────────────────────────────
+
 
 def _cosine_per_row(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     na = np.linalg.norm(a, axis=1) + 1e-12
@@ -126,7 +129,7 @@ def _bench_one(
     best_ms = min(samples_ms)
     p50_ms = statistics.median(samples_ms)
     best_tput = (n / best_ms) * 1000.0
-    p50_tput  = (n / p50_ms)  * 1000.0
+    p50_tput = (n / p50_ms) * 1000.0
 
     # Reconstruction quality — single mean over the whole batch.
     try:
@@ -135,34 +138,35 @@ def _bench_one(
     except Exception:
         cos = float("nan")
 
-    original_bytes   = int(data.nbytes)
+    original_bytes = int(data.nbytes)
     compressed_bytes = int(last_result.total_compressed_bytes)
-    ratio            = float(last_result.compression_ratio)
+    ratio = float(last_result.compression_ratio)
 
     return {
-        "table":            table,
-        "profile":          profile,
-        "n":                int(n),
-        "d":                int(d),
-        "reps":             int(reps),
-        "warmup":           int(warmup),
-        "samples_ms":       [round(s, 4) for s in samples_ms],
-        "best_ms":          round(best_ms, 4),
-        "p50_ms":           round(p50_ms,  4),
-        "best_throughput_vec_s":   round(best_tput, 1),
-        "p50_throughput_vec_s":    round(p50_tput,  1),
-        "best_M_vec_s":     round(best_tput / 1.0e6, 4),
-        "p50_M_vec_s":      round(p50_tput  / 1.0e6, 4),
-        "original_bytes":   original_bytes,
+        "table": table,
+        "profile": profile,
+        "n": int(n),
+        "d": int(d),
+        "reps": int(reps),
+        "warmup": int(warmup),
+        "samples_ms": [round(s, 4) for s in samples_ms],
+        "best_ms": round(best_ms, 4),
+        "p50_ms": round(p50_ms, 4),
+        "best_throughput_vec_s": round(best_tput, 1),
+        "p50_throughput_vec_s": round(p50_tput, 1),
+        "best_M_vec_s": round(best_tput / 1.0e6, 4),
+        "p50_M_vec_s": round(p50_tput / 1.0e6, 4),
+        "original_bytes": original_bytes,
         "compressed_bytes": compressed_bytes,
-        "ratio":            round(ratio, 4),
-        "mean_cosine":      round(cos, 6),
+        "ratio": round(ratio, 4),
+        "mean_cosine": round(cos, 6),
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────
 # Driver
 # ─────────────────────────────────────────────────────────────────────────
+
 
 def run(
     table: str,
@@ -198,7 +202,7 @@ def run(
     rows: List[Dict[str, Any]] = []
     cache: Dict[Tuple[int, int], np.ndarray] = {}
 
-    for (n, d) in shapes:
+    for n, d in shapes:
         if (n, d) not in cache:
             cache[(n, d)] = _make_unit_vectors(n, d)
         data = cache[(n, d)]
@@ -210,28 +214,26 @@ def run(
     # n=10_000, d=768 if present, else the first row.
     headline: Optional[Dict[str, Any]] = None
     for r in rows:
-        if r["n"] == 10_000 and r["d"] == 768 and (
-            table == "all" or r["table"] == table
-        ):
+        if r["n"] == 10_000 and r["d"] == 768 and (table == "all" or r["table"] == table):
             headline = r
             break
     if headline is None:
         headline = rows[0]
 
     record: Dict[str, Any] = {
-        "schema":          "vectro/paper-benchmark/v1",
-        "version":         vectro.__version__,
-        "platform":        f"{platform.system()} / {platform.machine()}",
-        "python":          platform.python_version(),
-        "table":           table,
-        "quick":           bool(quick),
-        "rows":            rows,
+        "schema": "vectro/paper-benchmark/v1",
+        "version": vectro.__version__,
+        "platform": f"{platform.system()} / {platform.machine()}",
+        "python": platform.python_version(),
+        "table": table,
+        "quick": bool(quick),
+        "rows": rows,
         # ─── headline fields (consumed by reproduce_paper.{sh,ps1}) ───
-        "throughput":      headline["best_M_vec_s"],
+        "throughput": headline["best_M_vec_s"],
         "throughput_unit": "M vec/s",
-        "headline_table":  headline["table"],
-        "headline_n":      headline["n"],
-        "headline_d":      headline["d"],
+        "headline_table": headline["table"],
+        "headline_n": headline["n"],
+        "headline_d": headline["d"],
     }
     return record
 
@@ -239,6 +241,7 @@ def run(
 # ─────────────────────────────────────────────────────────────────────────
 # Pretty-print
 # ─────────────────────────────────────────────────────────────────────────
+
 
 def _print_table(record: Dict[str, Any]) -> None:
     print()
@@ -251,20 +254,24 @@ def _print_table(record: Dict[str, Any]) -> None:
     print(fmt.format(*cols))
     print("  " + "  ".join("-" * w for w in widths))
     for r in record["rows"]:
-        print(fmt.format(
-            r["table"],
-            f"{r['n']:,}",
-            r["d"],
-            f"{r['best_M_vec_s']:.3f}",
-            f"{r['p50_M_vec_s']:.3f}",
-            f"{r['ratio']:.2f}×",
-            f"{r['mean_cosine']:.4f}",
-            f"{r['best_ms']:.2f}",
-            f"{r['p50_ms']:.2f}",
-        ))
+        print(
+            fmt.format(
+                r["table"],
+                f"{r['n']:,}",
+                r["d"],
+                f"{r['best_M_vec_s']:.3f}",
+                f"{r['p50_M_vec_s']:.3f}",
+                f"{r['ratio']:.2f}×",
+                f"{r['mean_cosine']:.4f}",
+                f"{r['best_ms']:.2f}",
+                f"{r['p50_ms']:.2f}",
+            )
+        )
     print()
-    print(f"  Headline ({record['headline_table']} @ n={record['headline_n']:,} "
-          f"× d={record['headline_d']}):  {record['throughput']:.3f} M vec/s")
+    print(
+        f"  Headline ({record['headline_table']} @ n={record['headline_n']:,} "
+        f"× d={record['headline_d']}):  {record['throughput']:.3f} M vec/s"
+    )
     print()
 
 
@@ -272,25 +279,35 @@ def _print_table(record: Dict[str, Any]) -> None:
 # CLI
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description="Vectro paper benchmark — measures real INT8 / NF4 / binary "
-                    "throughput on the host CPU.",
+        "throughput on the host CPU.",
     )
-    ap.add_argument("--quick", action="store_true",
-                    help="Single shape (10k × 768) — for CI wheel-test smoke checks.")
-    ap.add_argument("--table", default="int8",
-                    help="One of: int8, nf4, binary, all  (default: int8)")
-    ap.add_argument("--json", action="store_true",
-                    help="Emit a single-line JSON record (consumed by reproduce_paper).")
-    ap.add_argument("--n", type=int, default=None,
-                    help="Override the number of vectors for a one-shape run.")
-    ap.add_argument("--d", type=int, default=None,
-                    help="Override the dimension for a one-shape run.")
-    ap.add_argument("--reps", type=int, default=3,
-                    help="Timed repetitions per shape per table (default: 3).")
-    ap.add_argument("--warmup", type=int, default=1,
-                    help="Warmup repetitions (default: 1).")
+    ap.add_argument(
+        "--quick",
+        action="store_true",
+        help="Single shape (10k × 768) — for CI wheel-test smoke checks.",
+    )
+    ap.add_argument(
+        "--table", default="int8", help="One of: int8, nf4, binary, all  (default: int8)"
+    )
+    ap.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a single-line JSON record (consumed by reproduce_paper).",
+    )
+    ap.add_argument(
+        "--n", type=int, default=None, help="Override the number of vectors for a one-shape run."
+    )
+    ap.add_argument(
+        "--d", type=int, default=None, help="Override the dimension for a one-shape run."
+    )
+    ap.add_argument(
+        "--reps", type=int, default=3, help="Timed repetitions per shape per table (default: 3)."
+    )
+    ap.add_argument("--warmup", type=int, default=1, help="Warmup repetitions (default: 1).")
     args = ap.parse_args(argv)
 
     record = run(

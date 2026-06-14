@@ -6,6 +6,7 @@ Verifies:
 - Both features compose correctly (filter + MMR)
 - Async aquery() propagates filters and MMR mode
 """
+
 from __future__ import annotations
 
 import sys
@@ -19,9 +20,11 @@ import numpy as np
 # Stub out llama_index so we don't need the real package
 # ---------------------------------------------------------------------------
 
+
 class _VectorStoreQueryMode:
     DEFAULT = "default"
     MMR = "mmr"
+
 
 class _MetadataFilter:
     def __init__(self, key, value, operator="=="):
@@ -29,9 +32,11 @@ class _MetadataFilter:
         self.value = value
         self.operator = operator
 
+
 class _MetadataFilters:
     def __init__(self, filters):
         self.filters = filters
+
 
 class _VectorStoreQuery:
     def __init__(
@@ -50,11 +55,13 @@ class _VectorStoreQuery:
         self.mmr_prefetch_k = mmr_prefetch_k
         self.mmr_threshold = mmr_threshold
 
+
 class _VectorStoreQueryResult:
     def __init__(self, nodes, similarities, ids):
         self.nodes = nodes
         self.similarities = similarities
         self.ids = ids
+
 
 class _TextNode:
     def __init__(self, text="", id_=None, metadata=None, embedding=None):
@@ -63,6 +70,7 @@ class _TextNode:
         self.id_ = id_ or ""
         self.metadata = metadata or {}
         self.embedding = embedding
+
 
 _li_types = types.ModuleType("llama_index.core.vector_stores.types")
 _li_types.VectorStoreQueryResult = _VectorStoreQueryResult
@@ -86,13 +94,13 @@ for mod_name, mod in [
 ]:
     sys.modules.setdefault(mod_name, mod)
 
-import tests._path_setup as _  # noqa: E402
 from python.integrations.llamaindex_integration import VectroVectorStore  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_store():
     """Build a store with 6 nodes across 3 sources."""
@@ -114,6 +122,7 @@ def _make_store():
 # ---------------------------------------------------------------------------
 # Metadata filtering tests
 # ---------------------------------------------------------------------------
+
 
 class TestLlamaIndexFilter(unittest.TestCase):
     def setUp(self):
@@ -137,10 +146,12 @@ class TestLlamaIndexFilter(unittest.TestCase):
 
     def test_multi_field_filter(self):
         q = np.ones(64, dtype=np.float32)
-        flt = _MetadataFilters([
-            _MetadataFilter("source", "src-1"),
-            _MetadataFilter("lang", "en"),
-        ])
+        flt = _MetadataFilters(
+            [
+                _MetadataFilter("source", "src-1"),
+                _MetadataFilter("lang", "en"),
+            ]
+        )
         query = _VectorStoreQuery(query_embedding=q.tolist(), similarity_top_k=10, filters=flt)
         result = self.store.query(query)
         for node in result.nodes:
@@ -184,6 +195,7 @@ class TestLlamaIndexFilter(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # MMR tests
 # ---------------------------------------------------------------------------
+
 
 class TestLlamaIndexMMR(unittest.TestCase):
     def setUp(self):
@@ -254,6 +266,7 @@ class TestLlamaIndexMMR(unittest.TestCase):
 # Async propagation
 # ---------------------------------------------------------------------------
 
+
 class TestLlamaIndexAsyncFilterMMR(unittest.TestCase):
     def setUp(self):
         self.store, self.nodes = _make_store()
@@ -262,9 +275,7 @@ class TestLlamaIndexAsyncFilterMMR(unittest.TestCase):
         async def _run():
             q = np.ones(64, dtype=np.float32)
             flt = _MetadataFilters([_MetadataFilter("source", "src-2")])
-            query = _VectorStoreQuery(
-                query_embedding=q.tolist(), similarity_top_k=10, filters=flt
-            )
+            query = _VectorStoreQuery(query_embedding=q.tolist(), similarity_top_k=10, filters=flt)
             return await self.store.aquery(query)
 
         result = asyncio.run(_run())

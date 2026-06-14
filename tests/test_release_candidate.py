@@ -13,9 +13,6 @@ Covers all 7 verification gates from the Phase 5 plan:
 
 from __future__ import annotations
 
-import importlib
-import json
-import os
 import time
 from pathlib import Path
 
@@ -30,9 +27,9 @@ EXPECTED_VERSION = "5.5.0"
 # Quality and compression floors per profile
 # (used in gate 1 and gate 2)
 PROFILE_GATES = {
-    "fast":     {"min_cosine": 0.95, "min_ratio": 3.5},
+    "fast": {"min_cosine": 0.95, "min_ratio": 3.5},
     "balanced": {"min_cosine": 0.97, "min_ratio": 3.5},
-    "quality":  {"min_cosine": 0.97, "min_ratio": 3.5},
+    "quality": {"min_cosine": 0.97, "min_ratio": 3.5},
 }
 
 # Throughput floor: vectors/second (gate 3)
@@ -53,6 +50,7 @@ def embeddings() -> np.ndarray:
 @pytest.fixture(scope="module")
 def vectro():
     from python.vectro import Vectro
+
     return Vectro()
 
 
@@ -234,9 +232,9 @@ class TestIntegrationGates:
 
     def test_in_memory_connector_round_trip(self, embeddings):
         from python.integrations import InMemoryVectorDBConnector
-        from python import decompress_vectors
 
         from python.vectro import Vectro
+
         result = Vectro().compress(embeddings[:50])
 
         store = InMemoryVectorDBConnector()
@@ -265,7 +263,12 @@ class TestIntegrationGates:
 
     def test_arrow_bridge_round_trip(self, embeddings, vectro):
         pytest.importorskip("pyarrow")
-        from python.integrations import result_to_table, table_to_result, to_arrow_bytes, from_arrow_bytes
+        from python.integrations import (
+            result_to_table,
+            table_to_result,
+            to_arrow_bytes,
+            from_arrow_bytes,
+        )
         from python import decompress_vectors
 
         result = vectro.compress(embeddings)
@@ -285,7 +288,6 @@ class TestIntegrationGates:
 
     def test_streaming_full_reconstruction(self, embeddings, vectro):
         from python import StreamingDecompressor, decompress_vectors
-        from python.interface import mean_cosine_similarity
 
         result = vectro.compress(embeddings)
 
@@ -313,6 +315,7 @@ class TestIntegrationGates:
         report.save(str(out))
         assert out.exists()
         import json
+
         data = json.loads(out.read_text())
         assert isinstance(data, (dict, list))
 
@@ -325,37 +328,59 @@ class TestDistributionGates:
 
     EXPECTED_SYMBOLS = [
         # Core
-        "Vectro", "compress_vectors", "decompress_vectors",
-        "analyze_compression_quality", "generate_compression_report",
+        "Vectro",
+        "compress_vectors",
+        "decompress_vectors",
+        "analyze_compression_quality",
+        "generate_compression_report",
         # Interface
-        "QuantizationResult", "quantize_embeddings", "reconstruct_embeddings",
-        "mean_cosine_similarity", "get_backend_info",
+        "QuantizationResult",
+        "quantize_embeddings",
+        "reconstruct_embeddings",
+        "mean_cosine_similarity",
+        "get_backend_info",
         # Batch
-        "VectroBatchProcessor", "BatchQuantizationResult",
+        "VectroBatchProcessor",
+        "BatchQuantizationResult",
         "quantize_embeddings_batch",
         # Quality
-        "VectroQualityAnalyzer", "QualityMetrics",
+        "VectroQualityAnalyzer",
+        "QualityMetrics",
         "evaluate_quantization_quality",
         # Profiles
-        "ProfileManager", "CompressionProfile",
-        "get_compression_profile", "create_custom_profile",
+        "ProfileManager",
+        "CompressionProfile",
+        "get_compression_profile",
+        "create_custom_profile",
         # Integrations
-        "InMemoryVectorDBConnector", "QdrantConnector", "WeaviateConnector",
-        "compress_tensor", "reconstruct_tensor", "HuggingFaceCompressor",
-        "result_to_table", "table_to_result",
-        "write_parquet", "read_parquet",
-        "to_arrow_bytes", "from_arrow_bytes",
+        "InMemoryVectorDBConnector",
+        "QdrantConnector",
+        "WeaviateConnector",
+        "compress_tensor",
+        "reconstruct_tensor",
+        "HuggingFaceCompressor",
+        "result_to_table",
+        "table_to_result",
+        "write_parquet",
+        "read_parquet",
+        "to_arrow_bytes",
+        "from_arrow_bytes",
         # Streaming / quantization extras
         "StreamingDecompressor",
-        "quantize_int2", "dequantize_int2", "quantize_adaptive",
+        "quantize_int2",
+        "dequantize_int2",
+        "quantize_adaptive",
         # Migration
-        "inspect_artifact", "upgrade_artifact", "validate_artifact",
+        "inspect_artifact",
+        "upgrade_artifact",
+        "validate_artifact",
         # Utility
         "get_version_info",
     ]
 
     def test_all_expected_symbols_importable(self):
         import python as pkg
+
         missing = [sym for sym in self.EXPECTED_SYMBOLS if not hasattr(pkg, sym)]
         assert not missing, f"Missing public symbols: {missing}"
 
@@ -381,20 +406,24 @@ class TestDistributionGates:
 
     def test_version_python_init(self):
         import python as pkg
+
         assert pkg.__version__ == EXPECTED_VERSION
 
     def test_version_vectro_py(self):
         # Read the module's own __version__ attribute
         import python.vectro as m
+
         assert m.__version__ == EXPECTED_VERSION
 
     def test_version_info_returns_dict(self):
         import python as pkg
+
         vi = pkg.get_version_info()
         assert isinstance(vi, dict)
 
     def test_get_backend_info_returns_dict(self):
         import python as pkg
+
         bi = pkg.get_backend_info()
         assert isinstance(bi, dict)
         assert "numpy" in bi or "mojo" in bi

@@ -101,8 +101,8 @@ class TestResidualQuantizerQuality(unittest.TestCase):
             codes = rq.encode(self.data)
             recon = rq.decode(codes)
             results.append(rq.mean_cosine(self.data, recon))
-        self.assertGreaterEqual(results[1], results[0] - 0.05)   # 2 ≥ 1 (with tolerance)
-        self.assertGreaterEqual(results[2], results[0] - 0.05)   # 3 ≥ 1
+        self.assertGreaterEqual(results[1], results[0] - 0.05)  # 2 ≥ 1 (with tolerance)
+        self.assertGreaterEqual(results[2], results[0] - 0.05)  # 3 ≥ 1
 
     def test_no_nan_in_reconstruction(self):
         rq = ResidualQuantizer(n_passes=2, n_subspaces=8, n_centroids=32)
@@ -142,7 +142,7 @@ class TestResidualQuantizerEdgeCases(unittest.TestCase):
         """Encode/decode vectors not in training set."""
         rng = np.random.default_rng(99)
         train = rng.standard_normal((200, 32)).astype(np.float32)
-        test  = rng.standard_normal((50, 32)).astype(np.float32)
+        test = rng.standard_normal((50, 32)).astype(np.float32)
         rq = ResidualQuantizer(n_passes=2, n_subspaces=4, n_centroids=32)
         rq.train(train)
         codes = rq.encode(test)

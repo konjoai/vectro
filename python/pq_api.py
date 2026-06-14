@@ -18,7 +18,7 @@ Reference:
 from __future__ import annotations
 
 import numpy as np
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 try:
@@ -74,7 +74,9 @@ def train_pq_codebook(
     try:
         from sklearn.cluster import MiniBatchKMeans
     except ImportError:
-        raise ImportError("scikit-learn required for PQ codebook training: pip install scikit-learn")
+        raise ImportError(
+            "scikit-learn required for PQ codebook training: pip install scikit-learn"
+        )
 
     training_data = np.ascontiguousarray(training_data, dtype=np.float32)
     n_train, d = training_data.shape
@@ -145,10 +147,10 @@ def pq_encode(
         cen = codebook.centroids[m]  # (K, sub_dim)
 
         # L2 distance via broadcasting: ||v - c||^2 = ||v||^2 + ||c||^2 - 2 v·c^T
-        v_sq = (sub_vecs ** 2).sum(axis=1, keepdims=True)  # (n, 1)
-        c_sq = (cen ** 2).sum(axis=1)                        # (K,)
-        cross = sub_vecs @ cen.T                              # (n, K)
-        dists = v_sq + c_sq - 2 * cross                      # (n, K)
+        v_sq = (sub_vecs**2).sum(axis=1, keepdims=True)  # (n, 1)
+        c_sq = (cen**2).sum(axis=1)  # (K,)
+        cross = sub_vecs @ cen.T  # (n, K)
+        dists = v_sq + c_sq - 2 * cross  # (n, K)
         codes[:, m] = dists.argmin(axis=1).astype(np.uint8)
 
     return codes
@@ -214,10 +216,10 @@ def pq_distance_table(
     table = np.empty((M, K), dtype=np.float32)
 
     for m in range(M):
-        q_sub = query[m * sub_dim : (m + 1) * sub_dim]        # (sub_dim,)
-        cen = codebook.centroids[m]                             # (K, sub_dim)
-        diff = cen - q_sub                                      # (K, sub_dim)
-        table[m] = (diff ** 2).sum(axis=1)
+        q_sub = query[m * sub_dim : (m + 1) * sub_dim]  # (sub_dim,)
+        cen = codebook.centroids[m]  # (K, sub_dim)
+        diff = cen - q_sub  # (K, sub_dim)
+        table[m] = (diff**2).sum(axis=1)
 
     return table
 

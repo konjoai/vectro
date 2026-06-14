@@ -19,7 +19,7 @@ See also:
 from __future__ import annotations
 
 import platform
-from typing import Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 
@@ -41,6 +41,7 @@ def simd_tier() -> str:
         return "neon"
     if "x86_64" in arch or "amd64" in arch:
         import platform as _p
+
         os_type = _p.system()
         if os_type == "Linux":
             try:
@@ -58,9 +59,12 @@ def simd_tier() -> str:
                 pass
         elif os_type == "Darwin":
             import subprocess
+
             for flag, name in [("hw.optional.avx512f", "avx512"), ("hw.optional.avx2_0", "avx2")]:
                 try:
-                    r = subprocess.run(["sysctl", "-n", flag], capture_output=True, text=True, timeout=3)
+                    r = subprocess.run(
+                        ["sysctl", "-n", flag], capture_output=True, text=True, timeout=3
+                    )
                     if r.returncode == 0 and r.stdout.strip() == "1":
                         return name
                 except Exception:
@@ -200,12 +204,10 @@ def benchmark_int8_throughput(
         raise RuntimeError("vectro_py Rust extension not installed.")
 
     rng = np.random.default_rng(42)
-    vectors = np.ascontiguousarray(
-        rng.standard_normal((n_vectors, dim)).astype(np.float32)
-    )
+    vectors = np.ascontiguousarray(rng.standard_normal((n_vectors, dim)).astype(np.float32))
 
     for _ in range(warmup):
-        _vectro_py.quantize_int8_batch(vectors[:min(1000, n_vectors)])
+        _vectro_py.quantize_int8_batch(vectors[: min(1000, n_vectors)])
 
     throughputs = []
     for _ in range(runs):

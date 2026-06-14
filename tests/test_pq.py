@@ -1,4 +1,5 @@
 """Tests for Product Quantization (Phase 3)."""
+
 import unittest
 
 import numpy as np
@@ -13,12 +14,12 @@ ensure_repo_root_on_path()
 # Skip if sklearn not available
 try:
     import sklearn  # noqa: F401
+
     _SKLEARN = True
 except ImportError:
     _SKLEARN = False
 
 from python.pq_api import (  # noqa: E402
-    PQCodebook,
     train_pq_codebook,
     pq_encode,
     pq_decode,

@@ -4,7 +4,6 @@ import unittest
 from io import StringIO
 from unittest.mock import patch
 
-import numpy as np
 
 try:
     from tests._path_setup import ensure_repo_root_on_path
@@ -56,8 +55,7 @@ class TestInfoCommand(unittest.TestCase):
             return original_monotonic + 6.0  # > deadline (t0 + 5.0)
 
         buf = StringIO()
-        with patch("time.monotonic", side_effect=_fast_clock), \
-             patch("sys.stdout", buf):
+        with patch("time.monotonic", side_effect=_fast_clock), patch("sys.stdout", buf):
             code = _cmd_info(args)
 
         self.assertEqual(code, 0)
@@ -77,8 +75,7 @@ class TestInfoCommand(unittest.TestCase):
             return t0 if call_count[0] == 1 else t0 + 6.0
 
         buf = StringIO()
-        with patch("time.monotonic", side_effect=_fast_clock), \
-             patch("sys.stdout", buf):
+        with patch("time.monotonic", side_effect=_fast_clock), patch("sys.stdout", buf):
             _cmd_info(args)
 
         output = buf.getvalue()
@@ -105,8 +102,7 @@ class TestInfoCommand(unittest.TestCase):
             return t0 if call_count[0] == 1 else t0 + 6.0
 
         buf = StringIO()
-        with patch("time.monotonic", side_effect=_fast_clock), \
-             patch("sys.stdout", buf):
+        with patch("time.monotonic", side_effect=_fast_clock), patch("sys.stdout", buf):
             _cmd_info(args)
 
         output = buf.getvalue()

@@ -87,6 +87,7 @@ class SearchTrace:
 # Distance helpers
 # ---------------------------------------------------------------------------
 
+
 def _cosine_dist(a: np.ndarray, b: np.ndarray) -> float:
     """Cosine distance in [0, 2].  a and b must be unit vectors."""
     return float(1.0 - np.dot(a, b))
@@ -106,6 +107,7 @@ def _l2_dist_sq(a: np.ndarray, b: np.ndarray) -> float:
 # min-heap storing (dist, id).
 # ---------------------------------------------------------------------------
 
+
 def _heap_push_result(W: list, dist: float, nid: int, ef: int) -> None:
     """Push (dist, nid) onto the W max-heap, evicting the worst if |W| > ef."""
     heapq.heappush(W, (-dist, nid))
@@ -123,6 +125,7 @@ def _heap_worst_dist(W: list) -> float:
 # ---------------------------------------------------------------------------
 # HNSWIndex
 # ---------------------------------------------------------------------------
+
 
 class HNSWIndex:
     """Pure-Python HNSW approximate nearest-neighbour index.
@@ -154,13 +157,13 @@ class HNSWIndex:
             raise ValueError("space must be 'cosine' or 'l2'")
 
         self.M = M
-        self.M0 = 2 * M          # max links at layer 0
+        self.M0 = 2 * M  # max links at layer 0
         self.ef_construction = ef_construction
         self.space = space
         self._ml = 1.0 / math.log(float(M))  # level multiplier
 
         # Per-node storage
-        self._vectors: List[np.ndarray] = []    # unit-norm float32 vectors
+        self._vectors: List[np.ndarray] = []  # unit-norm float32 vectors
         # _neighbors[i][lc] = list of neighbour node IDs at layer lc
         self._neighbors: List[List[List[int]]] = []
         self._levels: List[int] = []
@@ -170,7 +173,7 @@ class HNSWIndex:
 
         # v5.1.0 additions
         self._metadata: List[Optional[Dict[str, Any]]] = []
-        self._deleted: set = set()   # tombstone set — O(1) lookup
+        self._deleted: set = set()  # tombstone set — O(1) lookup
 
         # v5.2.0 — string-ID map for add_batch() upsert semantics.
         # Maps caller-supplied string IDs → internal node IDs.  Empty when the
@@ -226,8 +229,8 @@ class HNSWIndex:
             traversed as graph connectors so the walk remains connected.
         """
         visited: set = set(entry_points)
-        candidates: list = []   # min-heap (dist, nid)
-        W: list = []            # max-heap (−dist, nid)
+        candidates: list = []  # min-heap (dist, nid)
+        W: list = []  # max-heap (−dist, nid)
 
         for ep in entry_points:
             d_ep = self._distance(query, self._vectors[ep])
@@ -320,8 +323,9 @@ class HNSWIndex:
                 else:
                     # Shrink: pick best M_cap from old connections + new node
                     nb_vec = self._vectors[nb]
-                    cands = [(self._distance(nb_vec, self._vectors[c]), c)
-                             for c in nb_nbrs + [node_id]]
+                    cands = [
+                        (self._distance(nb_vec, self._vectors[c]), c) for c in nb_nbrs + [node_id]
+                    ]
                     cands.sort()
                     self._neighbors[nb][lc] = self._select_neighbors(cands, M_cap)
 
@@ -371,8 +375,7 @@ class HNSWIndex:
         n = vecs.shape[0]
         if metadata is not None and len(metadata) != n:
             raise ValueError(
-                f"metadata length ({len(metadata)}) must match "
-                f"number of vectors ({n})"
+                f"metadata length ({len(metadata)}) must match number of vectors ({n})"
             )
 
         node_ids: List[int] = []
@@ -433,7 +436,7 @@ class HNSWIndex:
             raise ValueError(f"metadata length ({len(metadata)}) must match vectors ({n})")
 
         inserted = 0
-        updated  = 0
+        updated = 0
         node_ids: List[int] = []
 
         for i, v in enumerate(vecs):
@@ -445,11 +448,11 @@ class HNSWIndex:
                 # Graph links are preserved; the next search uses the new vector
                 # transparently.  This is O(1) per update (no graph surgery).
                 nid = self._id_map[str_id]
-                self._vectors[nid]  = self._normalize(v)
+                self._vectors[nid] = self._normalize(v)
                 self._metadata[nid] = meta_i
                 # Resurrect if previously deleted
                 self._deleted.discard(nid)
-                updated  += 1
+                updated += 1
             else:
                 # ── Insert path ──────────────────────────────────────────────
                 nid = self._insert_one(self._normalize(v))
@@ -529,6 +532,7 @@ class HNSWIndex:
         # Build the filter callable from the dict
         filter_fn: Optional[Callable[[int], bool]] = None
         if filter:
+
             def filter_fn(nid: int, _f: Dict[str, Any] = filter) -> bool:
                 meta = self._metadata[nid] if nid < len(self._metadata) else None
                 if meta is None:
@@ -599,18 +603,20 @@ class HNSWIndex:
                 dtype=np.uint8,
             )
 
-        params_bytes  = _to_bytes({
-            "M": self.M,
-            "ef_construction": self.ef_construction,
-            "space": self.space,
-            "entry_point": self._entry_point,
-            "max_level": self._max_level,
-            "format_version": 2,
-        })
-        graph_bytes   = _to_bytes(self._neighbors)
-        meta_bytes    = _to_bytes(self._metadata)
+        params_bytes = _to_bytes(
+            {
+                "M": self.M,
+                "ef_construction": self.ef_construction,
+                "space": self.space,
+                "entry_point": self._entry_point,
+                "max_level": self._max_level,
+                "format_version": 2,
+            }
+        )
+        graph_bytes = _to_bytes(self._neighbors)
+        meta_bytes = _to_bytes(self._metadata)
         deleted_bytes = _to_bytes(sorted(self._deleted))
-        id_map_bytes  = _to_bytes(self._id_map)
+        id_map_bytes = _to_bytes(self._id_map)
 
         # `numpy.savez_compressed` appends `.npz` to the filename when the
         # supplied path does not already end with that suffix — which would
@@ -698,11 +704,11 @@ class HNSWIndex:
         def _from_bytes(key: str) -> Any:
             return json.loads(bytes(data[key]).decode("utf-8"))
 
-        params    = _from_bytes("params")
+        params = _from_bytes("params")
         neighbors = _from_bytes("graph")
-        metadata  = _from_bytes("meta")
-        deleted   = set(_from_bytes("deleted"))
-        id_map    = _from_bytes("id_map")
+        metadata = _from_bytes("meta")
+        deleted = set(_from_bytes("deleted"))
+        id_map = _from_bytes("id_map")
 
         idx = cls(
             M=params["M"],
@@ -712,18 +718,13 @@ class HNSWIndex:
         vec_arr = data["vectors"]
         idx._vectors = [vec_arr[i] for i in range(len(vec_arr))]
         # Neighbor lists are decoded from JSON as plain Python lists (correct type).
-        idx._neighbors = [
-            [list(layer) for layer in node_layers]
-            for node_layers in neighbors
-        ]
-        idx._levels        = list(map(int, data["levels"].tolist()))
-        idx._entry_point   = int(params["entry_point"])
-        idx._max_level     = int(params["max_level"])
-        idx._metadata      = [
-            (m if isinstance(m, dict) else None) for m in metadata
-        ]
-        idx._deleted       = deleted
-        idx._id_map        = {str(k): int(v) for k, v in id_map.items()}
+        idx._neighbors = [[list(layer) for layer in node_layers] for node_layers in neighbors]
+        idx._levels = list(map(int, data["levels"].tolist()))
+        idx._entry_point = int(params["entry_point"])
+        idx._max_level = int(params["max_level"])
+        idx._metadata = [(m if isinstance(m, dict) else None) for m in metadata]
+        idx._deleted = deleted
+        idx._id_map = {str(k): int(v) for k, v in id_map.items()}
         logger.debug("HNSWIndex loaded: %s (%d vectors)", path, len(idx._vectors))
         return idx
 
@@ -737,14 +738,14 @@ class HNSWIndex:
             ef_construction=d["ef_construction"],
             space=d["space"],
         )
-        idx._vectors       = d["vectors"]
-        idx._neighbors     = d["neighbors"]
-        idx._levels        = d["levels"]
-        idx._entry_point   = d["entry_point"]
-        idx._max_level     = d["max_level"]
-        idx._metadata      = d.get("metadata") or [None] * len(idx._vectors)
-        idx._deleted       = d.get("deleted")  or set()
-        idx._id_map        = d.get("id_map")   or {}
+        idx._vectors = d["vectors"]
+        idx._neighbors = d["neighbors"]
+        idx._levels = d["levels"]
+        idx._entry_point = d["entry_point"]
+        idx._max_level = d["max_level"]
+        idx._metadata = d.get("metadata") or [None] * len(idx._vectors)
+        idx._deleted = d.get("deleted") or set()
+        idx._id_map = d.get("id_map") or {}
         return idx
 
     # ------------------------------------------------------------------
@@ -806,12 +807,12 @@ class HNSWIndex:
             ``max_level``     — highest layer in the graph
             ``space``         — distance space
         """
-        n_total   = len(self._vectors)
+        n_total = len(self._vectors)
         n_deleted = len(self._deleted)
-        n_alive   = n_total - n_deleted
+        n_alive = n_total - n_deleted
 
-        orphan_count  = 0
-        total_degree  = 0
+        orphan_count = 0
+        total_degree = 0
         alive_counted = 0
 
         for nid in range(n_total):
@@ -819,7 +820,7 @@ class HNSWIndex:
                 continue
             l0 = self._neighbors[nid][0] if self._neighbors[nid] else []
             live_nbrs = [nb for nb in l0 if nb not in self._deleted]
-            total_degree  += len(live_nbrs)
+            total_degree += len(live_nbrs)
             alive_counted += 1
             if not live_nbrs:
                 orphan_count += 1
@@ -827,13 +828,13 @@ class HNSWIndex:
         avg_degree = total_degree / alive_counted if alive_counted > 0 else 0.0
 
         return {
-            "n_total":       n_total,
-            "n_alive":       n_alive,
-            "n_deleted":     n_deleted,
-            "orphan_count":  orphan_count,
+            "n_total": n_total,
+            "n_alive": n_alive,
+            "n_deleted": n_deleted,
+            "orphan_count": orphan_count,
             "avg_degree_l0": round(avg_degree, 2),
-            "max_level":     self._max_level,
-            "space":         self.space,
+            "max_level": self._max_level,
+            "space": self.space,
         }
 
     def compact(self) -> Dict[str, int]:
@@ -851,7 +852,7 @@ class HNSWIndex:
             ``removed``  — number of tombstones cleared from neighbour lists
             ``repaired`` — number of orphaned nodes reconnected
         """
-        removed  = 0
+        removed = 0
         repaired = 0
 
         # Pass 1: strip tombstones from all neighbour lists.
@@ -860,7 +861,7 @@ class HNSWIndex:
                 continue
             for lc in range(len(self._neighbors[nid])):
                 before = self._neighbors[nid][lc]
-                after  = [nb for nb in before if nb not in self._deleted]
+                after = [nb for nb in before if nb not in self._deleted]
                 removed += len(before) - len(after)
                 self._neighbors[nid][lc] = after
 
@@ -873,7 +874,7 @@ class HNSWIndex:
             else:
                 # All nodes deleted — reset to empty state.
                 self._entry_point = -1
-                self._max_level   = -1
+                self._max_level = -1
                 self._deleted.clear()
                 return {"removed": removed, "repaired": 0}
 
@@ -888,10 +889,9 @@ class HNSWIndex:
                 continue  # already connected
 
             # Search for new neighbours from the current entry point.
-            q       = self._vectors[nid]
-            results = self._search_layer(q, [self._entry_point],
-                                         ef=self.ef_construction, layer=0)
-            new_nbrs = [nb for _, nb in results if nb != nid][:self.M0]
+            q = self._vectors[nid]
+            results = self._search_layer(q, [self._entry_point], ef=self.ef_construction, layer=0)
+            new_nbrs = [nb for _, nb in results if nb != nid][: self.M0]
 
             if not self._neighbors[nid]:
                 self._neighbors[nid] = [[]]
@@ -904,11 +904,13 @@ class HNSWIndex:
                 if nid not in self._neighbors[nb][0]:
                     self._neighbors[nb][0].append(nid)
                     if len(self._neighbors[nb][0]) > self.M0:
-                        nb_vec  = self._vectors[nb]
-                        cands   = [(self._distance(nb_vec, self._vectors[c]), c)
-                                   for c in self._neighbors[nb][0]]
+                        nb_vec = self._vectors[nb]
+                        cands = [
+                            (self._distance(nb_vec, self._vectors[c]), c)
+                            for c in self._neighbors[nb][0]
+                        ]
                         cands.sort()
-                        self._neighbors[nb][0] = [c for _, c in cands[:self.M0]]
+                        self._neighbors[nb][0] = [c for _, c in cands[: self.M0]]
 
             repaired += 1
 
@@ -956,22 +958,28 @@ class HNSWIndex:
             ``ef``             — beam width used
             ``n_alive``        — live node count at time of call
         """
-        alive_ids = [nid for nid in range(len(self._vectors))
-                     if nid not in self._deleted]
+        alive_ids = [nid for nid in range(len(self._vectors)) if nid not in self._deleted]
         n = len(alive_ids)
         if n < 2:
-            return {"recall": 1.0, "ci_95_lower": 1.0, "ci_95_upper": 1.0,
-                    "sample_size": 0, "k": k, "ef": ef, "n_alive": n}
+            return {
+                "recall": 1.0,
+                "ci_95_lower": 1.0,
+                "ci_95_upper": 1.0,
+                "sample_size": 0,
+                "k": k,
+                "ef": ef,
+                "n_alive": n,
+            }
 
-        k_eff   = min(k, n - 1)
-        actual  = min(sample_size, n)
-        rng     = np.random.default_rng(seed=0x5EED)
-        sample  = rng.choice(alive_ids, size=actual, replace=False)
+        k_eff = min(k, n - 1)
+        actual = min(sample_size, n)
+        rng = np.random.default_rng(seed=0x5EED)
+        sample = rng.choice(alive_ids, size=actual, replace=False)
 
         # Build alive-only matrix for brute-force (shape: n_alive × d)
-        mat = np.stack([self._vectors[i] for i in alive_ids])   # (n, d)
+        mat = np.stack([self._vectors[i] for i in alive_ids])  # (n, d)
 
-        hits  = 0
+        hits = 0
         total = 0
 
         for qid in sample:
@@ -979,9 +987,9 @@ class HNSWIndex:
 
             # Brute-force exact k-NN (excluding the query itself)
             if self.space == "cosine":
-                sims = mat @ q           # (n,) cosine similarities (unit vecs)
+                sims = mat @ q  # (n,) cosine similarities (unit vecs)
             else:
-                sims = -np.sum((mat - q) ** 2, axis=1)   # negative L2² (higher=closer)
+                sims = -np.sum((mat - q) ** 2, axis=1)  # negative L2² (higher=closer)
             # Exclude query from its own result
             q_pos_in_alive = alive_ids.index(int(qid))
             sims[q_pos_in_alive] = -np.inf
@@ -990,17 +998,17 @@ class HNSWIndex:
 
             # HNSW search
             hnsw_ids, _ = self.search(q, k=k_eff, ef=ef)
-            hnsw_set    = set(int(i) for i in hnsw_ids)
+            hnsw_set = set(int(i) for i in hnsw_ids)
 
-            hits  += len(hnsw_set & gt_global)
+            hits += len(hnsw_set & gt_global)
             total += k_eff
 
         recall = hits / total if total > 0 else 1.0
 
         # Wilson score interval (z=1.96 for 95% CI)
-        z   = 1.96
+        z = 1.96
         n_t = float(total)
-        p   = recall
+        p = recall
         denom = 1 + z * z / n_t
         centre = (p + z * z / (2 * n_t)) / denom
         margin = (z / denom) * math.sqrt(p * (1 - p) / n_t + z * z / (4 * n_t * n_t))
@@ -1008,19 +1016,20 @@ class HNSWIndex:
         ci_hi = min(1.0, centre + margin)
 
         return {
-            "recall":      round(recall, 6),
+            "recall": round(recall, 6),
             "ci_95_lower": round(ci_lo, 6),
             "ci_95_upper": round(ci_hi, 6),
             "sample_size": actual,
-            "k":           k_eff,
-            "ef":          ef,
-            "n_alive":     n,
+            "k": k_eff,
+            "ef": ef,
+            "n_alive": n,
         }
 
 
 # ---------------------------------------------------------------------------
 # Convenience helpers
 # ---------------------------------------------------------------------------
+
 
 def build_hnsw_index(
     vectors: np.ndarray,
@@ -1126,7 +1135,7 @@ def hnsw_compression_info(d: int, M: int = 16) -> dict:
         compression_ratio : versus raw FP32-only storage
     """
     bytes_fp32 = d * 4
-    bytes_int8 = d + 4          # INT8 d bytes + 4-byte float32 scale
+    bytes_int8 = d + 4  # INT8 d bytes + 4-byte float32 scale
     # Average links across layers: layer 0 has up to 2*M, upper layers up to M.
     # For a random graph the expected number of layers is O(log n / log M).
     # Use a conservative estimate of ~ 2.5 * M average links per node.

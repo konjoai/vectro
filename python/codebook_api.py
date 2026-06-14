@@ -30,6 +30,7 @@ import numpy as np
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _xavier(fan_in: int, fan_out: int, rng: np.random.Generator) -> np.ndarray:
     scale = np.sqrt(2.0 / (fan_in + fan_out))
     return rng.standard_normal((fan_in, fan_out)).astype(np.float32) * scale
@@ -62,13 +63,14 @@ def _cosine_loss_and_grad(
     # Gradient: d(1 - cos)/d(recon) = -( t_hat/r_norm - r_hat * cos[:, None] / r_norm )
     # = -(t_hat - r_hat * cos[:, None]) / r_norm
     grad = -(t_hat - r_hat * cos_sim[:, np.newaxis]) / r_norm
-    grad /= recon.shape[0]   # mean over batch
+    grad /= recon.shape[0]  # mean over batch
     return loss, grad
 
 
 # ---------------------------------------------------------------------------
 # Public class
 # ---------------------------------------------------------------------------
+
 
 class Codebook:
     """Learned INT8 autoencoder codebook.
@@ -115,8 +117,8 @@ class Codebook:
 
         Encoder: Linear(d, hidden) → ReLU → Linear(hidden, target_dim)
         """
-        h = _relu(x @ self.W1e)   # (n, hidden)
-        return h @ self.W2e       # (n, target_dim)
+        h = _relu(x @ self.W1e)  # (n, hidden)
+        return h @ self.W2e  # (n, target_dim)
 
     # ------------------------------------------------------------------
     # Forward pass through decoder
@@ -124,8 +126,8 @@ class Codebook:
 
     def _decode_float(self, z: np.ndarray) -> np.ndarray:
         """Return reconstructed float32 from float code z (n, target_dim)."""
-        h = _relu(z @ self.W1d)   # (n, hidden)
-        return h @ self.W2d       # (n, d)
+        h = _relu(z @ self.W1d)  # (n, hidden)
+        return h @ self.W2d  # (n, d)
 
     # ------------------------------------------------------------------
     # Training
@@ -185,14 +187,14 @@ class Codebook:
 
                 # ----- Forward -----
                 # Encoder
-                H_e = b @ self.W1e            # (bs, hidden)
+                H_e = b @ self.W1e  # (bs, hidden)
                 A_e = _relu(H_e)
-                Z = A_e @ self.W2e            # (bs, target_dim)
+                Z = A_e @ self.W2e  # (bs, target_dim)
 
                 # Decoder
-                H_d = Z @ self.W1d            # (bs, hidden)
+                H_d = Z @ self.W1d  # (bs, hidden)
                 A_d = _relu(H_d)
-                recon = A_d @ self.W2d        # (bs, d)
+                recon = A_d @ self.W2d  # (bs, d)
 
                 # ----- Loss + grad at output -----
                 loss, dL_drecon = _cosine_loss_and_grad(recon, b)
@@ -218,8 +220,8 @@ class Codebook:
                 }
 
                 # ----- Adam update -----
-                bc1 = 1.0 - beta1 ** self._t
-                bc2 = 1.0 - beta2 ** self._t
+                bc1 = 1.0 - beta1**self._t
+                bc2 = 1.0 - beta2**self._t
                 for p in params:
                     g = grads[p]
                     self._m[p] = beta1 * self._m[p] + (1 - beta1) * g
@@ -230,7 +232,7 @@ class Codebook:
                     setattr(self, p, (getattr(self, p) - delta).astype(np.float32))
 
         # Calibrate INT8 scale on training data
-        z_all = self._encode_float(data_n[:min(n, 1000)])
+        z_all = self._encode_float(data_n[: min(n, 1000)])
         abs_max = np.abs(z_all).max()
         self._code_scale = float(abs_max / 127.0) if abs_max > 0 else 1.0
 
@@ -260,9 +262,7 @@ class Codebook:
         data_n = data / norms
 
         z = self._encode_float(data_n)
-        codes = np.clip(
-            np.round(z / self._code_scale), -127, 127
-        ).astype(np.int8)
+        codes = np.clip(np.round(z / self._code_scale), -127, 127).astype(np.int8)
         return codes
 
     def decode(self, codes: np.ndarray) -> np.ndarray:
@@ -304,7 +304,7 @@ class Codebook:
         if self._d == 0:
             return 0.0
         float_bytes = self._d * 4
-        code_bytes = self.target_dim     # int8 = 1 byte
+        code_bytes = self.target_dim  # int8 = 1 byte
         return float_bytes / max(code_bytes, 1)
 
     # ------------------------------------------------------------------

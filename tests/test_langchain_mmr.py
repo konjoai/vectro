@@ -1,11 +1,11 @@
 """Tests for LangChain VectorStore MMR search and persistence."""
+
 from __future__ import annotations
 
 import sys
 import types
 import unittest
-import uuid
-from typing import Any, List, Optional
+from typing import List
 
 import numpy as np
 
@@ -19,6 +19,7 @@ ensure_repo_root_on_path()
 # ---------------------------------------------------------------------------
 # Minimal langchain-core stub
 # ---------------------------------------------------------------------------
+
 
 def _inject_langchain_stub():
     lc = types.ModuleType("langchain_core")
@@ -75,8 +76,8 @@ def _store_with_texts(n: int = 10, dim: int = 64) -> VectroVectorStore:
 # Unit tests for _mmr_select
 # ---------------------------------------------------------------------------
 
-class TestMMRSelect(unittest.TestCase):
 
+class TestMMRSelect(unittest.TestCase):
     def _random_embs(self, n: int, d: int) -> np.ndarray:
         e = RNG.standard_normal((n, d)).astype(np.float32)
         e /= np.linalg.norm(e, axis=1, keepdims=True)
@@ -133,8 +134,8 @@ class TestMMRSelect(unittest.TestCase):
 # Integration tests via VectroVectorStore
 # ---------------------------------------------------------------------------
 
-class TestMMRSearch(unittest.TestCase):
 
+class TestMMRSearch(unittest.TestCase):
     def setUp(self):
         self.store = _store_with_texts(n=12, dim=64)
 
@@ -198,17 +199,17 @@ class TestMMRSearch(unittest.TestCase):
 # Persistence tests for LangChainVectorStore
 # ---------------------------------------------------------------------------
 
-class TestLangChainPersistence(unittest.TestCase):
 
+class TestLangChainPersistence(unittest.TestCase):
     def _build_store(self, n: int = 8, dim: int = 64) -> VectroVectorStore:
         texts = [f"text-{i}" for i in range(n)]
         metas = [{"idx": i} for i in range(n)]
-        return VectroVectorStore.from_texts(
-            texts, embedding=_FakeEmbeddings(dim), metadatas=metas
-        )
+        return VectroVectorStore.from_texts(texts, embedding=_FakeEmbeddings(dim), metadatas=metas)
 
     def test_save_creates_files(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = self._build_store()
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "lc_store")
@@ -217,7 +218,9 @@ class TestLangChainPersistence(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(path, "vectors.npy")))
 
     def test_load_restores_document_count(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = self._build_store(n=10)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "lc_store")
@@ -226,7 +229,9 @@ class TestLangChainPersistence(unittest.TestCase):
             self.assertEqual(len(loaded), 10)
 
     def test_load_restores_texts(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = self._build_store(n=4)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "lc_store")
@@ -235,7 +240,9 @@ class TestLangChainPersistence(unittest.TestCase):
             self.assertEqual(sorted(loaded._texts), sorted(store._texts))
 
     def test_load_restores_metadatas(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = self._build_store(n=4)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "lc_store")
@@ -244,7 +251,10 @@ class TestLangChainPersistence(unittest.TestCase):
             self.assertEqual(loaded._metadatas, store._metadatas)
 
     def test_load_wrong_store_type_raises(self):
-        import tempfile, os, json
+        import tempfile
+        import os
+        import json
+
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "bad")
             os.makedirs(path)
@@ -254,7 +264,9 @@ class TestLangChainPersistence(unittest.TestCase):
                 VectroVectorStore.load(path, embedding=_FakeEmbeddings())
 
     def test_similarity_search_works_after_load(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = self._build_store(n=8)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "lc_store")
@@ -264,10 +276,10 @@ class TestLangChainPersistence(unittest.TestCase):
             self.assertEqual(len(results), 3)
 
     def test_save_empty_store(self):
-        import tempfile, os
-        store = VectroVectorStore(
-            embedding=_FakeEmbeddings(), compression_profile="balanced"
-        )
+        import tempfile
+        import os
+
+        store = VectroVectorStore(embedding=_FakeEmbeddings(), compression_profile="balanced")
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "empty")
             store.save(path)  # must not raise

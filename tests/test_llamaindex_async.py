@@ -1,4 +1,5 @@
 """Tests for LlamaIndex VectorStore async methods (v4.15.0)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -22,10 +23,11 @@ ensure_repo_root_on_path()
 def _inject_llamaindex_stub():
     li = sys.modules.get("llama_index") or types.ModuleType("llama_index")
     core = sys.modules.get("llama_index.core") or types.ModuleType("llama_index.core")
-    schema = sys.modules.get("llama_index.core.schema") or types.ModuleType("llama_index.core.schema")
-    vs_types = (
-        sys.modules.get("llama_index.core.vector_stores.types")
-        or types.ModuleType("llama_index.core.vector_stores.types")
+    schema = sys.modules.get("llama_index.core.schema") or types.ModuleType(
+        "llama_index.core.schema"
+    )
+    vs_types = sys.modules.get("llama_index.core.vector_stores.types") or types.ModuleType(
+        "llama_index.core.vector_stores.types"
     )
 
     @dataclass
@@ -87,7 +89,6 @@ def _nodes(n: int, dim: int = 64) -> List[_TextNode]:
 
 
 class TestLlamaIndexAsync(unittest.TestCase):
-
     def _build_store(self, n: int = 8, dim: int = 64) -> VectroVectorStore:
         store = VectroVectorStore(compression_profile="balanced")
         store.add(_nodes(n, dim))
@@ -165,6 +166,7 @@ class TestLlamaIndexAsync(unittest.TestCase):
 
         async def _run():
             import asyncio as _asyncio
+
             await _asyncio.gather(*[store.async_add(b) for b in batches])
 
         asyncio.run(_run())

@@ -81,7 +81,6 @@ class QdrantConnector(VectorDBConnector):
 
         for record in records:
             payload = record.payload or {}
-            q_dtype = payload.get("vectro_quantized_dtype", "int8")
             precision_mode = payload.get("vectro_precision_mode", "int8")
             q_arr = np.asarray(
                 payload.get("vectro_quantized", []),
@@ -109,5 +108,7 @@ class QdrantConnector(VectorDBConnector):
         )
 
     def delete(self, ids: Sequence[str]) -> int:
-        self.client.delete(collection_name=self.collection_name, points_selector={"points": list(ids)})
+        self.client.delete(
+            collection_name=self.collection_name, points_selector={"points": list(ids)}
+        )
         return len(ids)

@@ -72,9 +72,7 @@ class _FakeWeaviateClient:
 class TestWeaviateConnector(unittest.TestCase):
     def setUp(self):
         self.fake_client = _FakeWeaviateClient()
-        self.connector = WeaviateConnector(
-            collection_name="test_vectors", client=self.fake_client
-        )
+        self.connector = WeaviateConnector(collection_name="test_vectors", client=self.fake_client)
 
     def test_upsert_and_fetch_int8(self):
         ids = ["v1", "v2", "v3"]

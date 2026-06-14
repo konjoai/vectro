@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import NamedTuple
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
 try:
     from tests._path_setup import ensure_repo_root_on_path
@@ -111,14 +111,10 @@ class TestOnnxExportNoInstall(unittest.TestCase):
         parser = _build_parser()
         # Parse known args to ensure the subcommand exists without error.
         subparsers_actions = [
-            a for a in parser._actions
-            if isinstance(a, __import__("argparse")._SubParsersAction)
+            a for a in parser._actions if isinstance(a, __import__("argparse")._SubParsersAction)
         ]
         self.assertTrue(
-            any(
-                "export-onnx" in subparser._name_parser_map
-                for subparser in subparsers_actions
-            ),
+            any("export-onnx" in subparser._name_parser_map for subparser in subparsers_actions),
             msg="'export-onnx' subcommand not found in parser",
         )
 
@@ -130,9 +126,12 @@ class TestOnnxExportNoInstall(unittest.TestCase):
         parser = _build_parser()
         args = parser.parse_args(["export-onnx", "in.npz", "out.onnx"])
 
-        with patch.object(mod, "_HAVE_ONNX", False), \
-             patch("python.cli._load_result_for_export",
-                   side_effect=RuntimeError("onnx not installed")):
+        with (
+            patch.object(mod, "_HAVE_ONNX", False),
+            patch(
+                "python.cli._load_result_for_export", side_effect=RuntimeError("onnx not installed")
+            ),
+        ):
             code = _cmd_export_onnx(args)
 
         self.assertNotEqual(code, 0)
@@ -149,6 +148,7 @@ class TestOnnxExportWithInstall(unittest.TestCase):
 
     def _build(self, n: int = 4, d: int = 8):
         from python.onnx_export import to_onnx_model
+
         return to_onnx_model(_make_result(n=n, d=d))
 
     def test_graph_has_three_nodes(self):

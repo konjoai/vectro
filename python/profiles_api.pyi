@@ -4,10 +4,10 @@ from enum import Enum
 from typing import Any
 
 class CompressionStrategy(Enum):
-    FAST = 'fast'
-    BALANCED = 'balanced'
-    QUALITY = 'quality'
-    CUSTOM = 'custom'
+    FAST = "fast"
+    BALANCED = "balanced"
+    QUALITY = "quality"
+    CUSTOM = "custom"
 
 @dataclass
 class CompressionProfile:
@@ -51,17 +51,33 @@ class ProfileManager:
 
 class CompressionOptimizer:
     @staticmethod
-    def auto_optimize_profile(sample_vectors: np.ndarray, target_similarity: float = 0.995, target_compression: float = 3.0, max_iterations: int = 10) -> CompressionProfile: ...
+    def auto_optimize_profile(
+        sample_vectors: np.ndarray,
+        target_similarity: float = 0.995,
+        target_compression: float = 3.0,
+        max_iterations: int = 10,
+    ) -> CompressionProfile: ...
     @staticmethod
-    def _evaluate_profile(profile: CompressionProfile, vectors: np.ndarray, target_similarity: float, target_compression: float) -> float: ...
+    def _evaluate_profile(
+        profile: CompressionProfile,
+        vectors: np.ndarray,
+        target_similarity: float,
+        target_compression: float,
+    ) -> float: ...
     @staticmethod
     def _simulate_compression(vectors: np.ndarray, profile: CompressionProfile) -> np.ndarray: ...
 
 class ProfileComparison:
     @staticmethod
-    def compare_profiles(vectors: np.ndarray, profile_names: list[str] = None) -> dict[str, dict[str, float]]: ...
+    def compare_profiles(
+        vectors: np.ndarray, profile_names: list[str] = None
+    ) -> dict[str, dict[str, float]]: ...
     @staticmethod
-    def generate_comparison_report(comparison_results: dict[str, dict[str, float]], title: str = 'Profile Comparison Report') -> str: ...
+    def generate_comparison_report(
+        comparison_results: dict[str, dict[str, float]], title: str = "Profile Comparison Report"
+    ) -> str: ...
 
 def get_compression_profile(name: str) -> CompressionProfile: ...
-def create_custom_profile(name: str, quantization_bits: int = 8, range_factor: float = 0.95, **kwargs) -> CompressionProfile: ...
+def create_custom_profile(
+    name: str, quantization_bits: int = 8, range_factor: float = 0.95, **kwargs
+) -> CompressionProfile: ...

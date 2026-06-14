@@ -28,11 +28,12 @@ import numpy as np
 
 _BINARY_NAME = "vectro_quantizer"
 
+
 def _find_binary() -> str | None:
     """Return the absolute path to the compiled Mojo binary, or None."""
     candidates = [
-        pathlib.Path(__file__).parent / _BINARY_NAME,          # installed wheel (bundled binary)
-        pathlib.Path(__file__).parent.parent / _BINARY_NAME,   # repo root (dev)
+        pathlib.Path(__file__).parent / _BINARY_NAME,  # installed wheel (bundled binary)
+        pathlib.Path(__file__).parent.parent / _BINARY_NAME,  # repo root (dev)
         pathlib.Path(_BINARY_NAME),
         pathlib.Path.cwd() / _BINARY_NAME,
     ]
@@ -54,13 +55,13 @@ def binary_path() -> str:
     """Return the path to the binary, raising RuntimeError if absent."""
     if _binary_path is None:
         raise RuntimeError(
-            "vectro_quantizer binary not found.  "
-            "Build it with:  pixi run build-mojo"
+            "vectro_quantizer binary not found.  Build it with:  pixi run build-mojo"
         )
     return _binary_path
 
 
 # ── low-level I/O helpers ─────────────────────────────────────────────────────
+
 
 def _write_f32(arr: np.ndarray, path: str) -> None:
     arr = np.ascontiguousarray(arr, dtype=np.float32)
@@ -95,8 +96,7 @@ def _run(args: list[str]) -> None:
     result = subprocess.run(cmd, capture_output=False)
     if result.returncode != 0:
         raise RuntimeError(
-            f"vectro_quantizer exited with code {result.returncode}: "
-            + " ".join(cmd)
+            f"vectro_quantizer exited with code {result.returncode}: " + " ".join(cmd)
         )
 
 
@@ -120,6 +120,7 @@ def _run_pipe(args: list[str], stdin_data: bytes) -> bytes:
 
 # ── INT8 ──────────────────────────────────────────────────────────────────────
 
+
 def int8_quantize(
     vectors: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -139,7 +140,7 @@ def int8_quantize(
 
     stdout = _run_pipe(["pipe", "int8", "quantize", str(n), str(d)], vectors.tobytes())
 
-    q      = np.frombuffer(stdout[:n * d], dtype=np.int8).reshape(n, d).copy()
+    q = np.frombuffer(stdout[: n * d], dtype=np.int8).reshape(n, d).copy()
     scales = np.frombuffer(stdout[n * d : n * d + n * 4], dtype="<f4").copy()
 
     return q, scales
@@ -175,6 +176,7 @@ def int8_reconstruct(
 
 # ── NF4 ───────────────────────────────────────────────────────────────────────
 
+
 def nf4_encode(
     vectors: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -195,7 +197,7 @@ def nf4_encode(
 
     stdout = _run_pipe(["pipe", "nf4", "encode", str(n), str(d)], vectors.tobytes())
 
-    packed = np.frombuffer(stdout[:n * half_d], dtype=np.uint8).reshape(n, half_d).copy()
+    packed = np.frombuffer(stdout[: n * half_d], dtype=np.uint8).reshape(n, half_d).copy()
     scales = np.frombuffer(stdout[n * half_d : n * half_d + n * 4], dtype="<f4").copy()
 
     return packed, scales
@@ -227,6 +229,7 @@ def nf4_decode(
 
 
 # ── Binary ────────────────────────────────────────────────────────────────────
+
 
 def bin_encode(
     vectors: np.ndarray,
@@ -272,6 +275,7 @@ def bin_decode(
 
 
 # ── Product Quantization (PQ) ───────────────────────────────────────────────
+
 
 def pq_encode(
     vectors: np.ndarray,

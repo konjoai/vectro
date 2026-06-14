@@ -33,8 +33,7 @@ class MilvusConnector(VectorDBConnector):
                 milvus_mod = importlib.import_module("pymilvus")
             except ImportError as exc:
                 raise RuntimeError(
-                    "pymilvus is required for MilvusConnector. "
-                    "Install with: pip install pymilvus"
+                    "pymilvus is required for MilvusConnector. Install with: pip install pymilvus"
                 ) from exc
             # MilvusClient(":memory:") creates a local, ephemeral Milvus Lite instance.
             self.client = milvus_mod.MilvusClient(":memory:")
@@ -59,9 +58,7 @@ class MilvusConnector(VectorDBConnector):
             metadata: Optional user-level metadata dict applied to every row.
         """
         if len(ids) != len(quantized) or len(ids) != len(scales):
-            raise ValueError(
-                "ids, quantized rows, and scales rows must have matching lengths"
-            )
+            raise ValueError("ids, quantized rows, and scales rows must have matching lengths")
 
         payload_meta = metadata or {}
         data: List[Dict[str, Any]] = []
@@ -74,9 +71,7 @@ class MilvusConnector(VectorDBConnector):
                 "id": vector_id,
                 "vectro_quantized": q_row.tolist(),
                 "vectro_scales": s_row.tolist(),
-                "vectro_vector_dim": int(
-                    q_row.shape[0] * (2 if q_row.dtype == np.uint8 else 1)
-                ),
+                "vectro_vector_dim": int(q_row.shape[0] * (2 if q_row.dtype == np.uint8 else 1)),
                 "vectro_quantized_dtype": str(q_row.dtype),
                 "vectro_precision_mode": "int4" if q_row.dtype == np.uint8 else "int8",
                 "vectro_metadata": payload_meta,

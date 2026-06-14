@@ -1,4 +1,5 @@
 """Tests for VectroDSPyRetriever — DSPy retrieval module backed by Vectro."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
-from typing import Any, List
+from typing import Any
 
 import numpy as np
 
@@ -23,6 +24,7 @@ ensure_repo_root_on_path()
 # Minimal dspy stub — install BEFORE importing the integration so
 # _make_prediction routes through dspy.Prediction in the success path.
 # ---------------------------------------------------------------------------
+
 
 class _Prediction:
     def __init__(self, **fields: Any) -> None:
@@ -47,9 +49,26 @@ from python.integrations.dspy_integration import VectroDSPyRetriever  # noqa: E4
 # Deterministic fake embedder — keyword-overlap pseudo-vectors.
 # ---------------------------------------------------------------------------
 
-VOCAB = ["paris", "berlin", "tokyo", "capital", "winter", "cold", "city",
-         "france", "germany", "japan", "ai", "machine", "learning", "deep",
-         "vector", "search", "rag", "retrieval"]
+VOCAB = [
+    "paris",
+    "berlin",
+    "tokyo",
+    "capital",
+    "winter",
+    "cold",
+    "city",
+    "france",
+    "germany",
+    "japan",
+    "ai",
+    "machine",
+    "learning",
+    "deep",
+    "vector",
+    "search",
+    "rag",
+    "retrieval",
+]
 
 
 def _vec(text: str) -> np.ndarray:
@@ -82,8 +101,7 @@ PASSAGES = [
 ]
 
 
-def _make_retriever(k: int = 3, profile: str = "balanced",
-                    metadatas=None) -> VectroDSPyRetriever:
+def _make_retriever(k: int = 3, profile: str = "balanced", metadatas=None) -> VectroDSPyRetriever:
     rm = VectroDSPyRetriever(embed_fn=embed_fn, k=k, compression_profile=profile)
     rm.add_texts(PASSAGES, metadatas=metadatas)
     return rm
@@ -92,6 +110,7 @@ def _make_retriever(k: int = 3, profile: str = "balanced",
 # ---------------------------------------------------------------------------
 # Construction & corpus management
 # ---------------------------------------------------------------------------
+
 
 class TestConstruction(unittest.TestCase):
     def test_init_defaults(self):
@@ -146,6 +165,7 @@ class TestConstruction(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Forward / __call__ — DSPy retrieval contract
 # ---------------------------------------------------------------------------
+
 
 class TestForward(unittest.TestCase):
     def test_returns_dspy_prediction(self):
@@ -220,6 +240,7 @@ class TestForward(unittest.TestCase):
 # Filters
 # ---------------------------------------------------------------------------
 
+
 class TestFilters(unittest.TestCase):
     def _retriever_with_meta(self):
         metas = [
@@ -247,8 +268,7 @@ class TestFilters(unittest.TestCase):
 
     def test_filter_multiple_keys(self):
         rm = self._retriever_with_meta()
-        out = rm.forward("paris france capital",
-                         filters={"region": "eu", "topic": "geography"})
+        out = rm.forward("paris france capital", filters={"region": "eu", "topic": "geography"})
         for p in out.passages:
             self.assertNotIn("Tokyo", p)
 
@@ -257,6 +277,7 @@ class TestFilters(unittest.TestCase):
 # Async forward
 # ---------------------------------------------------------------------------
 
+
 class TestAsync(unittest.TestCase):
     def test_aforward_matches_forward(self):
         rm = _make_retriever(k=2)
@@ -264,6 +285,7 @@ class TestAsync(unittest.TestCase):
 
         async def go():
             return await rm.aforward("paris france")
+
         async_out = asyncio.run(go())
         self.assertEqual(sync_out.passages, async_out.passages)
 
@@ -271,6 +293,7 @@ class TestAsync(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # MMR
 # ---------------------------------------------------------------------------
+
 
 class TestMMR(unittest.TestCase):
     def test_mmr_returns_k(self):
@@ -281,15 +304,17 @@ class TestMMR(unittest.TestCase):
     def test_mmr_lambda_one_matches_relevance_ordering(self):
         rm = _make_retriever(k=2)
         rel = rm.forward("ai machine learning", k=2)
-        mmr = rm.forward_mmr("ai machine learning", k=2, fetch_k=6,
-                             lambda_mult=1.0)
+        mmr = rm.forward_mmr("ai machine learning", k=2, fetch_k=6, lambda_mult=1.0)
         self.assertEqual(set(rel.passages), set(mmr.passages))
 
     def test_mmr_diversity_changes_selection(self):
         rm = _make_retriever(k=2)
         relevance = rm.forward("machine learning", k=2)
         diverse = rm.forward_mmr(
-            "machine learning", k=2, fetch_k=6, lambda_mult=0.0,
+            "machine learning",
+            k=2,
+            fetch_k=6,
+            lambda_mult=0.0,
         )
         # With pure diversity the selected set may differ from pure relevance
         self.assertEqual(len(diverse.passages), 2)
@@ -297,8 +322,7 @@ class TestMMR(unittest.TestCase):
     def test_mmr_filters(self):
         metas = [{"topic": "geo"}] * 3 + [{"topic": "ai"}] * 3
         rm = _make_retriever(k=3, metadatas=metas)
-        out = rm.forward_mmr("ai machine learning", k=2, fetch_k=4,
-                             filters={"topic": "ai"})
+        out = rm.forward_mmr("ai machine learning", k=2, fetch_k=4, filters={"topic": "ai"})
         for p in out.passages:
             self.assertNotIn("Paris", p)
 
@@ -308,6 +332,7 @@ class TestMMR(unittest.TestCase):
 
         async def go():
             return await rm.aforward_mmr("machine learning ai", k=2, fetch_k=4)
+
         async_out = asyncio.run(go())
         self.assertEqual(sync_out.passages, async_out.passages)
 
@@ -315,6 +340,7 @@ class TestMMR(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
+
 
 class TestPersistence(unittest.TestCase):
     def test_save_load_roundtrip(self):
@@ -337,11 +363,19 @@ class TestPersistence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             os.makedirs(tmpdir, exist_ok=True)
             import json
+
             with open(os.path.join(tmpdir, "meta.json"), "w") as fh:
-                json.dump({"store_type": "haystack", "profile": "balanced",
-                           "n_dims": 4, "passages": [], "k": 3}, fh)
-            np.save(os.path.join(tmpdir, "vectors.npy"),
-                    np.zeros((0, 4), dtype=np.float32))
+                json.dump(
+                    {
+                        "store_type": "haystack",
+                        "profile": "balanced",
+                        "n_dims": 4,
+                        "passages": [],
+                        "k": 3,
+                    },
+                    fh,
+                )
+            np.save(os.path.join(tmpdir, "vectors.npy"), np.zeros((0, 4), dtype=np.float32))
             with self.assertRaises(ValueError):
                 VectroDSPyRetriever.load(tmpdir, embed_fn=embed_fn)
 
@@ -356,6 +390,7 @@ class TestPersistence(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Compression stats
 # ---------------------------------------------------------------------------
+
 
 class TestCompressionStats(unittest.TestCase):
     def test_empty_stats(self):
@@ -377,14 +412,17 @@ class TestCompressionStats(unittest.TestCase):
 # Top-level export sanity
 # ---------------------------------------------------------------------------
 
+
 class TestTopLevelExports(unittest.TestCase):
     def test_in_python_namespace(self):
         import python as vp
+
         self.assertTrue(hasattr(vp, "VectroDSPyRetriever"))
         self.assertIn("VectroDSPyRetriever", vp.__all__)
 
     def test_in_integrations_namespace(self):
         from python.integrations import VectroDSPyRetriever as RM
+
         self.assertIs(RM, VectroDSPyRetriever)
 
 
@@ -392,10 +430,12 @@ class TestTopLevelExports(unittest.TestCase):
 # Fallback _Prediction (when dspy is not installed)
 # ---------------------------------------------------------------------------
 
+
 class TestFallbackPrediction(unittest.TestCase):
     def test_make_prediction_without_dspy(self):
         # Temporarily mask dspy from sys.modules to exercise the fallback path.
         from python.integrations import dspy_integration as di
+
         orig = sys.modules.pop("dspy", None)
         try:
             out = di._make_prediction(["a", "b"])

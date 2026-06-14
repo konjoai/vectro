@@ -22,9 +22,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 def _run_python_snippet(snippet: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_ROOT}" if not existing else f"{_ROOT}{os.pathsep}{existing}"
-    )
+    env["PYTHONPATH"] = f"{_ROOT}" if not existing else f"{_ROOT}{os.pathsep}{existing}"
     return subprocess.run(
         [sys.executable, "-c", snippet],
         capture_output=True,
@@ -61,9 +59,7 @@ def test_rq_api_train_encode_decode_in_subprocess() -> None:
     )
     result = _run_python_snippet(snippet)
     assert result.returncode == 0, (
-        "RQ subprocess execution failed\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
+        f"RQ subprocess execution failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "rq_subprocess_ok" in result.stdout
 
@@ -91,9 +87,7 @@ def test_v3_rq_profile_in_subprocess() -> None:
     )
     result = _run_python_snippet(snippet)
     assert result.returncode == 0, (
-        "V3 RQ subprocess execution failed\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
+        f"V3 RQ subprocess execution failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "v3_rq_subprocess_ok" in result.stdout
 

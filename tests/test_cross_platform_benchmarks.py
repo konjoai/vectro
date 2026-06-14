@@ -28,7 +28,6 @@ Usage:
 import importlib.util
 import json
 import platform
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -37,9 +36,10 @@ import numpy as np
 import pytest
 
 import tests._path_setup as _path_setup  # noqa: F401
+
 _path_setup.ensure_repo_root_on_path()
 
-from benchmarks.platform_detection import detect_platform, get_simd_capabilities
+from benchmarks.platform_detection import detect_platform
 from python.batch_api import VectroBatchProcessor as _VectroBP
 from python import compress_vectors, decompress_vectors
 
@@ -64,6 +64,7 @@ def _reconstruct_batch(vectors: np.ndarray, profile: str = "int8") -> np.ndarray
 # Helpers
 # ============================================================================
 
+
 def _has_rust_ext() -> bool:
     return importlib.util.find_spec("vectro_py") is not None
 
@@ -79,6 +80,7 @@ def _has_hnswlib() -> bool:
 # ============================================================================
 # Fixtures
 # ============================================================================
+
 
 @pytest.fixture(scope="session")
 def platform_info():
@@ -97,12 +99,14 @@ def random_vectors():
     def _generate(dim=768, num_vectors=10000, seed=42):
         rng = np.random.default_rng(seed)
         return rng.standard_normal((num_vectors, dim)).astype(np.float32)
+
     return _generate
 
 
 # ============================================================================
 # Section 1: Platform Detection Tests
 # ============================================================================
+
 
 class TestPlatformDetection:
     def test_platform_detected(self, platform_info):
@@ -130,28 +134,27 @@ class TestPlatformDetection:
         if "x86_64" not in platform_info.architecture:
             pytest.skip("Not x86_64 — skipping AVX2 check")
         simd = platform_info.simd_capabilities
-        assert any("AVX2" in s for s in simd), (
-            f"x86_64 platform missing AVX2 in SIMD caps: {simd}"
-        )
+        assert any("AVX2" in s for s in simd), f"x86_64 platform missing AVX2 in SIMD caps: {simd}"
 
     def test_apple_silicon_detects_neon(self, platform_info):
         """On Apple Silicon (arm64), NEON must be reported."""
         if "arm64" not in platform_info.architecture:
             pytest.skip("Not arm64 — skipping NEON check")
         simd = platform_info.simd_capabilities
-        assert any("NEON" in s for s in simd), (
-            f"arm64 platform missing NEON in SIMD caps: {simd}"
-        )
+        assert any("NEON" in s for s in simd), f"arm64 platform missing NEON in SIMD caps: {simd}"
 
 
 # ============================================================================
 # Section 2: INT8 Throughput Tests
 # ============================================================================
 
-class TestINT8Throughput:
 
+class TestINT8Throughput:
     @pytest.mark.throughput
-    @pytest.mark.skipif(not _has_rust_ext(), reason="vectro_py Rust extension not installed — throughput floors require SIMD path")
+    @pytest.mark.skipif(
+        not _has_rust_ext(),
+        reason="vectro_py Rust extension not installed — throughput floors require SIMD path",
+    )
     @pytest.mark.parametrize("dimension", [128, 384, 768, 1536])
     def test_int8_throughput_minimum_floor(self, dimension, random_vectors):
         """INT8 throughput must meet dimension-scaled floor (Rust SIMD path).
@@ -215,6 +218,7 @@ class TestINT8Throughput:
 # Section 2b: Rust SIMD Path Tests
 # ============================================================================
 
+
 @pytest.mark.skipif(not _has_rust_ext(), reason="vectro_py Rust extension not installed")
 class TestRustSIMDPath:
     """Verify the vectro_py Rust extension dispatches to NEON (arm64) or AVX2 (x86_64)
@@ -225,6 +229,7 @@ class TestRustSIMDPath:
 
     def test_rust_quantize_int8_batch_shape(self, random_vectors):
         import vectro_py
+
         vectors = random_vectors(dim=768, num_vectors=1000)
         codes, scales = vectro_py.quantize_int8_batch(vectors)
         assert codes.shape == (1000, 768)
@@ -234,6 +239,7 @@ class TestRustSIMDPath:
 
     def test_rust_quantize_int8_batch_scale_positive(self, random_vectors):
         import vectro_py
+
         vectors = random_vectors(dim=768, num_vectors=100)
         _, scales = vectro_py.quantize_int8_batch(vectors)
         assert np.all(scales > 0), "All scales must be positive"
@@ -241,6 +247,7 @@ class TestRustSIMDPath:
     def test_rust_dequantize_roundtrip_quality(self, random_vectors):
         """Rust INT8 round-trip must meet ≥0.9997 cosine similarity."""
         import vectro_py
+
         vectors = random_vectors(dim=768, num_vectors=500)
         codes, scales = vectro_py.quantize_int8_batch(vectors)
         reconstructed = vectro_py.dequantize_int8_batch(codes, scales)
@@ -255,6 +262,7 @@ class TestRustSIMDPath:
     def test_rust_int8_throughput_1m_floor(self, random_vectors):
         """Rust SIMD path must achieve ≥1M vec/s at d=768."""
         import vectro_py
+
         FLOOR = 1_000_000
 
         vectors = random_vectors(dim=768, num_vectors=50_000)
@@ -271,15 +279,14 @@ class TestRustSIMDPath:
 
         mean_tp = float(np.mean(throughputs))
         arch = platform.machine()
-        assert mean_tp >= FLOOR, (
-            f"Rust SIMD ({arch}) d=768: {mean_tp:.0f} vec/s < {FLOOR} floor"
-        )
+        assert mean_tp >= FLOOR, f"Rust SIMD ({arch}) d=768: {mean_tp:.0f} vec/s < {FLOOR} floor"
 
     @pytest.mark.throughput
     @pytest.mark.parametrize("dimension", [128, 384, 768, 1536])
     def test_rust_int8_throughput_cross_dimension(self, dimension, random_vectors):
         """Rust SIMD throughput across dimensions — records numbers for paper table."""
         import vectro_py
+
         FLOOR = 500_000  # 500K vec/s minimum across all dimensions
 
         vectors = random_vectors(dim=dimension, num_vectors=10_000)
@@ -295,13 +302,12 @@ class TestRustSIMDPath:
             throughputs.append(len(arr) / (time.perf_counter() - t0))
 
         mean_tp = float(np.mean(throughputs))
-        assert mean_tp >= FLOOR, (
-            f"Rust SIMD d={dimension}: {mean_tp:.0f} vec/s < {FLOOR} floor"
-        )
+        assert mean_tp >= FLOOR, f"Rust SIMD d={dimension}: {mean_tp:.0f} vec/s < {FLOOR} floor"
 
     def test_rust_encode_nf4_fast_shape(self, random_vectors):
         """encode_nf4_fast returns packed bytes, scale, and dim."""
         import vectro_py
+
         v = random_vectors(dim=768, num_vectors=1)[0].tolist()
         packed, scale, dim = vectro_py.encode_nf4_fast(v)
         assert len(packed) == (768 + 1) // 2  # ceil(d/2)
@@ -313,8 +319,8 @@ class TestRustSIMDPath:
 # Section 3: Quantization Quality Tests
 # ============================================================================
 
-class TestQuantizationQuality:
 
+class TestQuantizationQuality:
     def test_int8_quality_contract_floor(self, random_vectors):
         """INT8 quality must meet ≥0.9997 cosine similarity."""
         vectors = random_vectors(dim=768, num_vectors=1000)
@@ -366,10 +372,13 @@ class TestQuantizationQuality:
 # Section 4: Single-Vector Latency Tests
 # ============================================================================
 
-class TestSingleVectorLatency:
 
+class TestSingleVectorLatency:
     @pytest.mark.latency
-    @pytest.mark.skipif(not _has_rust_ext(), reason="vectro_py Rust extension not installed — ADR-002 <1ms contract requires SIMD path")
+    @pytest.mark.skipif(
+        not _has_rust_ext(),
+        reason="vectro_py Rust extension not installed — ADR-002 <1ms contract requires SIMD path",
+    )
     def test_single_vector_latency_p99_under_1ms(self, random_vectors):
         """p99 single-vector INT8 latency must be <1ms (ADR-002 contract, Rust path only)."""
         ADR002_MS = 1.0
@@ -417,6 +426,7 @@ class TestSingleVectorLatency:
     def test_rust_single_vector_latency_p99_under_1ms(self, random_vectors):
         """Rust path p99 must also meet ADR-002 <1ms contract."""
         import vectro_py
+
         vector = np.ascontiguousarray(random_vectors(dim=768, num_vectors=1))
 
         for _ in range(100):
@@ -436,8 +446,8 @@ class TestSingleVectorLatency:
 # Section 5: HNSW Search Tests
 # ============================================================================
 
-class TestHNSWSearch:
 
+class TestHNSWSearch:
     @pytest.mark.skipif(not _has_hnswlib(), reason="hnswlib not installed")
     def test_hnsw_recall_acceptable(self, random_vectors):
         """hnswlib HNSW must achieve ≥0.90 R@10 at ef=200."""
@@ -456,9 +466,9 @@ class TestHNSWSearch:
         sims = np.dot(queries, data.T)
         gt = np.argsort(-sims, axis=1)[:, :10]
 
-        recall = sum(
-            len(set(labels[i]) & set(gt[i])) for i in range(len(queries))
-        ) / (len(queries) * 10)
+        recall = sum(len(set(labels[i]) & set(gt[i])) for i in range(len(queries))) / (
+            len(queries) * 10
+        )
 
         assert recall >= 0.90, f"HNSW R@10={recall:.4f} < 0.90 target"
 
@@ -467,8 +477,8 @@ class TestHNSWSearch:
 # Section 6: Results Collection and Reporting
 # ============================================================================
 
-class TestResultsCollection:
 
+class TestResultsCollection:
     def test_results_aggregation_json_valid(self, results_dir, platform_info):
         results = {
             "timestamp": datetime.now().isoformat() + "Z",
@@ -487,9 +497,15 @@ class TestResultsCollection:
 
     def test_platform_metadata_complete(self, platform_info):
         required = [
-            "os_type", "os_version", "architecture", "cpu_model",
-            "cpu_cores", "simd_capabilities", "numpy_version",
-            "python_version", "timestamp",
+            "os_type",
+            "os_version",
+            "architecture",
+            "cpu_model",
+            "cpu_cores",
+            "simd_capabilities",
+            "numpy_version",
+            "python_version",
+            "timestamp",
         ]
         for field in required:
             assert hasattr(platform_info, field), f"Missing field: {field}"
@@ -499,6 +515,7 @@ class TestResultsCollection:
 # ============================================================================
 # Section 7: Cross-Platform Comparison (requires FAISS)
 # ============================================================================
+
 
 @pytest.mark.skipif(not _has_faiss(), reason="faiss not installed")
 class TestFAISSComparison:

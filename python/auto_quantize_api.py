@@ -26,11 +26,12 @@ auto_quantize(embeddings, target_cosine, target_compression) -> dict
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Optional, Union
 import numpy as np
 
 try:
     from scipy.stats import kurtosis as _scipy_kurtosis  # type: ignore
+
     _HAS_SCIPY = True
 except ImportError:
     _HAS_SCIPY = False
@@ -39,6 +40,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _cosine_sim_mean(a: np.ndarray, b: np.ndarray) -> float:
     """Mean per-vector cosine similarity between a and b."""
@@ -62,7 +64,7 @@ def _compute_kurtosis(embeddings: np.ndarray) -> float:
     m = embeddings.mean(axis=0)
     s = embeddings.std(axis=0) + 1e-8
     z = (embeddings - m) / s
-    return float((z ** 4).mean(axis=0).mean() - 3.0)
+    return float((z**4).mean(axis=0).mean() - 3.0)
 
 
 def _compression_ratio_nf4(d: int) -> float:
@@ -83,6 +85,7 @@ def _compression_ratio_binary(d: int) -> float:
 # ---------------------------------------------------------------------------
 # Strategy implementations
 # ---------------------------------------------------------------------------
+
 
 def _try_nf4(embeddings: np.ndarray, mixed: bool = False) -> dict:
     """Attempt NF4 (or NF4-mixed) quantization.
@@ -186,8 +189,8 @@ def _try_binary(embeddings: np.ndarray) -> dict:
 
     d = embeddings.shape[1]
     try:
-        packed = quantize_binary(embeddings)       # (n, ceil(d/8)) uint8
-        recon = dequantize_binary(packed, d)       # (n, d) float32
+        packed = quantize_binary(embeddings)  # (n, ceil(d/8)) uint8
+        recon = dequantize_binary(packed, d)  # (n, d) float32
         cosine = _cosine_sim_mean(embeddings, recon)
         ratio = _compression_ratio_binary(d)
         return {
@@ -204,6 +207,7 @@ def _try_binary(embeddings: np.ndarray) -> dict:
 # ---------------------------------------------------------------------------
 # Fallback: simple INT8 quantizer (always available, no dependencies)
 # ---------------------------------------------------------------------------
+
 
 def _try_int8_fallback(embeddings: np.ndarray) -> dict:
     """Simple per-vector abs-max INT8 quantization as a last resort."""
@@ -226,6 +230,7 @@ def _try_int8_fallback(embeddings: np.ndarray) -> dict:
 # ---------------------------------------------------------------------------
 # Public function
 # ---------------------------------------------------------------------------
+
 
 def auto_quantize(
     embeddings: np.ndarray,
@@ -271,6 +276,7 @@ def auto_quantize(
     # ── Fast path: model-family registry ──────────────────────────────────────────────────────────────────────────────
     if model_dir is not None:
         from .profiles import get_profile
+
         profile = get_profile(model_dir)
         if profile.method == "int8":
             result = _try_int8_fallback(data)
@@ -287,7 +293,7 @@ def auto_quantize(
     # ── Statistical heuristic ──────────────────────────────────────────────────────────────────────────────────────
     n, d = data.shape
     kurt = _compute_kurtosis(data)
-    heavy_tailed = kurt > 1.5      # excess kurtosis threshold (Laplace ≈ 3, Gaussian ≈ 0)
+    heavy_tailed = kurt > 1.5  # excess kurtosis threshold (Laplace ≈ 3, Gaussian ≈ 0)
 
     # Build candidate order
     # Heavy-tailed distributions benefit from NF4-mixed first
@@ -311,23 +317,25 @@ def auto_quantize(
         ]
 
     tried = []
-    best_compression_ok: Optional[dict] = None   # meets compression, best cosine
-    best_overall: Optional[dict] = None           # absolute best cosine
+    best_compression_ok: Optional[dict] = None  # meets compression, best cosine
+    best_overall: Optional[dict] = None  # absolute best cosine
 
     for fn in candidates:
         r = fn()
-        tried.append({
-            "mode": r.get("mode"),
-            "success": r.get("success"),
-            "cosine_sim": r.get("cosine_sim"),
-            "compression_ratio": r.get("compression_ratio"),
-        })
+        tried.append(
+            {
+                "mode": r.get("mode"),
+                "success": r.get("success"),
+                "cosine_sim": r.get("cosine_sim"),
+                "compression_ratio": r.get("compression_ratio"),
+            }
+        )
 
         if not r.get("success"):
             continue
 
         cosine = r.get("cosine_sim", 0.0)
-        ratio  = r.get("compression_ratio", 0.0)
+        ratio = r.get("compression_ratio", 0.0)
 
         # Track best overall
         if best_overall is None or cosine > best_overall.get("cosine_sim", 0.0):
@@ -347,10 +355,7 @@ def auto_quantize(
 
         # Meets compression but not cosine (save for fallback)
         if ratio >= target_compression:
-            if (
-                best_compression_ok is None
-                or cosine > best_compression_ok.get("cosine_sim", 0.0)
-            ):
+            if best_compression_ok is None or cosine > best_compression_ok.get("cosine_sim", 0.0):
                 best_compression_ok = r
 
     # No strategy met both constraints.

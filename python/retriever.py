@@ -25,13 +25,14 @@ Usage example::
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Protocol, Sequence, runtime_checkable
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 try:
     from vectro_py import BM25Index, hybrid_search_py, EmbeddingDataset  # type: ignore
+
     _BINDINGS_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _BINDINGS_AVAILABLE = False
@@ -137,8 +138,9 @@ class VectroRetriever:
                 "`pip install vectro` first."
             )
         if len(texts) != len(ids):
-            raise ValueError(f"`texts` and `ids` must be the same length, "
-                             f"got {len(texts)} and {len(ids)}.")
+            raise ValueError(
+                f"`texts` and `ids` must be the same length, got {len(texts)} and {len(ids)}."
+            )
 
         self._dataset = dataset
         self._bm25 = BM25Index.build(ids, texts)
@@ -178,8 +180,8 @@ class VectroRetriever:
         return [
             RetrievalResult(
                 id=doc_id,
-                dense_score=0.0,   # raw per-doc breakdown not exposed by Rust binding
-                bm25_score=0.0,    # (combined_score is the fused normalised value)
+                dense_score=0.0,  # raw per-doc breakdown not exposed by Rust binding
+                bm25_score=0.0,  # (combined_score is the fused normalised value)
                 combined_score=score,
                 text=self._text_map.get(doc_id, ""),
             )
@@ -222,9 +224,7 @@ class VectroRetriever:
         VectroRetriever
         """
         if not _BINDINGS_AVAILABLE:
-            raise ImportError(
-                "vectro_py is required.  Build with `maturin develop` first."
-            )
+            raise ImportError("vectro_py is required.  Build with `maturin develop` first.")
         dataset = EmbeddingDataset.load(path)
         return cls(dataset, texts=texts, ids=ids, embed_fn=embed_fn, alpha=alpha)
 
@@ -282,114 +282,11 @@ class VectroRetriever:
                     vectors.append(list(obj["vector"]))
 
         if not _BINDINGS_AVAILABLE:
-            raise ImportError(
-                "vectro_py is required.  Build with `maturin develop` first."
-            )
+            raise ImportError("vectro_py is required.  Build with `maturin develop` first.")
 
-        dataset = EmbeddingDataset.from_embeddings(ids, vectors) if vectors else EmbeddingDataset.empty()
-        return cls(dataset, texts=texts, ids=ids, embed_fn=embed_fn, alpha=alpha)
-
-    # ------------------------------------------------------------------
-    # Classmethods
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def from_file(
-        cls,
-        path: str,
-        texts: list[str],
-        ids: list[str],
-        embed_fn=None,
-        alpha: float = 0.7,
-    ) -> "VectroRetriever":
-        """Construct a :class:`VectroRetriever` from a Vectro dataset file.
-
-        Convenience factory that calls :meth:`EmbeddingDataset.load` for you,
-        removing the need to manage the dataset object manually.
-
-        Parameters
-        ----------
-        path : str
-            Path to a ``.stream1`` or ``.qstream1`` file on disk.
-        texts : list[str]
-            Corpus texts in the same order as *ids*.
-        ids : list[str]
-            Document identifiers in the same order as *texts*.
-        embed_fn : callable, optional
-            ``(query: str) -> list[float]`` producing query embeddings.
-        alpha : float
-            Score fusion weight (1.0 = pure dense, 0.0 = pure BM25).
-
-        Returns
-        -------
-        VectroRetriever
-        """
-        if not _BINDINGS_AVAILABLE:
-            raise ImportError(
-                "vectro_py is required.  Build with `maturin develop` first."
-            )
-        dataset = EmbeddingDataset.load(path)
-        return cls(dataset, texts=texts, ids=ids, embed_fn=embed_fn, alpha=alpha)
-
-    @classmethod
-    def from_jsonl(
-        cls,
-        path: str,
-        text_field: str = "text",
-        id_field: str = "id",
-        embed_fn=None,
-        alpha: float = 0.7,
-    ) -> "VectroRetriever":
-        """Construct a :class:`VectroRetriever` from a JSONL corpus file.
-
-        Each line must be a JSON object with at least *id_field* and
-        *text_field* keys.  Embeddings must already be present in the JSONL
-        (any ``"vector"`` field is ignored; use :meth:`from_file` for
-        pre-embedded datasets).
-
-        This factory is intended for text-only BM25 retrieval scenarios where
-        you supply your own *embed_fn* or want BM25-only mode.
-
-        Parameters
-        ----------
-        path : str
-            Path to a ``.jsonl`` file.
-        text_field : str
-            Key used for document text (default ``"text"``).
-        id_field : str
-            Key used for document identifier (default ``"id"``).
-        embed_fn : callable, optional
-            ``(query: str) -> list[float]`` producing query embeddings.
-        alpha : float
-            Score fusion weight.
-
-        Returns
-        -------
-        VectroRetriever
-        """
-        import json
-
-        texts: list[str] = []
-        ids: list[str] = []
-        vectors: list[list[float]] = []
-
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                obj = json.loads(line)
-                texts.append(str(obj[text_field]))
-                ids.append(str(obj[id_field]))
-                if "vector" in obj:
-                    vectors.append(list(obj["vector"]))
-
-        if not _BINDINGS_AVAILABLE:
-            raise ImportError(
-                "vectro_py is required.  Build with `maturin develop` first."
-            )
-
-        dataset = EmbeddingDataset.from_embeddings(ids, vectors) if vectors else EmbeddingDataset.empty()
+        dataset = (
+            EmbeddingDataset.from_embeddings(ids, vectors) if vectors else EmbeddingDataset.empty()
+        )
         return cls(dataset, texts=texts, ids=ids, embed_fn=embed_fn, alpha=alpha)
 
     # ------------------------------------------------------------------
@@ -412,6 +309,4 @@ class VectroRetriever:
         return len(self._bm25)
 
     def __repr__(self) -> str:
-        return (
-            f"VectroRetriever(n_docs={self.n_docs}, alpha={self._alpha:.2f})"
-        )
+        return f"VectroRetriever(n_docs={self.n_docs}, alpha={self._alpha:.2f})"

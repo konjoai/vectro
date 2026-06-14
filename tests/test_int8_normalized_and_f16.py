@@ -11,6 +11,7 @@
 The tests skip cleanly if the Rust extension is unavailable on the current
 host so this file is safe to keep in the always-on test suite.
 """
+
 from __future__ import annotations
 
 import unittest
@@ -32,6 +33,7 @@ from python.profiles_api import CompressionProfile, CompressionStrategy  # noqa:
 # ---------------------------------------------------------------------------
 # CompressionProfile.assume_normalized field
 # ---------------------------------------------------------------------------
+
 
 class TestProfileNormalizedField(unittest.TestCase):
     def _make_profile(self, **overrides: Any) -> CompressionProfile:
@@ -84,8 +86,8 @@ class TestProfileNormalizedField(unittest.TestCase):
 # _rust_bridge — guarded by extension availability
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(_rust_bridge.is_available(),
-                     "vectro_py Rust extension not built")
+
+@unittest.skipUnless(_rust_bridge.is_available(), "vectro_py Rust extension not built")
 class TestRustBridgeNormalized(unittest.TestCase):
     def test_assume_normalized_roundtrip(self):
         rng = np.random.default_rng(seed=0xBEEF)
@@ -109,7 +111,8 @@ class TestRustBridgeNormalized(unittest.TestCase):
             denom = np.linalg.norm(a) * np.linalg.norm(b)
             cos = float(np.dot(a, b) / denom)
             self.assertGreaterEqual(
-                cos, 0.99,
+                cos,
+                0.99,
                 f"row {i}: assume_normalized cosine {cos:.5f} < 0.99",
             )
 
@@ -127,8 +130,7 @@ class TestRustBridgeNormalized(unittest.TestCase):
         self.assertFalse(np.allclose(scales_def, 1.0 / 127.0))
 
 
-@unittest.skipUnless(_rust_bridge.is_available(),
-                     "vectro_py Rust extension not built")
+@unittest.skipUnless(_rust_bridge.is_available(), "vectro_py Rust extension not built")
 class TestRustBridgeF16(unittest.TestCase):
     def test_f16_input_roundtrip(self):
         rng = np.random.default_rng(seed=42)
@@ -149,8 +151,7 @@ class TestRustBridgeF16(unittest.TestCase):
             if denom == 0:
                 continue
             cos = float(np.dot(a, b) / denom)
-            self.assertGreaterEqual(cos, 0.99,
-                                    f"f16 row {i}: cos {cos:.5f} < 0.99")
+            self.assertGreaterEqual(cos, 0.99, f"f16 row {i}: cos {cos:.5f} < 0.99")
 
 
 if __name__ == "__main__":

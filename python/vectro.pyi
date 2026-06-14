@@ -49,7 +49,6 @@ _VALID_PRECISION_MODES: frozenset[str]
 _VALID_BACKENDS: frozenset[str]
 _VALID_PROFILES: frozenset[str]
 
-
 class QuantizationConfig:
     """Validated configuration container for a single Vectro compression run.
 
@@ -87,9 +86,7 @@ class QuantizationConfig:
         model_dir: Optional[str] = None,
         seed: Optional[int] = None,
     ) -> None: ...
-
     def __post_init__(self) -> None: ...
-
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON-serialisable dict of all config fields."""
         ...
@@ -98,7 +95,6 @@ class QuantizationConfig:
     def from_profile(cls, profile: str, **overrides: Any) -> "QuantizationConfig":
         """Construct a config from a named profile with optional field overrides."""
         ...
-
 
 class Vectro:
     """Main Vectro API class — unified access to all compression capabilities."""
@@ -115,7 +111,6 @@ class Vectro:
         profile: str = "balanced",
         enable_batch_optimization: bool = True,
     ) -> None: ...
-
     def compress(
         self,
         vectors: Union[np.ndarray, list],
@@ -125,30 +120,25 @@ class Vectro:
         model_dir: Optional[str] = None,
         config: Optional[QuantizationConfig] = None,
     ) -> Union[QuantizationResult, BatchQuantizationResult, Tuple[Any, QualityMetrics]]: ...
-
     async def compress_async(
         self,
         vectors: Union[np.ndarray, list],
         profile: Optional[str] = None,
         precision_mode: Optional[str] = None,
     ) -> Union[QuantizationResult, BatchQuantizationResult]: ...
-
     def decompress(
         self,
         result: Union[QuantizationResult, BatchQuantizationResult],
     ) -> np.ndarray: ...
-
     async def decompress_async(
         self,
         result: Union[QuantizationResult, BatchQuantizationResult],
     ) -> np.ndarray: ...
-
     def analyze_quality(
         self,
         original: np.ndarray,
         compressed_result: Union[QuantizationResult, BatchQuantizationResult],
     ) -> QualityMetrics: ...
-
     def benchmark_performance(
         self,
         vector_dims: Optional[list] = None,
@@ -156,57 +146,46 @@ class Vectro:
         profiles: Optional[list] = None,
         num_trials: int = 3,
     ) -> Dict[str, Any]: ...
-
     def optimize_profile(
         self,
         sample_vectors: np.ndarray,
         target_similarity: float = 0.995,
         target_compression: float = 3.0,
     ) -> CompressionProfile: ...
-
     def compare_profiles(
         self,
         vectors: np.ndarray,
         profile_names: Optional[list] = None,
     ) -> str: ...
-
     def save_compressed(
         self,
         result: Union[QuantizationResult, BatchQuantizationResult],
         filepath: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None: ...
-
     def load_compressed(
         self,
         filepath: str,
     ) -> Union[QuantizationResult, BatchQuantizationResult]: ...
-
     @property
     def available_profiles(self) -> list: ...
-
     @property
     def backend_info(self) -> Dict[str, Any]: ...
-
 
 def compress_vectors(
     vectors: Union[np.ndarray, list],
     profile: str = "balanced",
     backend: str = "auto",
 ) -> Union[QuantizationResult, BatchQuantizationResult]: ...
-
 def decompress_vectors(
     result: Union[QuantizationResult, BatchQuantizationResult],
 ) -> np.ndarray: ...
-
 def analyze_compression_quality(
     original: np.ndarray,
     result: Union[QuantizationResult, BatchQuantizationResult],
 ) -> QualityMetrics: ...
-
 def generate_compression_report(
     original: np.ndarray,
     result: Union[QuantizationResult, BatchQuantizationResult],
 ) -> str: ...
-
 def get_version_info() -> Dict[str, str]: ...

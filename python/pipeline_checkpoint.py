@@ -14,6 +14,7 @@ load_pipeline()      — deserialises JSON and reconstructs a
 checkpoint_info()    — reads checkpoint metadata without constructing
                        any pipeline object.
 """
+
 from __future__ import annotations
 
 import json

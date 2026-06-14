@@ -10,10 +10,10 @@ Covers:
 - multi-stage event ordering
 - JSON round-trip
 """
+
 from __future__ import annotations
 
 import json
-import math
 import unittest
 
 import numpy as np
@@ -63,6 +63,7 @@ def _make_event(**overrides) -> TelemetryEvent:
 # TelemetryEvent
 # ---------------------------------------------------------------------------
 
+
 class TestTelemetryEvent(unittest.TestCase):
     def test_construction(self):
         ev = _make_event()
@@ -74,10 +75,17 @@ class TestTelemetryEvent(unittest.TestCase):
         ev = _make_event()
         d = ev.to_dict()
         expected = {
-            "stage_name", "stage_index", "latency_ms",
-            "input_shape", "output_shape", "input_dtype", "output_dtype",
-            "compression_ratio", "throughput_vecs_per_sec",
-            "cosine_fidelity", "extra",
+            "stage_name",
+            "stage_index",
+            "latency_ms",
+            "input_shape",
+            "output_shape",
+            "input_dtype",
+            "output_dtype",
+            "compression_ratio",
+            "throughput_vecs_per_sec",
+            "cosine_fidelity",
+            "extra",
         }
         self.assertEqual(set(d.keys()), expected)
 
@@ -106,6 +114,7 @@ class TestTelemetryEvent(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # TelemetryCollector
 # ---------------------------------------------------------------------------
+
 
 class TestTelemetryCollector(unittest.TestCase):
     def test_attach_and_emit(self):
@@ -154,6 +163,7 @@ class TestTelemetryCollector(unittest.TestCase):
 # InMemoryTelemetryCollector
 # ---------------------------------------------------------------------------
 
+
 class TestInMemoryCollector(unittest.TestCase):
     def test_stores_events(self):
         collector = InMemoryTelemetryCollector()
@@ -185,6 +195,7 @@ class TestInMemoryCollector(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # attach_telemetry() + pipeline integration
 # ---------------------------------------------------------------------------
+
 
 class TestAttachTelemetry(unittest.TestCase):
     def _make_pipeline(self, modes=None):
@@ -243,7 +254,8 @@ class TestAttachTelemetry(unittest.TestCase):
         fidelity = collector.events[0].cosine_fidelity
         self.assertIsNotNone(fidelity)
         self.assertGreaterEqual(
-            fidelity, 0.9999,
+            fidelity,
+            0.9999,
             f"INT8 cosine fidelity {fidelity:.6f} < 0.9999 on unit vectors",
         )
 
@@ -270,6 +282,7 @@ class TestAttachTelemetry(unittest.TestCase):
 
     def test_run_returns_pipeline_result(self):
         from python.async_pipeline import PipelineResult
+
         pipeline = self._make_pipeline()
         attach_telemetry(pipeline)
         pr, out = pipeline.run(RNG.standard_normal((10, 64)).astype(np.float32))

@@ -20,14 +20,14 @@ not available (useful for CI runs without a built wheel).
 
 from __future__ import annotations
 
-import sys
 import random
 import math
-from typing import Callable, List
+from typing import List
 
 # ── Optional: numpy for numeric assertions ──────────────────────────────────
 try:
-    import numpy as np
+    import numpy as np  # noqa: F401  # availability probe
+
     _NP = True
 except ImportError:
     _NP = False
@@ -35,6 +35,7 @@ except ImportError:
 # ── Check compiled bindings availability ────────────────────────────────────
 try:
     from vectro_py import EmbeddingDataset  # noqa: F401
+
     _BINDINGS = True
 except ImportError:
     _BINDINGS = False
@@ -43,6 +44,7 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper utilities
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _random_unit(dim: int, seed: int | None = None) -> List[float]:
     rng = random.Random(seed)
@@ -70,6 +72,7 @@ def _stub_embed_fn(texts: List[str], dim: int = 32) -> List[List[float]]:
 # Demo 1: VectroRetriever.from_jsonl + from_file
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def demo_retriever() -> None:
     print("\n── Demo 1: VectroRetriever ──────────────────────────────────────")
 
@@ -94,7 +97,7 @@ def demo_retriever() -> None:
 
     # ── from_jsonl (builds dataset in-memory) ────────────────────────────────
     retriever = VectroRetriever.from_jsonl(
-        jsonl_path=None,   # None skips file loading; uses texts + ids directly
+        jsonl_path=None,  # None skips file loading; uses texts + ids directly
         texts=CORPUS,
         ids=IDS,
         embed_fn=embed_fn,
@@ -110,6 +113,7 @@ def demo_retriever() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Demo 2: IVFIndex train / add / search
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def demo_ivf() -> None:
     print("\n── Demo 2: IVFIndex ─────────────────────────────────────────────")
@@ -144,6 +148,7 @@ def demo_ivf() -> None:
 
     if _NP:
         import numpy as np
+
         np_query = np.asarray(query, dtype=np.float32)
         np_hits = idx.search_np(np_query, k=5)
         np_hit_ids = [h[0] for h in np_hits]
@@ -156,6 +161,7 @@ def demo_ivf() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Demo 3: Bf16Encoder encode / decode round-trip
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def demo_bf16() -> None:
     print("\n── Demo 3: Bf16Encoder ──────────────────────────────────────────")
@@ -199,6 +205,7 @@ def demo_bf16() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     print("=== KonjoOS Vectro Integration Demo (v7.0.0) ===")

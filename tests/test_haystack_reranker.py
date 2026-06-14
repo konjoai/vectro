@@ -1,4 +1,5 @@
 """Tests for HaystackReranker — Haystack 2.x pipeline component."""
+
 from __future__ import annotations
 
 import sys
@@ -21,6 +22,7 @@ ensure_repo_root_on_path()
 # Minimal haystack stub
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _Document:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -30,7 +32,11 @@ class _Document:
     score: Optional[float] = None
 
     __dataclass_fields__ = {
-        "id": None, "content": None, "embedding": None, "meta": None, "score": None
+        "id": None,
+        "content": None,
+        "embedding": None,
+        "meta": None,
+        "score": None,
     }
 
 
@@ -46,7 +52,7 @@ def _make_haystack_stub():
 _make_haystack_stub()
 
 from python.integrations.haystack_integration import VectroDocumentStore  # noqa: E402
-from python.retrieval.reranker import HaystackReranker                     # noqa: E402
+from python.retrieval.reranker import HaystackReranker  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,8 +85,8 @@ def _store_with_docs(n: int = 8, d: int = DIM) -> VectroDocumentStore:
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestHaystackRerankerInit(unittest.TestCase):
 
+class TestHaystackRerankerInit(unittest.TestCase):
     def test_default_init(self):
         store = _store_with_docs()
         rr = HaystackReranker(store)
@@ -104,7 +110,6 @@ class TestHaystackRerankerInit(unittest.TestCase):
 
 
 class TestHaystackRerankerRun(unittest.TestCase):
-
     def setUp(self):
         self.store = _store_with_docs(10)
         self.reranker = HaystackReranker(self.store, top_k=5)
@@ -147,7 +152,6 @@ class TestHaystackRerankerRun(unittest.TestCase):
 
 
 class TestHaystackRerankerStrategies(unittest.TestCase):
-
     def setUp(self):
         self.store = _store_with_docs(12)
         q = _emb()
@@ -175,7 +179,6 @@ class TestHaystackRerankerStrategies(unittest.TestCase):
 
 
 class TestHaystackRerankerAsync(unittest.IsolatedAsyncioTestCase):
-
     async def test_async_run_returns_documents(self):
         store = _store_with_docs(8)
         rr = HaystackReranker(store, top_k=4)
