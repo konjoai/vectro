@@ -18,9 +18,10 @@ added.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from threading import RLock
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -195,35 +196,148 @@ def kmeans(
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Cosine search — used by the FastAPI /search route and demo viz
+# Cosine scoring — dense leg of the /search route (and demo viz)
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def cosine_topk(M: np.ndarray, q: np.ndarray, k: int) -> List[Dict[str, Any]]:
-    """Return the top-``k`` rows of ``M`` by cosine similarity to ``q``.
-
-    Empty matrix yields an empty result.  The returned list is sorted
-    descending by score and capped at ``k`` (clamped to N).
-    """
+def cosine_scores(M: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Cosine similarity of every row of ``M`` to ``q`` — an (N,) float32
+    array.  Zero-norm rows / queries are treated as unit norm so they score
+    0 rather than dividing by zero.  Empty matrix yields an empty array."""
     M = np.asarray(M, dtype=np.float32)
     q = np.asarray(q, dtype=np.float32).reshape(-1)
     if M.shape[0] == 0:
-        return []
+        return np.zeros((0,), dtype=np.float32)
     if q.shape[0] != M.shape[1]:
         raise ValueError(f"query dim {q.shape[0]} does not match index dim {M.shape[1]}")
-    q_norm = float(np.linalg.norm(q))
-    if q_norm == 0.0:
-        q_norm = 1.0
+    q_norm = float(np.linalg.norm(q)) or 1.0
     qn = q / q_norm
     m_norms = np.linalg.norm(M, axis=1)
     m_norms[m_norms == 0.0] = 1.0
     Mn = M / m_norms[:, None]
-    scores = (Mn @ qn).astype(np.float32, copy=False)
+    return (Mn @ qn).astype(np.float32, copy=False)
 
-    k = max(1, min(int(k), M.shape[0]))
-    if k >= M.shape[0]:
-        order = np.argsort(-scores)
+
+def _topk_order(scores: np.ndarray, k: int) -> np.ndarray:
+    """Indices of the ``k`` largest scores, sorted descending.  ``k`` is
+    clamped to ``[1, len(scores)]``."""
+    n = scores.shape[0]
+    k = max(1, min(int(k), n))
+    if k >= n:
+        return np.argsort(-scores)
+    part = np.argpartition(-scores, k - 1)[:k]
+    return part[np.argsort(-scores[part])]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# BM25 + hybrid (dense ⊕ sparse) search — used by POST /index/{name}/search
+# ─────────────────────────────────────────────────────────────────────────
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def tokenize(text: str) -> List[str]:
+    """Lowercase, alphanumeric word tokenization shared by the BM25 path."""
+    return _TOKEN_RE.findall(text.lower())
+
+
+def bm25_scores(
+    docs: Sequence[str],
+    query: str,
+    *,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> np.ndarray:
+    """Okapi BM25 relevance of each document in ``docs`` to ``query``.
+
+    Returns an (N,) float32 array aligned to ``docs``; all-zero when the
+    corpus is empty, every document is empty, or the query has no tokens.
+    Pure-numpy with no external dependencies, matching the self-contained
+    design of :func:`cosine_scores`.
+    """
+    n = len(docs)
+    if n == 0:
+        return np.zeros((0,), dtype=np.float32)
+    q_terms = set(tokenize(query))
+    if not q_terms:
+        return np.zeros((n,), dtype=np.float32)
+
+    doc_tokens = [tokenize(d) for d in docs]
+    doc_len = np.array([len(t) for t in doc_tokens], dtype=np.float32)
+    avgdl = float(doc_len.mean())
+    if avgdl == 0.0:
+        return np.zeros((n,), dtype=np.float32)
+
+    scores = np.zeros((n,), dtype=np.float32)
+    for term in q_terms:
+        tf = np.array([tokens.count(term) for tokens in doc_tokens], dtype=np.float32)
+        df = float((tf > 0.0).sum())
+        if df == 0.0:
+            continue
+        idf = float(np.log(1.0 + (n - df + 0.5) / (df + 0.5)))
+        denom = tf + k1 * (1.0 - b + b * (doc_len / avgdl))
+        scores += idf * (tf * (k1 + 1.0)) / np.where(denom == 0.0, 1.0, denom)
+    return scores.astype(np.float32, copy=False)
+
+
+def _minmax(x: np.ndarray) -> np.ndarray:
+    """Scale scores into [0, 1].  A constant vector maps to all-zeros — a
+    component that cannot discriminate contributes nothing to the fusion."""
+    if x.size == 0:
+        return x.astype(np.float32, copy=False)
+    lo = float(x.min())
+    hi = float(x.max())
+    if hi <= lo:
+        return np.zeros_like(x, dtype=np.float32)
+    return ((x - lo) / (hi - lo)).astype(np.float32, copy=False)
+
+
+def hybrid_topk(
+    M: np.ndarray,
+    docs: Sequence[str],
+    *,
+    query: Optional[np.ndarray] = None,
+    text: Optional[str] = None,
+    k: int = 5,
+    alpha: float = 0.5,
+) -> List[Dict[str, Any]]:
+    """Top-``k`` results fusing dense cosine and BM25 sparse rankings.
+
+    * ``query`` only  → pure dense cosine.
+    * ``text`` only   → pure BM25.
+    * both            → ``alpha * minmax(dense) + (1 - alpha) * minmax(bm25)``
+      where ``alpha = 1.0`` is dense-only and ``alpha = 0.0`` is BM25-only.
+
+    Each hit carries the fused ``score`` plus the raw ``dense_score`` and
+    ``bm25_score`` for transparency.  Raises ``ValueError`` when neither
+    ``query`` nor ``text`` is supplied.
+    """
+    M = np.asarray(M, dtype=np.float32)
+    n = M.shape[0]
+    if n == 0:
+        return []
+
+    dense = cosine_scores(M, query) if query is not None else None
+    sparse = bm25_scores(docs, text) if text is not None else None
+    if dense is None and sparse is None:
+        raise ValueError("hybrid_topk requires at least one of `query` or `text`")
+
+    dense_raw = dense if dense is not None else np.zeros((n,), dtype=np.float32)
+    sparse_raw = sparse if sparse is not None else np.zeros((n,), dtype=np.float32)
+
+    if dense is not None and sparse is not None:
+        a = float(min(1.0, max(0.0, alpha)))
+        fused = a * _minmax(dense_raw) + (1.0 - a) * _minmax(sparse_raw)
     else:
-        part = np.argpartition(-scores, k - 1)[:k]
-        order = part[np.argsort(-scores[part])]
-    return [{"index": int(i), "score": float(scores[i])} for i in order]
+        fused = dense_raw if dense is not None else sparse_raw
+
+    order = _topk_order(fused.astype(np.float32, copy=False), k)
+    return [
+        {
+            "index": int(i),
+            "score": float(fused[i]),
+            "dense_score": float(dense_raw[i]),
+            "bm25_score": float(sparse_raw[i]),
+        }
+        for i in order
+    ]

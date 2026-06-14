@@ -6,7 +6,7 @@ POST   /index/{name}                — create an empty index (body: {dim})
 GET    /index/{name}                — index info
 DELETE /index/{name}                — drop an index
 POST   /index/{name}/add            — append vectors (auto-creates index)
-POST   /index/{name}/search         — cosine top-k
+POST   /index/{name}/search         — dense / BM25 / hybrid top-k
 POST   /index/{name}/project        — PCA 2-D coords for every vector
 POST   /index/{name}/cluster        — k-means labels for every vector
 GET    /indexes                     — list all index names
@@ -25,9 +25,9 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .store import IndexStore, cosine_topk, kmeans, pca_2d
+from .store import IndexStore, hybrid_topk, kmeans, pca_2d
 
-app = FastAPI(title="vectro-viz", version="0.7.0")
+app = FastAPI(title="vectro-viz", version="0.8.0")
 STORE = IndexStore()
 
 
@@ -47,8 +47,10 @@ class AddBody(BaseModel):
 
 
 class SearchBody(BaseModel):
-    query: List[float]
+    query: Optional[List[float]] = None
+    text: Optional[str] = None
     k: int = 5
+    alpha: float = Field(0.5, ge=0.0, le=1.0)
 
 
 class ClusterBody(BaseModel):
@@ -147,18 +149,51 @@ def add_vectors(name: str, body: AddBody) -> Dict[str, Any]:
 
 @app.post("/index/{name}/search")
 def search(name: str, body: SearchBody) -> Dict[str, Any]:
+    """Dense, BM25, or hybrid top-k.
+
+    Supply ``query`` (a vector) for dense cosine search, ``text`` for BM25
+    over each vector's ``metadata["text"]``, or both for an ``alpha``-weighted
+    fusion (``alpha=1.0`` dense-only, ``alpha=0.0`` BM25-only).
+    """
+    has_query = body.query is not None
+    has_text = body.text is not None
+    if not has_query and not has_text:
+        raise HTTPException(
+            status_code=400,
+            detail="search requires 'query' (vector) and/or 'text'",
+        )
+    mode = "hybrid" if (has_query and has_text) else ("dense" if has_query else "bm25")
+
     idx = _require(name)
     if len(idx) == 0:
-        return {"name": name, "k": body.k, "results": []}
+        return {"name": name, "k": body.k, "alpha": body.alpha, "mode": mode, "results": []}
+
+    query_vec = np.asarray(body.query, dtype=np.float32) if has_query else None
+    docs = [str(m.get("text", "")) for m in idx.metadata]
     try:
-        top = cosine_topk(idx.matrix(), np.asarray(body.query, dtype=np.float32), body.k)
+        top = hybrid_topk(
+            idx.matrix(),
+            docs,
+            query=query_vec,
+            text=body.text,
+            k=body.k,
+            alpha=body.alpha,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {
         "name": name,
         "k": body.k,
+        "alpha": body.alpha,
+        "mode": mode,
         "results": [
-            {"id": idx.ids[hit["index"]], "score": hit["score"], "index": hit["index"]}
+            {
+                "id": idx.ids[hit["index"]],
+                "score": hit["score"],
+                "index": hit["index"],
+                "dense_score": hit["dense_score"],
+                "bm25_score": hit["bm25_score"],
+            }
             for hit in top
         ],
     }

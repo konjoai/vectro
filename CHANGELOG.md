@@ -5,6 +5,41 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [V8 — Hybrid search] — 2026-06-14
+
+### Added
+- `api/store.py` — pure-numpy hybrid retrieval helpers, dependency-free and
+  matching the self-contained design of the existing `pca_2d` / `kmeans`:
+  - `cosine_scores(M, q)` — full (N,) cosine vector (factored out of the old
+    `cosine_topk`, which is removed as the dense leg now flows through the
+    hybrid path).
+  - `tokenize(text)` — lowercase alphanumeric word tokenizer.
+  - `bm25_scores(docs, query, k1=1.5, b=0.75)` — Okapi BM25 relevance of each
+    document to the query; all-zero (never NaN) on empty corpus / empty query /
+    unmatched terms.
+  - `hybrid_topk(M, docs, query=, text=, k=, alpha=)` — fuses dense cosine and
+    BM25 via `alpha * minmax(dense) + (1 - alpha) * minmax(bm25)`; `alpha=1.0`
+    is dense-only, `alpha=0.0` is BM25-only. Each hit carries the fused `score`
+    plus raw `dense_score` and `bm25_score`.
+- `api/app.py` — `POST /index/{name}/search` now accepts an optional `text`
+  param alongside `query` (a vector) and an `alpha` weight (`[0, 1]`, default
+  `0.5`). `query` only → dense (backward compatible), `text` only → BM25 over
+  each vector's `metadata["text"]`, both → hybrid. The response gains `mode`
+  (`dense` / `bm25` / `hybrid`), `alpha`, and per-hit `dense_score` /
+  `bm25_score`. Missing both `query` and `text` → 400; out-of-range `alpha` →
+  422. FastAPI app version `0.7.0 → 0.8.0`.
+- `api/test_hybrid.py` — 14 tests: dense backward-compat, BM25-only ranking,
+  `alpha=1.0`≡dense and `alpha=0.0`≡BM25 equivalence, blended fusion never
+  elevating an unrelated doc, 400/422 guards, empty index, plus unit tests for
+  `tokenize`, `bm25_scores` (zero/empty/unmatched), and `hybrid_topk`.
+
+### Notes
+- Pure-Python BM25 keeps the API service deployable and testable without the
+  compiled `vectro_py` extension (the rust `BM25Index` remains the high-volume
+  path for `python/retriever.py`). Fusion uses the repo's existing
+  alpha-weighted convention rather than rank-based RRF.
+- 1307 Python tests pass (1263 + 44 API, incl. 14 new); Rust crates unchanged.
+
 ## [V7] — 2026-05-09 — Live vector visualization
 
 ### Added

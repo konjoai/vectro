@@ -27,7 +27,7 @@ user impact × implementation cost.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **Hybrid BM25 + dense search (RRF)** | `POST /search` accepts `text` param alongside `vector`. BM25 scores over stored text metadata. Reciprocal Rank Fusion combines dense + sparse. `alpha` controls weighting (0=BM25 only, 1=dense only). | ⬜ Planned |
+| **Hybrid BM25 + dense search** | `POST /index/{name}/search` accepts `text` alongside `query` (vector). BM25 scores over each vector's `metadata["text"]`. `alpha`-weighted min-max fusion (0=BM25 only, 1=dense only); response carries `mode` + per-hit `dense_score`/`bm25_score`. | ✅ V8 |
 | **Scalar / product quantization** | `quantization: "sq8" \| "pq32"` on collection creation. SQ: scale to int8 per-dim. PQ: 8 sub-quantizers of 4 bits each. 75-97% memory reduction. `GET /collections/{name}/quantization_stats`. | ⬜ Planned |
 | **HNSW search trace visualization** | `search(..., trace=True)` returns a `SearchTrace` alongside `(indices, distances)`: entry point, per-layer descent nodes, all layer-0 candidates, final result heap. Powers the animated beam in demo/viz.html. | ✅ v5.2.0 (HNSW) |
 | **Batch upsert with deduplication** | `add_batch(vectors, ids, metadata)` — deduplicates by string ID, updates existing vectors in-place (O(1) per update, no graph surgery), returns `{inserted, updated, node_ids}`. Also adds `get_by_id(str_id)`. | ✅ v5.2.0 (HNSW) |
