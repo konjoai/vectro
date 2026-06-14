@@ -13,12 +13,14 @@ is the performance-critical path; this module handles:
 from __future__ import annotations
 
 import numpy as np
-from typing import Optional, Tuple
+from typing import Tuple
 
 try:
     from . import _mojo_bridge
 except ImportError:
-    import importlib.util as _ilu, pathlib as _pl
+    import importlib.util as _ilu
+    import pathlib as _pl
+
     _spec = _ilu.spec_from_file_location(
         "_mojo_bridge", _pl.Path(__file__).parent / "_mojo_bridge.py"
     )
@@ -29,6 +31,7 @@ except ImportError:
 # Mojo binary is absent but the PyO3 extension is installed.
 try:
     import vectro_py as _vectro_py  # type: ignore[import]
+
     _HAS_VECTRO_PY = True
 except ImportError:
     _vectro_py = None  # type: ignore[assignment]
@@ -150,8 +153,8 @@ def dequantize_nf4(
 
     d_even = (d // 2) * 2
     if d_even > 0:
-        lo = (packed[:, :d_even // 2] & 0x0F).astype(np.int32)
-        hi = ((packed[:, :d_even // 2] >> 4) & 0x0F).astype(np.int32)
+        lo = (packed[:, : d_even // 2] & 0x0F).astype(np.int32)
+        hi = ((packed[:, : d_even // 2] >> 4) & 0x0F).astype(np.int32)
         out[:, 0::2][:, : d_even // 2] = NF4_LEVELS[lo]
         out[:, 1::2][:, : d_even // 2] = NF4_LEVELS[hi]
 
@@ -166,6 +169,7 @@ def dequantize_nf4(
 # ────────────────────────────────────────────────────────────────────────────
 # Mixed-precision: top-k outlier dims in FP16, remainder NF4
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def select_outlier_dims(
     training_data: np.ndarray,
@@ -250,6 +254,7 @@ def dequantize_mixed(
 # ────────────────────────────────────────────────────────────────────────────
 # Quality helpers
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def nf4_cosine_sim(original: np.ndarray, reconstructed: np.ndarray) -> float:
     """Mean cosine similarity between original and reconstructed vectors.

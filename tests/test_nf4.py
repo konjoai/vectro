@@ -1,4 +1,5 @@
 """Tests for NF4 quantizer Phase 2."""
+
 import unittest
 
 import numpy as np

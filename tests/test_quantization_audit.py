@@ -22,6 +22,7 @@ Covers all required behaviours:
 19  test_shape_mismatch_raises
 20  test_seeded_recall_deterministic
 """
+
 from __future__ import annotations
 
 import json
@@ -40,7 +41,6 @@ ensure_repo_root_on_path()
 from python.quantization_audit import (
     QuantizationAuditor,
     QuantizationReport,
-    RecallResult,
     VectorPairMetrics,
 )
 
@@ -53,7 +53,9 @@ _RNG = np.random.default_rng(0)
 _N, _D = 200, 64
 _ORIGINAL: np.ndarray = _RNG.standard_normal((_N, _D)).astype(np.float32)
 # Simulate INT8-style quantization: add small noise to mimic reconstruction error
-_COMPRESSED: np.ndarray = (_ORIGINAL + _RNG.standard_normal((_N, _D)).astype(np.float32) * 0.05).astype(np.float32)
+_COMPRESSED: np.ndarray = (
+    _ORIGINAL + _RNG.standard_normal((_N, _D)).astype(np.float32) * 0.05
+).astype(np.float32)
 
 _AUDITOR = QuantizationAuditor(worst_k=10)
 _REPORT: QuantizationReport = _AUDITOR.run(
@@ -76,11 +78,18 @@ class TestQuantizationAudit(unittest.TestCase):
     def test_report_fields_present(self) -> None:
         """QuantizationReport must expose all required fields."""
         required = {
-            "n_vectors", "original_dtype", "compressed_dtype",
-            "compression_ratio", "per_vector",
-            "mean_cosine_similarity", "min_cosine_similarity",
-            "p5_cosine_similarity", "mean_l2_error",
-            "recall_at_1", "recall_at_5", "recall_at_10",
+            "n_vectors",
+            "original_dtype",
+            "compressed_dtype",
+            "compression_ratio",
+            "per_vector",
+            "mean_cosine_similarity",
+            "min_cosine_similarity",
+            "p5_cosine_similarity",
+            "mean_l2_error",
+            "recall_at_1",
+            "recall_at_5",
+            "recall_at_10",
             "worst_k_indices",
         }
         for f in required:
@@ -97,9 +106,7 @@ class TestQuantizationAudit(unittest.TestCase):
     # 03
     def test_identical_vectors_cosine_1(self) -> None:
         """Cosine similarity must be ≈ 1.0 when original == compressed."""
-        self.assertAlmostEqual(
-            _REPORT_IDENTICAL.mean_cosine_similarity, 1.0, places=5
-        )
+        self.assertAlmostEqual(_REPORT_IDENTICAL.mean_cosine_similarity, 1.0, places=5)
 
     # 04
     def test_identical_vectors_l2_error_0(self) -> None:
@@ -174,9 +181,7 @@ class TestQuantizationAudit(unittest.TestCase):
     # 15
     def test_recall_disabled(self) -> None:
         """When run_recall=False all recall fields must be None."""
-        report = QuantizationAuditor().run(
-            _ORIGINAL, _COMPRESSED, run_recall=False
-        )
+        report = QuantizationAuditor().run(_ORIGINAL, _COMPRESSED, run_recall=False)
         self.assertIsNone(report.recall_at_1)
         self.assertIsNone(report.recall_at_5)
         self.assertIsNone(report.recall_at_10)

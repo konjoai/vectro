@@ -16,6 +16,7 @@ The two visualization endpoints (``project``, ``cluster``) are the V7
 focus.  Everything else is the minimum required to drive them from a
 browser.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,7 @@ STORE = IndexStore()
 # ─────────────────────────────────────────────────────────────────────────
 # Request bodies
 # ─────────────────────────────────────────────────────────────────────────
+
 
 class CreateBody(BaseModel):
     dim: int = Field(..., ge=1, le=8192)
@@ -58,6 +60,7 @@ class ClusterBody(BaseModel):
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def _require(name: str):
     try:
         return STORE.get(name)
@@ -72,6 +75,7 @@ def _summary(idx) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────
 # Index CRUD
 # ─────────────────────────────────────────────────────────────────────────
+
 
 @app.get("/healthz")
 def healthz() -> Dict[str, Any]:
@@ -105,6 +109,7 @@ def delete_index(name: str) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────
 # Vector ops
 # ─────────────────────────────────────────────────────────────────────────
+
 
 @app.post("/index/{name}/add")
 def add_vectors(name: str, body: AddBody) -> Dict[str, Any]:
@@ -162,6 +167,7 @@ def search(name: str, body: SearchBody) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────
 # Visualization endpoints — V7
 # ─────────────────────────────────────────────────────────────────────────
+
 
 @app.post("/index/{name}/project")
 def project(name: str) -> Dict[str, Any]:

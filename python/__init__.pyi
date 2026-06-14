@@ -23,13 +23,17 @@ from .embeddings import (
 )
 from .integrations import (
     ChromaConnector as ChromaConnector,
+    HaystackDocumentStore as HaystackDocumentStore,
     HuggingFaceCompressor as HuggingFaceCompressor,
     InMemoryVectorDBConnector as InMemoryVectorDBConnector,
+    LangChainVectorStore as LangChainVectorStore,
+    LlamaIndexVectorStore as LlamaIndexVectorStore,
     MilvusConnector as MilvusConnector,
     PineconeConnector as PineconeConnector,
     QdrantConnector as QdrantConnector,
     StoredVectorBatch as StoredVectorBatch,
     VectorDBConnector as VectorDBConnector,
+    VectroDSPyRetriever as VectroDSPyRetriever,
     WeaviateConnector as WeaviateConnector,
     compress_tensor as compress_tensor,
     from_arrow_bytes as from_arrow_bytes,

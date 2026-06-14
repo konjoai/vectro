@@ -20,11 +20,14 @@ class TestInMemoryVectorConnector(unittest.TestCase):
 
     def test_upsert_fetch_delete_cycle(self):
         ids = ["a", "b", "c"]
-        quantized = np.array([
-            [1, 2, 3, 4],
-            [5, 6, 7, 8],
-            [9, 10, 11, 12],
-        ], dtype=np.int8)
+        quantized = np.array(
+            [
+                [1, 2, 3, 4],
+                [5, 6, 7, 8],
+                [9, 10, 11, 12],
+            ],
+            dtype=np.int8,
+        )
         scales = np.array([0.1, 0.2, 0.3], dtype=np.float32)
 
         self.connector.upsert_compressed(ids, quantized, scales, metadata={"source": "test"})

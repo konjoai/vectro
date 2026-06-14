@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import numpy as np
 
 try:
     from tests._path_setup import ensure_repo_root_on_path
@@ -15,7 +14,7 @@ except ModuleNotFoundError:
 
 ensure_repo_root_on_path()
 
-from python.benchmark import BenchmarkEntry, BenchmarkReport, BenchmarkSuite  # noqa: E402
+from python.benchmark import BenchmarkReport, BenchmarkSuite  # noqa: E402
 
 
 def _small_suite(profiles=None) -> BenchmarkSuite:
@@ -35,7 +34,6 @@ def _small_suite(profiles=None) -> BenchmarkSuite:
 
 
 class TestBenchmarkSuiteRun(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         cls.suite = _small_suite()
@@ -73,7 +71,6 @@ class TestBenchmarkSuiteRun(unittest.TestCase):
 
 
 class TestBenchmarkReportSerialisation(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         cls.report = _small_suite().run()
@@ -90,6 +87,7 @@ class TestBenchmarkReportSerialisation(unittest.TestCase):
         try:
             self.report.save(tmp_path)
             import json
+
             data = json.loads(Path(tmp_path).read_text())
             self.assertIn("entries", data)
             self.assertEqual(len(data["entries"]), len(self.report.entries))
@@ -124,6 +122,7 @@ class TestBenchmarkReportSerialisation(unittest.TestCase):
         # print_summary writes to stdout; just ensure it doesn't raise.
         import io
         from contextlib import redirect_stdout
+
         buf = io.StringIO()
         with redirect_stdout(buf):
             self.report.print_summary()

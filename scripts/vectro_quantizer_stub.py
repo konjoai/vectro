@@ -20,20 +20,35 @@ Protocol (all integers as decimal strings in argv):
 
 Exit 0 on success, 1 on unknown subcommand.
 """
+
 from __future__ import annotations
 
 import sys
-import struct
 import numpy as np
 
 # NF4 lookup table — 16 normal-float-4 values in [-1, 1].
 # Identical to the compile-time table in src/quantizer_simd.mojo.
-_NF4_TABLE = np.array([
-    -1.0, -0.6961928009986877, -0.5250730514526367, -0.39491748809814453,
-    -0.28444138169288635, -0.18477343022823334, -0.09105003625154495, 0.0,
-    0.07958029955625534, 0.16093020141124725, 0.24611230194568634, 0.33791524171829224,
-    0.44070982933044434, 0.5626170039176941, 0.7229568362236023, 1.0,
-], dtype=np.float32)
+_NF4_TABLE = np.array(
+    [
+        -1.0,
+        -0.6961928009986877,
+        -0.5250730514526367,
+        -0.39491748809814453,
+        -0.28444138169288635,
+        -0.18477343022823334,
+        -0.09105003625154495,
+        0.0,
+        0.07958029955625534,
+        0.16093020141124725,
+        0.24611230194568634,
+        0.33791524171829224,
+        0.44070982933044434,
+        0.5626170039176941,
+        0.7229568362236023,
+        1.0,
+    ],
+    dtype=np.float32,
+)
 
 
 def _int8_quantize(vecs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -109,14 +124,14 @@ def _pq_encode(vecs: np.ndarray, centroids: np.ndarray) -> np.ndarray:
     n, d = vecs.shape
     M, K, sub_dim = centroids.shape
     if d != M * sub_dim:
-        raise ValueError(f"dimension mismatch: d={d}, M*sub_dim={M*sub_dim}")
+        raise ValueError(f"dimension mismatch: d={d}, M*sub_dim={M * sub_dim}")
 
     codes = np.empty((n, M), dtype=np.uint8)
     for m in range(M):
-        sub = vecs[:, m * sub_dim : (m + 1) * sub_dim]    # (n, sub_dim)
-        cen = centroids[m]                                  # (K, sub_dim)
-        v_sq = (sub ** 2).sum(axis=1, keepdims=True)
-        c_sq = (cen ** 2).sum(axis=1)
+        sub = vecs[:, m * sub_dim : (m + 1) * sub_dim]  # (n, sub_dim)
+        cen = centroids[m]  # (K, sub_dim)
+        v_sq = (sub**2).sum(axis=1, keepdims=True)
+        c_sq = (cen**2).sum(axis=1)
         cross = sub @ cen.T
         dists = v_sq + c_sq - 2 * cross
         codes[:, m] = dists.argmin(axis=1).astype(np.uint8)
@@ -145,7 +160,7 @@ def _read_stdin(n_bytes: int) -> bytes:
 def main() -> int:
     argv = sys.argv[1:]
     if len(argv) < 3 or argv[0] != "pipe":
-        sys.stderr.write(f"usage: vectro_quantizer pipe <op> <cmd> <n> <d>\n")
+        sys.stderr.write("usage: vectro_quantizer pipe <op> <cmd> <n> <d>\n")
         return 1
 
     _, op, cmd, *rest = argv

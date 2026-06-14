@@ -1,9 +1,10 @@
 """v5.2.0 — three HNSWIndex feature tests.
 
-  1. Persistent index serialisation — save/load via .npz
-  2. Batch upsert with deduplication — add_batch()
-  3. Search trace — search(..., trace=True)
+1. Persistent index serialisation — save/load via .npz
+2. Batch upsert with deduplication — add_batch()
+3. Search trace — search(..., trace=True)
 """
+
 from __future__ import annotations
 
 import os
@@ -27,6 +28,7 @@ from python.hnsw_api import HNSWIndex, SearchTrace  # noqa: E402
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _rand_vecs(n: int, d: int, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
     v = rng.standard_normal((n, d)).astype(np.float32)
@@ -44,8 +46,8 @@ def _build_index(n: int = 80, d: int = 32, M: int = 8, ef: int = 60) -> HNSWInde
 # 1. Persistent index serialisation (.npz)
 # ============================================================================
 
-class TestSaveLoadNpz(unittest.TestCase):
 
+class TestSaveLoadNpz(unittest.TestCase):
     def _round_trip(self, idx: HNSWIndex) -> HNSWIndex:
         with tempfile.TemporaryDirectory() as td:
             p = os.path.join(td, "idx.vindex")
@@ -99,7 +101,9 @@ class TestSaveLoadNpz(unittest.TestCase):
         r_after = idx2.estimate_recall(sample_size=50, k=5, ef=64)
 
         self.assertAlmostEqual(
-            r_before["recall"], r_after["recall"], delta=0.01,
+            r_before["recall"],
+            r_after["recall"],
+            delta=0.01,
             msg="recall must agree within 0.01 after round-trip",
         )
 
@@ -147,16 +151,21 @@ class TestSaveLoadNpz(unittest.TestCase):
 
     def test_load_legacy_pickle_emits_deprecation_warning(self):
         import pickle
+
         idx = _build_index(10, 8)
         with tempfile.TemporaryDirectory() as td:
             p = os.path.join(td, "old.pkl")
             payload = {
-                "M": idx.M, "ef_construction": idx.ef_construction,
+                "M": idx.M,
+                "ef_construction": idx.ef_construction,
                 "space": idx.space,
-                "vectors": idx._vectors, "neighbors": idx._neighbors,
-                "levels": idx._levels, "entry_point": idx._entry_point,
+                "vectors": idx._vectors,
+                "neighbors": idx._neighbors,
+                "levels": idx._levels,
+                "entry_point": idx._entry_point,
                 "max_level": idx._max_level,
-                "metadata": idx._metadata, "deleted": idx._deleted,
+                "metadata": idx._metadata,
+                "deleted": idx._deleted,
             }
             with open(p, "wb") as fh:
                 pickle.dump(payload, fh, protocol=5)
@@ -183,8 +192,8 @@ class TestSaveLoadNpz(unittest.TestCase):
 # 2. Batch upsert with deduplication — add_batch()
 # ============================================================================
 
-class TestAddBatch(unittest.TestCase):
 
+class TestAddBatch(unittest.TestCase):
     def test_basic_insert(self):
         idx = HNSWIndex(M=8, ef_construction=40)
         vecs = _rand_vecs(10, 32)
@@ -246,10 +255,8 @@ class TestAddBatch(unittest.TestCase):
     def test_metadata_upserted(self):
         idx = HNSWIndex(M=8, ef_construction=40)
         vecs = _rand_vecs(3, 16)
-        idx.add_batch(vecs, ids=["p", "q", "r"],
-                      metadata=[{"v": 1}, {"v": 2}, {"v": 3}])
-        idx.add_batch(vecs, ids=["p", "q", "r"],
-                      metadata=[{"v": 10}, {"v": 20}, {"v": 30}])
+        idx.add_batch(vecs, ids=["p", "q", "r"], metadata=[{"v": 1}, {"v": 2}, {"v": 3}])
+        idx.add_batch(vecs, ids=["p", "q", "r"], metadata=[{"v": 10}, {"v": 20}, {"v": 30}])
         self.assertEqual(idx._metadata[idx._id_map["p"]], {"v": 10})
         self.assertEqual(idx._metadata[idx._id_map["r"]], {"v": 30})
 
@@ -285,8 +292,7 @@ class TestAddBatch(unittest.TestCase):
     def test_get_by_id(self):
         idx = HNSWIndex(M=8, ef_construction=40)
         vecs = _rand_vecs(3, 16)
-        idx.add_batch(vecs, ids=["alpha", "beta", "gamma"],
-                      metadata=[{"k": 1}, {"k": 2}, {"k": 3}])
+        idx.add_batch(vecs, ids=["alpha", "beta", "gamma"], metadata=[{"k": 1}, {"k": 2}, {"k": 3}])
         self.assertEqual(idx.get_by_id("beta"), {"k": 2})
         self.assertIsNone(idx.get_by_id("missing"))
 
@@ -306,15 +312,16 @@ class TestAddBatch(unittest.TestCase):
 
         # Create a known query vector and insert it with a specific ID
         query_vec = _rand_vecs(1, 32, seed=999)[0]
-        idx.add_batch(query_vec[np.newaxis], ids=["special"],
-                      metadata=[{"role": "target"}])
+        idx.add_batch(query_vec[np.newaxis], ids=["special"], metadata=[{"role": "target"}])
         nid = idx._id_map["special"]
 
         # Update to a fresh vector and confirm search finds the new version
         new_vec = _rand_vecs(1, 32, seed=888)[0]
         idx.add_batch(new_vec[np.newaxis], ids=["special"])
         np.testing.assert_allclose(
-            idx._vectors[nid], idx._normalize(new_vec), atol=1e-5,
+            idx._vectors[nid],
+            idx._normalize(new_vec),
+            atol=1e-5,
         )
 
 
@@ -322,8 +329,8 @@ class TestAddBatch(unittest.TestCase):
 # 3. Search trace — search(..., trace=True)
 # ============================================================================
 
-class TestSearchTrace(unittest.TestCase):
 
+class TestSearchTrace(unittest.TestCase):
     def test_trace_is_searchresult_triple(self):
         idx = _build_index(50, 32)
         q = _rand_vecs(1, 32)[0]

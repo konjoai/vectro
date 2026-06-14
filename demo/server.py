@@ -22,6 +22,7 @@ Standard library only: ``http.server`` + ``socketserver``.  No Flask,
 no FastAPI, no extra installs.  Vectro itself is the only third-party
 dependency, and it's resolved from the repo root via ``sys.path``.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,6 +53,7 @@ def tracing_warn(msg: str) -> None:
     """Surface a swallowed fallback — never fail silently (CLAUDE.md)."""
     _LOG.warning(msg)
 
+
 # DSPy isn't required to be installed — the retriever falls back to a
 # plain object when it's missing.  Install a tiny stub so the demo
 # server doesn't depend on the real SDK.
@@ -61,6 +63,7 @@ if "dspy" not in sys.modules:
     class _Prediction:
         def __init__(self, **kw):
             self.__dict__.update(kw)
+
     _stub.Prediction = _Prediction
     sys.modules["dspy"] = _stub
 
@@ -76,35 +79,38 @@ from python.hnsw_api import HNSWIndex  # noqa: E402
 
 CORPUS: List[Dict[str, Any]] = [
     # Geography
-    {"text": "Paris is the capital of France",         "tags": ["paris", "france", "capital"]},
-    {"text": "Berlin is the capital of Germany",       "tags": ["berlin", "germany", "capital"]},
-    {"text": "Tokyo is the capital of Japan",          "tags": ["tokyo", "japan", "capital"]},
-    {"text": "Athens is the capital of Greece",        "tags": ["athens", "greece", "capital"]},
-    {"text": "Rome is the capital of Italy",           "tags": ["rome", "italy", "capital"]},
-    {"text": "Madrid is the capital of Spain",         "tags": ["madrid", "spain", "capital"]},
-    {"text": "London is the capital of the UK",        "tags": ["london", "uk", "capital"]},
+    {"text": "Paris is the capital of France", "tags": ["paris", "france", "capital"]},
+    {"text": "Berlin is the capital of Germany", "tags": ["berlin", "germany", "capital"]},
+    {"text": "Tokyo is the capital of Japan", "tags": ["tokyo", "japan", "capital"]},
+    {"text": "Athens is the capital of Greece", "tags": ["athens", "greece", "capital"]},
+    {"text": "Rome is the capital of Italy", "tags": ["rome", "italy", "capital"]},
+    {"text": "Madrid is the capital of Spain", "tags": ["madrid", "spain", "capital"]},
+    {"text": "London is the capital of the UK", "tags": ["london", "uk", "capital"]},
     # Climate
-    {"text": "Berlin gets cold and wet in winter",     "tags": ["berlin", "weather", "cold"]},
-    {"text": "Tokyo summers are humid and rainy",      "tags": ["tokyo", "weather", "summer"]},
+    {"text": "Berlin gets cold and wet in winter", "tags": ["berlin", "weather", "cold"]},
+    {"text": "Tokyo summers are humid and rainy", "tags": ["tokyo", "weather", "summer"]},
     {"text": "Athens has a mild Mediterranean climate", "tags": ["athens", "weather"]},
-    {"text": "Cairo is hot and arid year round",       "tags": ["cairo", "weather", "hot"]},
-    {"text": "Moscow has long snowy winters",          "tags": ["moscow", "weather", "snow"]},
+    {"text": "Cairo is hot and arid year round", "tags": ["cairo", "weather", "hot"]},
+    {"text": "Moscow has long snowy winters", "tags": ["moscow", "weather", "snow"]},
     # Food
     {"text": "French cuisine emphasises butter and wine", "tags": ["france", "food"]},
-    {"text": "Italian pasta carbonara comes from Rome",   "tags": ["rome", "italy", "food"]},
-    {"text": "Japanese ramen has many regional styles",   "tags": ["japan", "food"]},
-    {"text": "Greek salad is a Mediterranean staple",     "tags": ["greece", "food"]},
-    {"text": "Sushi originated in Japan",                  "tags": ["japan", "food", "history"]},
+    {"text": "Italian pasta carbonara comes from Rome", "tags": ["rome", "italy", "food"]},
+    {"text": "Japanese ramen has many regional styles", "tags": ["japan", "food"]},
+    {"text": "Greek salad is a Mediterranean staple", "tags": ["greece", "food"]},
+    {"text": "Sushi originated in Japan", "tags": ["japan", "food", "history"]},
     # Transit
-    {"text": "Trains in France connect Paris to Marseille at 320 km/h", "tags": ["france", "trains"]},
-    {"text": "The Tokyo subway carries 8 million riders per day",       "tags": ["tokyo", "transit"]},
-    {"text": "Italy's high-speed rail spans Milan to Naples",           "tags": ["italy", "trains"]},
-    {"text": "Berlin's U-Bahn is one of Europe's oldest",               "tags": ["berlin", "transit"]},
+    {
+        "text": "Trains in France connect Paris to Marseille at 320 km/h",
+        "tags": ["france", "trains"],
+    },
+    {"text": "The Tokyo subway carries 8 million riders per day", "tags": ["tokyo", "transit"]},
+    {"text": "Italy's high-speed rail spans Milan to Naples", "tags": ["italy", "trains"]},
+    {"text": "Berlin's U-Bahn is one of Europe's oldest", "tags": ["berlin", "transit"]},
     # Landmarks
-    {"text": "The Eiffel Tower is in Paris",            "tags": ["paris", "landmark"]},
-    {"text": "Mount Fuji is a volcano on Honshu",       "tags": ["japan", "landmark"]},
-    {"text": "Acropolis sits above Athens",             "tags": ["athens", "landmark"]},
-    {"text": "Colosseum is an amphitheatre in Rome",    "tags": ["rome", "landmark"]},
+    {"text": "The Eiffel Tower is in Paris", "tags": ["paris", "landmark"]},
+    {"text": "Mount Fuji is a volcano on Honshu", "tags": ["japan", "landmark"]},
+    {"text": "Acropolis sits above Athens", "tags": ["athens", "landmark"]},
+    {"text": "Colosseum is an amphitheatre in Rome", "tags": ["rome", "landmark"]},
     {"text": "Brandenburg Gate stands in central Berlin", "tags": ["berlin", "landmark"]},
 ]
 
@@ -119,11 +125,57 @@ _VOCAB_BASIS: Dict[str, np.ndarray] = {}
 
 
 _STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "by", "do", "for", "from", "has",
-    "have", "in", "is", "it", "its", "of", "on", "or", "that", "the", "they",
-    "this", "to", "was", "were", "where", "which", "with", "what", "who", "how",
-    "many", "much", "do", "does", "i", "you", "we", "us", "our", "your", "their",
-    "would", "should", "could", "can", "will", "may", "one",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "do",
+    "for",
+    "from",
+    "has",
+    "have",
+    "in",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "they",
+    "this",
+    "to",
+    "was",
+    "were",
+    "where",
+    "which",
+    "with",
+    "what",
+    "who",
+    "how",
+    "many",
+    "much",
+    "do",
+    "does",
+    "i",
+    "you",
+    "we",
+    "us",
+    "our",
+    "your",
+    "their",
+    "would",
+    "should",
+    "could",
+    "can",
+    "will",
+    "may",
+    "one",
 }
 
 
@@ -187,14 +239,21 @@ _corpus_texts = [item["text"] for item in CORPUS]
 _corpus_embs = np.stack([_embed_text(t) for t in _corpus_texts], axis=0)
 
 RETRIEVER = VectroDSPyRetriever(
-    embed_fn=embed_fn, k=5, compression_profile="balanced",
+    embed_fn=embed_fn,
+    k=5,
+    compression_profile="balanced",
 )
-RETRIEVER.add_texts(_corpus_texts, embeddings=_corpus_embs,
-                    metadatas=[{"i": i, **item} for i, item in enumerate(CORPUS)])
+RETRIEVER.add_texts(
+    _corpus_texts,
+    embeddings=_corpus_embs,
+    metadatas=[{"i": i, **item} for i, item in enumerate(CORPUS)],
+)
 _t1 = time.perf_counter()
-print(f"[vectro-demo] retriever ready: {len(CORPUS)} passages, "
-      f"dim={EMBED_DIM}, profile=balanced, {(_t1 - _t0) * 1000:.1f} ms",
-      flush=True)
+print(
+    f"[vectro-demo] retriever ready: {len(CORPUS)} passages, "
+    f"dim={EMBED_DIM}, profile=balanced, {(_t1 - _t0) * 1000:.1f} ms",
+    flush=True,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -209,20 +268,20 @@ def _api_compress(payload: Dict[str, Any]) -> Dict[str, Any]:
     requested mode, return *measured* memory + timing.
     """
     n_vecs = max(1, int(payload.get("n_vecs", 10_000)))
-    dim    = max(1, int(payload.get("dim",    128)))
-    mode   = str(payload.get("mode", "balanced"))
+    dim = max(1, int(payload.get("dim", 128)))
+    mode = str(payload.get("mode", "balanced"))
 
     # Cap to keep request latency reasonable on tiny machines.
     n_vecs = min(n_vecs, 200_000)
-    dim    = min(dim, 4096)
+    dim = min(dim, 4096)
 
     profile_map = {
-        "int8":     "balanced",
-        "fast":     "fast",
+        "int8": "balanced",
+        "fast": "fast",
         "balanced": "balanced",
-        "quality":  "quality",
-        "nf4":      "quality",     # NF4 ships under the "quality" profile
-        "binary":   "binary",
+        "quality": "quality",
+        "nf4": "quality",  # NF4 ships under the "quality" profile
+        "binary": "binary",
     }
     profile = profile_map.get(mode, "balanced")
 
@@ -243,19 +302,19 @@ def _api_compress(payload: Dict[str, Any]) -> Dict[str, Any]:
     throughput = (n_vecs / elapsed) if elapsed > 0 else float("inf")
 
     return {
-        "n_vecs":              n_vecs,
-        "dim":                 dim,
-        "mode":                mode,
-        "profile":             profile,
-        "original_bytes":      original_bytes,
-        "compressed_bytes":    compressed_bytes,
-        "original_mb":         round(original_bytes  / (1024 ** 2), 4),
-        "compressed_mb":       round(compressed_bytes / (1024 ** 2), 4),
-        "ratio":               round(ratio, 3),
-        "saved_bytes":         original_bytes - compressed_bytes,
-        "timing_ms":           round(elapsed * 1000, 3),
+        "n_vecs": n_vecs,
+        "dim": dim,
+        "mode": mode,
+        "profile": profile,
+        "original_bytes": original_bytes,
+        "compressed_bytes": compressed_bytes,
+        "original_mb": round(original_bytes / (1024**2), 4),
+        "compressed_mb": round(compressed_bytes / (1024**2), 4),
+        "ratio": round(ratio, 3),
+        "saved_bytes": original_bytes - compressed_bytes,
+        "timing_ms": round(elapsed * 1000, 3),
         "throughput_vec_per_s": round(throughput, 1),
-        "throughput_M_vec_s":   round(throughput / 1_000_000, 3),
+        "throughput_M_vec_s": round(throughput / 1_000_000, 3),
     }
 
 
@@ -269,16 +328,16 @@ def _api_search(payload: Dict[str, Any]) -> Dict[str, Any]:
     elapsed = time.perf_counter() - t0
 
     passages = list(getattr(out, "passages", []) or [])
-    scores   = list(getattr(out, "scores",   []) or [])
-    indices  = list(getattr(out, "indices",  []) or [])
+    scores = list(getattr(out, "scores", []) or [])
+    indices = list(getattr(out, "indices", []) or [])
 
     return {
-        "query":     query,
-        "k":         k,
-        "passages":  passages,
-        "scores":    [round(float(s), 4) for s in scores],
-        "indices":   [int(i) for i in indices],
-        "tags":      [list(CORPUS[i]["tags"]) for i in indices] if indices else [],
+        "query": query,
+        "k": k,
+        "passages": passages,
+        "scores": [round(float(s), 4) for s in scores],
+        "indices": [int(i) for i in indices],
+        "tags": [list(CORPUS[i]["tags"]) for i in indices] if indices else [],
         "timing_ms": round(elapsed * 1000, 3),
     }
 
@@ -286,8 +345,8 @@ def _api_search(payload: Dict[str, Any]) -> Dict[str, Any]:
 def _api_benchmark(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Measure real INT8 encode throughput at the requested shape."""
     n_vecs = max(1000, min(int(payload.get("n_vecs", 50_000)), 200_000))
-    dim    = max(64,   min(int(payload.get("dim",    768)),   4096))
-    reps   = max(1,    min(int(payload.get("reps",   3)),     8))
+    dim = max(64, min(int(payload.get("dim", 768)), 4096))
+    reps = max(1, min(int(payload.get("reps", 3)), 8))
 
     rng = np.random.default_rng(seed=0xBEEF)
     data = rng.standard_normal((n_vecs, dim)).astype(np.float32)
@@ -311,45 +370,45 @@ def _api_benchmark(payload: Dict[str, Any]) -> Dict[str, Any]:
     median_throughput = n_vecs / (median_ms / 1000.0)
 
     return {
-        "n_vecs":               n_vecs,
-        "dim":                  dim,
-        "reps":                 reps,
-        "samples_ms":           [round(s, 3) for s in samples_ms],
-        "best_ms":              round(best_ms, 3),
-        "median_ms":            round(median_ms, 3),
-        "best_throughput_vec_s":   round(best_throughput, 1),
+        "n_vecs": n_vecs,
+        "dim": dim,
+        "reps": reps,
+        "samples_ms": [round(s, 3) for s in samples_ms],
+        "best_ms": round(best_ms, 3),
+        "median_ms": round(median_ms, 3),
+        "best_throughput_vec_s": round(best_throughput, 1),
         "median_throughput_vec_s": round(median_throughput, 1),
-        "best_M_vec_s":         round(best_throughput / 1_000_000, 3),
-        "median_M_vec_s":       round(median_throughput / 1_000_000, 3),
-        "compressed_mb":        round(result.total_compressed_bytes / (1024 ** 2), 4),
-        "ratio":                round(float(result.compression_ratio), 3),
-        "platform":             f"{platform.system()} / {platform.machine()}",
-        "python":               platform.python_version(),
+        "best_M_vec_s": round(best_throughput / 1_000_000, 3),
+        "median_M_vec_s": round(median_throughput / 1_000_000, 3),
+        "compressed_mb": round(result.total_compressed_bytes / (1024**2), 4),
+        "ratio": round(float(result.compression_ratio), 3),
+        "platform": f"{platform.system()} / {platform.machine()}",
+        "python": platform.python_version(),
     }
 
 
 def _api_index_stats(_payload: Dict[str, Any]) -> Dict[str, Any]:
     s = RETRIEVER.compression_stats
     return {
-        "version":              vectro.__version__,
-        "platform":             f"{platform.system()} / {platform.machine()}",
-        "python":               platform.python_version(),
-        "n_passages":           int(s.get("n_passages", 0)),
-        "dimensions":           int(s.get("dimensions", EMBED_DIM)),
-        "profile":              str(s.get("compression_profile", "balanced")),
-        "original_mb":          float(s.get("original_mb", 0.0)),
-        "compressed_mb":        float(s.get("compressed_mb", 0.0)),
-        "memory_saved_mb":      float(s.get("memory_saved_mb", 0.0)),
-        "compression_ratio":    float(s.get("compression_ratio", 1.0)),
+        "version": vectro.__version__,
+        "platform": f"{platform.system()} / {platform.machine()}",
+        "python": platform.python_version(),
+        "n_passages": int(s.get("n_passages", 0)),
+        "dimensions": int(s.get("dimensions", EMBED_DIM)),
+        "profile": str(s.get("compression_profile", "balanced")),
+        "original_mb": float(s.get("original_mb", 0.0)),
+        "compressed_mb": float(s.get("compressed_mb", 0.0)),
+        "memory_saved_mb": float(s.get("memory_saved_mb", 0.0)),
+        "compression_ratio": float(s.get("compression_ratio", 1.0)),
     }
 
 
 def _api_health(_payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "ok":       True,
-        "version":  vectro.__version__,
+        "ok": True,
+        "version": vectro.__version__,
         "platform": f"{platform.system()} / {platform.machine()}",
-        "python":   platform.python_version(),
+        "python": platform.python_version(),
         "uptime_s": round(time.monotonic(), 2),
     }
 
@@ -368,12 +427,20 @@ _HNSW_LOCK = threading.Lock()
 _DEMO_HNSW: HNSWIndex = HNSWIndex(M=8, ef_construction=80)
 _t_hnsw0 = time.perf_counter()
 _demo_vecs = np.stack([_embed_text(item["text"]) for item in CORPUS], axis=0)
-_demo_meta = [{"category": item["tags"][0] if item["tags"] else "other",
-               "tags": item["tags"], "text": item["text"]}
-              for item in CORPUS]
+_demo_meta = [
+    {
+        "category": item["tags"][0] if item["tags"] else "other",
+        "tags": item["tags"],
+        "text": item["text"],
+    }
+    for item in CORPUS
+]
 _DEMO_HNSW.add(_demo_vecs, metadata=_demo_meta)
-print(f"[vectro-demo] HNSW ready: {len(_DEMO_HNSW)} vectors, "
-      f"{(time.perf_counter() - _t_hnsw0)*1000:.1f} ms", flush=True)
+print(
+    f"[vectro-demo] HNSW ready: {len(_DEMO_HNSW)} vectors, "
+    f"{(time.perf_counter() - _t_hnsw0) * 1000:.1f} ms",
+    flush=True,
+)
 
 
 def _api_recall_estimate(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -384,8 +451,8 @@ def _api_recall_estimate(payload: Dict[str, Any]) -> Dict[str, Any]:
     plus a plain-English ``label`` for the demo gauge.
     """
     sample_size = max(1, min(int(payload.get("sample_size", 50)), len(_DEMO_HNSW)))
-    k           = max(1, min(int(payload.get("k", 5)), len(_DEMO_HNSW) - 1))
-    ef          = max(k, int(payload.get("ef", 32)))
+    k = max(1, min(int(payload.get("k", 5)), len(_DEMO_HNSW) - 1))
+    ef = max(k, int(payload.get("ef", 32)))
     with _HNSW_LOCK:
         result = _DEMO_HNSW.estimate_recall(sample_size=sample_size, k=k, ef=ef)
     r = result["recall"]
@@ -403,8 +470,7 @@ def _api_compact(payload: Dict[str, Any]) -> Dict[str, Any]:
     delete_n = max(0, min(int(payload.get("delete_n", 3)), len(_DEMO_HNSW) - 2))
     with _HNSW_LOCK:
         # Soft-delete a few random live vectors
-        alive = [i for i in range(len(_DEMO_HNSW._vectors))
-                 if i not in _DEMO_HNSW._deleted]
+        alive = [i for i in range(len(_DEMO_HNSW._vectors)) if i not in _DEMO_HNSW._deleted]
         rng = np.random.default_rng()
         chosen = rng.choice(alive, size=min(delete_n, len(alive)), replace=False)
         for nid in chosen:
@@ -413,15 +479,15 @@ def _api_compact(payload: Dict[str, Any]) -> Dict[str, Any]:
         t0 = time.perf_counter()
         result = _DEMO_HNSW.compact()
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-        stats_after  = _DEMO_HNSW.stats()
+        stats_after = _DEMO_HNSW.stats()
     return {
         "deleted_count_before": stats_before["n_deleted"],
-        "orphan_count_before":  stats_before["orphan_count"],
-        "removed":              result["removed"],
-        "repaired":             result["repaired"],
-        "orphan_count_after":   stats_after["orphan_count"],
-        "timing_ms":            elapsed_ms,
-        "n_alive":              stats_after["n_alive"],
+        "orphan_count_before": stats_before["orphan_count"],
+        "removed": result["removed"],
+        "repaired": result["repaired"],
+        "orphan_count_after": stats_after["orphan_count"],
+        "timing_ms": elapsed_ms,
+        "n_alive": stats_after["n_alive"],
     }
 
 
@@ -438,9 +504,9 @@ def _api_filtered_search(payload: Dict[str, Any]) -> Dict[str, Any]:
     Body: ``{query_text: str, k?: int, filter?: {field: value}}``
     Runs search on the demo HNSW index with optional metadata pre-filter.
     """
-    query  = str(payload.get("query_text", "")).strip() or "capital"
-    k      = max(1, min(int(payload.get("k", 5)), len(_DEMO_HNSW)))
-    filt   = payload.get("filter") or None
+    query = str(payload.get("query_text", "")).strip() or "capital"
+    k = max(1, min(int(payload.get("k", 5)), len(_DEMO_HNSW)))
+    filt = payload.get("filter") or None
 
     # Validate filter dict
     if filt is not None:
@@ -448,8 +514,9 @@ def _api_filtered_search(payload: Dict[str, Any]) -> Dict[str, Any]:
             filt = None
         else:
             # Only allow simple string/number equality filters
-            filt = {str(fk): fv for fk, fv in filt.items()
-                    if isinstance(fv, (str, int, float, bool))}
+            filt = {
+                str(fk): fv for fk, fv in filt.items() if isinstance(fv, (str, int, float, bool))
+            }
 
     q_vec = _embed_text(query)
     t0 = time.perf_counter()
@@ -460,21 +527,23 @@ def _api_filtered_search(payload: Dict[str, Any]) -> Dict[str, Any]:
     results = []
     for nid, dist in zip(indices.tolist(), distances.tolist()):
         meta = _DEMO_HNSW._metadata[nid] if nid < len(_DEMO_HNSW._metadata) else {}
-        results.append({
-            "id":       int(nid),
-            "distance": round(float(dist), 4),
-            "similarity": round(max(0.0, 1.0 - float(dist)), 4),
-            "text":     (meta or {}).get("text", ""),
-            "category": (meta or {}).get("category", ""),
-            "tags":     (meta or {}).get("tags", []),
-        })
+        results.append(
+            {
+                "id": int(nid),
+                "distance": round(float(dist), 4),
+                "similarity": round(max(0.0, 1.0 - float(dist)), 4),
+                "text": (meta or {}).get("text", ""),
+                "category": (meta or {}).get("category", ""),
+                "tags": (meta or {}).get("tags", []),
+            }
+        )
 
     return {
-        "query":      query,
-        "filter":     filt,
-        "k":          k,
-        "results":    results,
-        "timing_ms":  round(elapsed * 1000, 3),
+        "query": query,
+        "filter": filt,
+        "k": k,
+        "results": results,
+        "timing_ms": round(elapsed * 1000, 3),
     }
 
 
@@ -482,8 +551,8 @@ def _api_filtered_search(payload: Dict[str, Any]) -> Dict[str, Any]:
 # Multi-index registry  (named HNSWIndex instances, created on demand)
 # ─────────────────────────────────────────────────────────────────────────
 
-_INDEXES: Dict[str, HNSWIndex]          = {}
-_INDEXES_META: Dict[str, Dict[str, Any]] = {}   # creation params + timestamps
+_INDEXES: Dict[str, HNSWIndex] = {}
+_INDEXES_META: Dict[str, Dict[str, Any]] = {}  # creation params + timestamps
 _INDEXES_LOCK = threading.Lock()
 
 _INDEX_ROUTE_RE = re.compile(
@@ -492,10 +561,11 @@ _INDEX_ROUTE_RE = re.compile(
 
 # ── PCA / k-means (numpy-only, no sklearn) ──────────────────────────────
 
+
 def _pca_2d(vectors: np.ndarray) -> np.ndarray:
     """Project (n, d) float32 matrix to 2-D via SVD.  Returns (n, 2)."""
     mu = vectors.mean(axis=0)
-    c  = vectors - mu
+    c = vectors - mu
     _, _, Vt = np.linalg.svd(c, full_matrices=False)
     return (c @ Vt[:2].T).astype(np.float32)
 
@@ -506,9 +576,9 @@ def _kmeans(coords: np.ndarray, k: int, n_iter: int = 15) -> Tuple[np.ndarray, n
     k = min(k, n)
     rng = np.random.default_rng(seed=42)
     centers = coords[rng.choice(n, k, replace=False)].copy().astype(np.float64)
-    labels  = np.zeros(n, dtype=np.int32)
+    labels = np.zeros(n, dtype=np.int32)
     for _ in range(n_iter):
-        dists  = np.linalg.norm(coords[:, None].astype(np.float64) - centers[None], axis=2)
+        dists = np.linalg.norm(coords[:, None].astype(np.float64) - centers[None], axis=2)
         labels = dists.argmin(axis=1).astype(np.int32)
         for ki in range(k):
             mask = labels == ki
@@ -519,32 +589,35 @@ def _kmeans(coords: np.ndarray, k: int, n_iter: int = 15) -> Tuple[np.ndarray, n
 
 # ── Index CRUD handlers ──────────────────────────────────────────────────
 
+
 def _idx_list() -> Dict[str, Any]:
     with _INDEXES_LOCK:
         result = []
         for name, idx in _INDEXES.items():
             s = idx.stats()
             meta = _INDEXES_META.get(name, {})
-            result.append({
-                "name":           name,
-                "n_alive":        s["n_alive"],
-                "n_total":        s["n_total"],
-                "n_deleted":      s["n_deleted"],
-                "M":              idx.M,
-                "ef_construction": idx.ef_construction,
-                "space":          idx.space,
-                "dim":            meta.get("dim", 0),
-                "created_at":     meta.get("created_at", ""),
-            })
+            result.append(
+                {
+                    "name": name,
+                    "n_alive": s["n_alive"],
+                    "n_total": s["n_total"],
+                    "n_deleted": s["n_deleted"],
+                    "M": idx.M,
+                    "ef_construction": idx.ef_construction,
+                    "space": idx.space,
+                    "dim": meta.get("dim", 0),
+                    "created_at": meta.get("created_at", ""),
+                }
+            )
     return {"indexes": result}
 
 
 def _idx_create(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if not re.match(r"^[A-Za-z0-9_.\-]{1,64}$", name):
         raise ValueError(f"invalid index name: {name!r}")
-    M                = max(4, min(int(body.get("M", 16)), 64))
-    ef_construction  = max(M, min(int(body.get("ef_construction", 200)), 500))
-    space            = str(body.get("space", "cosine"))
+    M = max(4, min(int(body.get("M", 16)), 64))
+    ef_construction = max(M, min(int(body.get("ef_construction", 200)), 500))
+    space = str(body.get("space", "cosine"))
     if space not in ("cosine", "l2"):
         raise ValueError(f"space must be 'cosine' or 'l2', got {space!r}")
     with _INDEXES_LOCK:
@@ -575,7 +648,7 @@ def _idx_stats(name: str) -> Dict[str, Any]:
     with _INDEXES_LOCK:
         if name not in _INDEXES:
             raise KeyError(f"index {name!r} not found")
-        s    = _INDEXES[name].stats()
+        s = _INDEXES[name].stats()
         meta = _INDEXES_META.get(name, {})
     return {**s, **meta, "name": name}
 
@@ -598,12 +671,11 @@ def _idx_add(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if vecs.ndim != 2:
         raise ValueError("vectors must be 1-D or 2-D")
 
-    ids_raw  = body.get("ids")
+    ids_raw = body.get("ids")
     meta_raw = body.get("metadata")
     ids_list: Optional[List[str]] = [str(x) for x in ids_raw] if ids_raw else None
     meta_list: Optional[List[Optional[Dict[str, Any]]]] = (
-        [m if isinstance(m, dict) else None for m in meta_raw]
-        if meta_raw else None
+        [m if isinstance(m, dict) else None for m in meta_raw] if meta_raw else None
     )
 
     t0 = time.perf_counter()
@@ -632,15 +704,15 @@ def _idx_search(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
     vec_raw = body.get("vector")
     if vec_raw is None:
         # Random vector matching the stored dimension
-        d   = idx._vectors[0].shape[0]
+        d = idx._vectors[0].shape[0]
         rng = np.random.default_rng()
-        q   = rng.standard_normal(d).astype(np.float32)
+        q = rng.standard_normal(d).astype(np.float32)
     else:
         q = np.asarray(vec_raw, dtype=np.float32)
 
-    k     = max(1, min(int(body.get("k", 10)), max(1, len(idx) - len(idx._deleted))))
-    ef    = max(k, int(body.get("ef", 64)))
-    filt  = body.get("filter") or None
+    k = max(1, min(int(body.get("k", 10)), max(1, len(idx) - len(idx._deleted))))
+    ef = max(k, int(body.get("ef", 64)))
+    filt = body.get("filter") or None
     if filt and not isinstance(filt, dict):
         filt = None
 
@@ -652,10 +724,10 @@ def _idx_search(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if len(result) == 3:
         indices, distances, tr = result
         trace_data = {
-            "entry_point":          tr.entry_point,
-            "layer_descents":       tr.layer_descents,
-            "l0_visited":           tr.l0_visited,
-            "l0_candidates_final":  [(float(d), int(n)) for d, n in tr.l0_candidates_final],
+            "entry_point": tr.entry_point,
+            "layer_descents": tr.layer_descents,
+            "l0_visited": tr.l0_visited,
+            "l0_candidates_final": [(float(d), int(n)) for d, n in tr.l0_candidates_final],
         }
     else:
         indices, distances = result
@@ -665,12 +737,14 @@ def _idx_search(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
     with _INDEXES_LOCK:
         for nid, dist in zip(indices.tolist(), distances.tolist()):
             meta = idx._metadata[nid] if nid < len(idx._metadata) else {}
-            hits.append({
-                "id":         int(nid),
-                "distance":   round(float(dist), 5),
-                "similarity": round(max(0.0, 1.0 - float(dist)), 5),
-                "metadata":   meta or {},
-            })
+            hits.append(
+                {
+                    "id": int(nid),
+                    "distance": round(float(dist), 5),
+                    "similarity": round(max(0.0, 1.0 - float(dist)), 5),
+                    "metadata": meta or {},
+                }
+            )
 
     resp = {"results": hits, "k": k, "timing_ms": round(elapsed * 1000, 3)}
     if trace_data is not None:
@@ -691,11 +765,11 @@ def _idx_benchmark(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if n_vecs == 0:
         return {"error": "index is empty"}
 
-    d         = idx._vectors[0].shape[0]
-    k         = max(1, min(int(body.get("k", 10)), n_vecs))
-    ef        = max(k, int(body.get("ef", 64)))
+    d = idx._vectors[0].shape[0]
+    k = max(1, min(int(body.get("k", 10)), n_vecs))
+    ef = max(k, int(body.get("ef", 64)))
     n_queries = max(10, min(int(body.get("n_queries", 200)), 2000))
-    warmup    = max(0,  min(int(body.get("warmup", 5)), 20))
+    warmup = max(0, min(int(body.get("warmup", 5)), 20))
 
     rng = np.random.default_rng(seed=0)
     queries = rng.standard_normal((n_queries + warmup, d)).astype(np.float32)
@@ -722,7 +796,7 @@ def _idx_benchmark(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
         return round(lats[lo] + (lats[hi] - lats[lo]) * (idx_f - lo), 4)
 
     mean_ms = round(sum(lats) / n, 4)
-    qps     = round(1000 / mean_ms if mean_ms > 0 else float("inf"), 1)
+    qps = round(1000 / mean_ms if mean_ms > 0 else float("inf"), 1)
 
     # Recall estimate on small sample
     recall_r = None
@@ -736,19 +810,19 @@ def _idx_benchmark(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
         pass
 
     return {
-        "n_queries":   n_queries,
-        "k":           k,
-        "ef":          ef,
-        "n_vectors":   n_vecs,
-        "dim":         d,
-        "p50_ms":      pct(50),
-        "p95_ms":      pct(95),
-        "p99_ms":      pct(99),
-        "mean_ms":     mean_ms,
-        "min_ms":      round(lats[0], 4),
-        "max_ms":      round(lats[-1], 4),
-        "qps":         qps,
-        "recall_k":    recall_r,
+        "n_queries": n_queries,
+        "k": k,
+        "ef": ef,
+        "n_vectors": n_vecs,
+        "dim": d,
+        "p50_ms": pct(50),
+        "p95_ms": pct(95),
+        "p99_ms": pct(99),
+        "mean_ms": mean_ms,
+        "min_ms": round(lats[0], 4),
+        "max_ms": round(lats[-1], 4),
+        "qps": qps,
+        "recall_k": recall_r,
     }
 
 
@@ -764,7 +838,7 @@ def _idx_project(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
         vecs = np.stack([idx._vectors[i] for i in alive], axis=0)
         metas = [idx._metadata[i] if i < len(idx._metadata) else {} for i in alive]
 
-    t0     = time.perf_counter()
+    t0 = time.perf_counter()
     coords = _pca_2d(vecs)
     elapsed = time.perf_counter() - t0
 
@@ -775,10 +849,10 @@ def _idx_project(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
     points = [
         {
-            "id":    int(alive[i]),
-            "x":     round(float(coords[i, 0]), 5),
-            "y":     round(float(coords[i, 1]), 5),
-            "meta":  metas[i] or {},
+            "id": int(alive[i]),
+            "x": round(float(coords[i, 0]), 5),
+            "y": round(float(coords[i, 1]), 5),
+            "meta": metas[i] or {},
         }
         for i in range(len(alive))
     ]
@@ -798,13 +872,10 @@ def _idx_cluster(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
     coords = np.array([[p["x"], p["y"]] for p in proj["points"]], dtype=np.float32)
     labels, centers = _kmeans(coords, k=k)
     return {
-        "points": [
-            {**pt, "cluster": int(labels[i])}
-            for i, pt in enumerate(proj["points"])
-        ],
+        "points": [{**pt, "cluster": int(labels[i])} for i, pt in enumerate(proj["points"])],
         "centers": [[round(float(c[0]), 5), round(float(c[1]), 5)] for c in centers],
-        "k":       k,
-        "n":       len(proj["points"]),
+        "k": k,
+        "n": len(proj["points"]),
         "timing_ms": proj.get("timing_ms", 0.0),
     }
 
@@ -825,11 +896,11 @@ _LAB_LOCK = threading.Lock()
 # Theme colour per codec — kept identical to index.html so the Pareto
 # plot, the cards, and the geometry panel all agree.
 _LAB_COLORS: Dict[str, str] = {
-    "bf16":   "#38bdf8",
-    "int8":   "#22d3ee",
-    "nf4":    "#7c3aed",
-    "rq":     "#10b981",
-    "pq":     "#f59e0b",
+    "bf16": "#38bdf8",
+    "int8": "#22d3ee",
+    "nf4": "#7c3aed",
+    "rq": "#10b981",
+    "pq": "#f59e0b",
     "binary": "#ef4444",
 }
 
@@ -875,6 +946,7 @@ def _enc_int8(data: np.ndarray) -> Tuple[np.ndarray, int]:
 
 def _enc_bf16(data: np.ndarray) -> Tuple[np.ndarray, int]:
     from python.bf16_api import Bf16Encoder
+
     enc = Bf16Encoder()
     enc.encode_np(data)
     rec = np.asarray(enc.decode(), dtype=np.float32)
@@ -883,6 +955,7 @@ def _enc_bf16(data: np.ndarray) -> Tuple[np.ndarray, int]:
 
 def _enc_nf4(data: np.ndarray) -> Tuple[np.ndarray, int]:
     from python.nf4_api import dequantize_nf4, quantize_nf4
+
     packed, scales = quantize_nf4(data)
     rec = dequantize_nf4(packed, scales, data.shape[1])
     return rec, int(packed.nbytes + scales.nbytes)
@@ -890,6 +963,7 @@ def _enc_nf4(data: np.ndarray) -> Tuple[np.ndarray, int]:
 
 def _enc_binary(data: np.ndarray) -> Tuple[np.ndarray, int]:
     from python.binary_api import dequantize_binary, quantize_binary
+
     packed = quantize_binary(data)
     rec = dequantize_binary(packed, data.shape[1])
     return rec, int(packed.nbytes)
@@ -903,6 +977,7 @@ _LAB_TRAIN_CAP = 1500
 
 def _enc_pq(data: np.ndarray) -> Tuple[np.ndarray, int]:
     import python.pq_api as pq
+
     m = _pick_divisor(data.shape[1], 16)
     train = data[:_LAB_TRAIN_CAP]
     cb = pq.train_pq_codebook(train, n_subspaces=m, n_centroids=256, random_state=0)
@@ -912,6 +987,7 @@ def _enc_pq(data: np.ndarray) -> Tuple[np.ndarray, int]:
 
 def _enc_rq(data: np.ndarray) -> Tuple[np.ndarray, int]:
     from python.rq_api import ResidualQuantizer
+
     m = _pick_divisor(data.shape[1], 8)
     rq = ResidualQuantizer(n_passes=4, n_subspaces=m, n_centroids=64, seed=0)
     rq.train(data[:_LAB_TRAIN_CAP])
@@ -925,11 +1001,11 @@ def _enc_rq(data: np.ndarray) -> Tuple[np.ndarray, int]:
 # highest-fidelity / lowest-ratio anchor; it needs the compiled vectro_py
 # kernel and degrades gracefully (per-codec) when that isn't built.
 _LAB_CODECS: List[Tuple[str, str, Callable[[np.ndarray], Tuple[np.ndarray, int]]]] = [
-    ("bf16",   "BF16",   _enc_bf16),
-    ("int8",   "INT8",   _enc_int8),
-    ("nf4",    "NF4",    _enc_nf4),
-    ("rq",     "RQ",     _enc_rq),
-    ("pq",     "PQ",     _enc_pq),
+    ("bf16", "BF16", _enc_bf16),
+    ("int8", "INT8", _enc_int8),
+    ("nf4", "NF4", _enc_nf4),
+    ("rq", "RQ", _enc_rq),
+    ("pq", "PQ", _enc_pq),
     ("binary", "Binary", _enc_binary),
 ]
 
@@ -942,8 +1018,11 @@ def _pca_basis(vectors: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _run_one_codec(
-    name: str, label: str, fn: Callable[[np.ndarray], Tuple[np.ndarray, int]],
-    data: np.ndarray, original_bytes: int,
+    name: str,
+    label: str,
+    fn: Callable[[np.ndarray], Tuple[np.ndarray, int]],
+    data: np.ndarray,
+    original_bytes: int,
 ) -> Dict[str, Any]:
     """Encode/decode with a single codec and collect measured metrics."""
     try:
@@ -952,33 +1031,47 @@ def _run_one_codec(
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
     except ImportError as exc:
         tracing_warn(f"lab codec {name!r} unavailable: {exc}")
-        return {"name": name, "label": label, "available": False,
-                "reason": "optional dependency missing", "color": _LAB_COLORS[name]}
+        return {
+            "name": name,
+            "label": label,
+            "available": False,
+            "reason": "optional dependency missing",
+            "color": _LAB_COLORS[name],
+        }
     except Exception as exc:  # noqa: BLE001 — surface, never mask (CLAUDE.md)
         tracing_warn(f"lab codec {name!r} failed: {exc}")
-        return {"name": name, "label": label, "available": False,
-                "reason": str(exc), "color": _LAB_COLORS[name]}
+        return {
+            "name": name,
+            "label": label,
+            "available": False,
+            "reason": str(exc),
+            "color": _LAB_COLORS[name],
+        }
 
     fidelity = _mean_cosine(data, rec)
     ratio = original_bytes / comp_bytes if comp_bytes else 0.0
     n = data.shape[0]
     return {
-        "name":          name,
-        "label":         label,
-        "available":     True,
-        "color":         _LAB_COLORS[name],
-        "ratio":         round(ratio, 3),
-        "fidelity":      round(fidelity, 5),
+        "name": name,
+        "label": label,
+        "available": True,
+        "color": _LAB_COLORS[name],
+        "ratio": round(ratio, 3),
+        "fidelity": round(fidelity, 5),
         "compressed_bytes": comp_bytes,
-        "compressed_mb": round(comp_bytes / (1024 ** 2), 5),
-        "timing_ms":     round(elapsed_ms, 3),
-        "throughput_M_vec_s": round((n / (elapsed_ms / 1000.0)) / 1e6, 4) if elapsed_ms > 0 else None,
-        "_rec":          rec,   # consumed by the geometry projection, then dropped
+        "compressed_mb": round(comp_bytes / (1024**2), 5),
+        "timing_ms": round(elapsed_ms, 3),
+        "throughput_M_vec_s": round((n / (elapsed_ms / 1000.0)) / 1e6, 4)
+        if elapsed_ms > 0
+        else None,
+        "_rec": rec,  # consumed by the geometry projection, then dropped
     }
 
 
 def _lab_geometry(
-    data: np.ndarray, codecs: List[Dict[str, Any]], max_points: int = 140,
+    data: np.ndarray,
+    codecs: List[Dict[str, Any]],
+    max_points: int = 140,
 ) -> Dict[str, Any]:
     """Project originals and every reconstruction onto one shared PCA plane.
 
@@ -1009,28 +1102,29 @@ def _lab_geometry(
 def _api_quantize_lab(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Encode one batch with every codec; return measured comparison + geometry."""
     n_vecs = max(256, min(int(payload.get("n_vecs", 2500)), 12_000))
-    dim    = max(16,  min(int(payload.get("dim",    256)),  1024))
-    dist   = "clustered" if str(payload.get("dist", "gaussian")) == "clustered" else "gaussian"
+    dim = max(16, min(int(payload.get("dim", 256)), 1024))
+    dist = "clustered" if str(payload.get("dist", "gaussian")) == "clustered" else "gaussian"
 
     with _LAB_LOCK:
         data = _lab_batch(n_vecs, dim, dist)
         original_bytes = int(data.nbytes)
-        codecs = [_run_one_codec(name, label, fn, data, original_bytes)
-                  for name, label, fn in _LAB_CODECS]
+        codecs = [
+            _run_one_codec(name, label, fn, data, original_bytes) for name, label, fn in _LAB_CODECS
+        ]
         geometry = _lab_geometry(data, codecs)
 
     for c in codecs:
         c.pop("_rec", None)  # never serialise raw arrays
 
     return {
-        "n_vecs":         n_vecs,
-        "dim":            dim,
-        "dist":           dist,
+        "n_vecs": n_vecs,
+        "dim": dim,
+        "dist": dist,
         "original_bytes": original_bytes,
-        "original_mb":    round(original_bytes / (1024 ** 2), 4),
-        "codecs":         codecs,
-        "geometry":       geometry,
-        "platform":       f"{platform.system()} / {platform.machine()}",
+        "original_mb": round(original_bytes / (1024**2), 4),
+        "codecs": codecs,
+        "geometry": geometry,
+        "platform": f"{platform.system()} / {platform.machine()}",
     }
 
 
@@ -1063,8 +1157,8 @@ def _api_lora(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Compress a synthetic LoRA adapter and return measured fidelity + size."""
     from python.lora_api import compress_lora_adapter, decompress_lora
 
-    rank = max(2,  min(int(payload.get("rank", 16)),          128))
-    din  = max(32, min(int(payload.get("in_features", 768)),  4096))
+    rank = max(2, min(int(payload.get("rank", 16)), 128))
+    din = max(32, min(int(payload.get("in_features", 768)), 4096))
     dout = max(32, min(int(payload.get("out_features", 768)), 4096))
 
     rng = np.random.default_rng(7)
@@ -1090,30 +1184,32 @@ def _api_lora(payload: Dict[str, Any]) -> Dict[str, Any]:
         delta_cos = _matrix_cosine(b_mat @ a_mat, b2 @ a2)
         tot_orig += orig
         tot_comp += comp
-        modules.append({
-            "module":      name,
-            "rank":        int(res.rank),
-            "cos_A":       round(float(res.cosine_sim_A), 5),
-            "cos_B":       round(float(res.cosine_sim_B), 5),
-            "delta_cos":   round(delta_cos, 5),
-            "orig_bytes":  orig,
-            "comp_bytes":  comp,
-            "ratio":       round(orig / comp, 3) if comp else 0.0,
-        })
+        modules.append(
+            {
+                "module": name,
+                "rank": int(res.rank),
+                "cos_A": round(float(res.cosine_sim_A), 5),
+                "cos_B": round(float(res.cosine_sim_B), 5),
+                "delta_cos": round(delta_cos, 5),
+                "orig_bytes": orig,
+                "comp_bytes": comp,
+                "ratio": round(orig / comp, 3) if comp else 0.0,
+            }
+        )
 
     dense_bytes = len(_LORA_MODULES) * dout * din * 4
     return {
-        "rank":             rank,
-        "in_features":      din,
-        "out_features":     dout,
-        "modules":          modules,
+        "rank": rank,
+        "in_features": din,
+        "out_features": dout,
+        "modules": modules,
         "total_orig_bytes": tot_orig,
         "total_comp_bytes": tot_comp,
-        "ratio":            round(tot_orig / tot_comp, 3) if tot_comp else 0.0,
-        "dense_bytes":      dense_bytes,
-        "vs_dense_ratio":   round(dense_bytes / tot_comp, 1) if tot_comp else 0.0,
-        "timing_ms":        round(elapsed_ms, 3),
-        "platform":         f"{platform.system()} / {platform.machine()}",
+        "ratio": round(tot_orig / tot_comp, 3) if tot_comp else 0.0,
+        "dense_bytes": dense_bytes,
+        "vs_dense_ratio": round(dense_bytes / tot_comp, 1) if tot_comp else 0.0,
+        "timing_ms": round(elapsed_ms, 3),
+        "platform": f"{platform.system()} / {platform.machine()}",
     }
 
 
@@ -1130,7 +1226,9 @@ def _api_lora(payload: Dict[str, Any]) -> Dict[str, Any]:
 _IVF_LOCK = threading.Lock()
 
 
-def _kmeans_full(data: np.ndarray, k: int, seed: int, n_iter: int = 12) -> Tuple[np.ndarray, np.ndarray]:
+def _kmeans_full(
+    data: np.ndarray, k: int, seed: int, n_iter: int = 12
+) -> Tuple[np.ndarray, np.ndarray]:
     """Lloyd's k-means on full-dimensional data. Returns (centroids, labels)."""
     n = data.shape[0]
     k = min(k, n)
@@ -1160,7 +1258,11 @@ def _ivf_topk(query: np.ndarray, data: np.ndarray, cand: np.ndarray, k: int) -> 
 
 
 def _ivf_native_latency(
-    data: np.ndarray, queries: np.ndarray, n_lists: int, n_probe: int, k: int,
+    data: np.ndarray,
+    queries: np.ndarray,
+    n_lists: int,
+    n_probe: int,
+    k: int,
 ) -> Optional[Dict[str, Any]]:
     """Time the compiled vectro_py IVF kernel, if available."""
     try:
@@ -1181,13 +1283,20 @@ def _ivf_native_latency(
     except Exception as exc:  # noqa: BLE001 — surface, never mask
         tracing_warn(f"native IVF search failed: {exc}")
         return None
-    return {"per_query_ms": round(native_ms, 4),
-            "qps": round(1000.0 / native_ms, 0) if native_ms > 0 else None}
+    return {
+        "per_query_ms": round(native_ms, 4),
+        "qps": round(1000.0 / native_ms, 0) if native_ms > 0 else None,
+    }
 
 
 def _ivf_probe_sweep(
-    data: np.ndarray, queries: np.ndarray, centroids: np.ndarray,
-    lists: Dict[int, np.ndarray], truth: List[List[int]], n_lists: int, k: int,
+    data: np.ndarray,
+    queries: np.ndarray,
+    centroids: np.ndarray,
+    lists: Dict[int, np.ndarray],
+    truth: List[List[int]],
+    n_lists: int,
+    k: int,
 ) -> List[Dict[str, Any]]:
     """Recall@k and scanned-fraction for a geometric ladder of n_probe."""
     probes = sorted({p for p in (1, 2, 4, 8, 16, 32, n_lists) if p <= n_lists})
@@ -1198,26 +1307,31 @@ def _ivf_probe_sweep(
         hits = 0
         scanned = 0
         for qi in range(len(queries)):
-            cand = np.concatenate([lists[c] for c in probed[qi] if c in lists]) \
-                if any(c in lists for c in probed[qi]) else np.array([], dtype=int)
+            cand = (
+                np.concatenate([lists[c] for c in probed[qi] if c in lists])
+                if any(c in lists for c in probed[qi])
+                else np.array([], dtype=int)
+            )
             scanned += cand.size
             got = set(_ivf_topk(queries[qi], data, cand, k))
             hits += len(got & set(truth[qi]))
-        sweep.append({
-            "n_probe":     int(npr),
-            "recall":      round(hits / (len(queries) * k), 4),
-            "scanned_pct": round(scanned / (len(queries) * data.shape[0]) * 100, 2),
-        })
+        sweep.append(
+            {
+                "n_probe": int(npr),
+                "recall": round(hits / (len(queries) * k), 4),
+                "scanned_pct": round(scanned / (len(queries) * data.shape[0]) * 100, 2),
+            }
+        )
     return sweep
 
 
 def _api_ivf(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Full IVF demonstration: cell map, n_probe sweep, native kernel timing."""
-    n_vecs  = max(500, min(int(payload.get("n_vecs", 4000)), 12_000))
-    dim     = max(8,   min(int(payload.get("dim", 64)),      512))
-    n_lists = max(4,   min(int(payload.get("n_lists", 32)),  96))
-    n_probe = max(1,   min(int(payload.get("n_probe", 4)),   n_lists))
-    k       = max(1,   min(int(payload.get("k", 10)),        50))
+    n_vecs = max(500, min(int(payload.get("n_vecs", 4000)), 12_000))
+    dim = max(8, min(int(payload.get("dim", 64)), 512))
+    n_lists = max(4, min(int(payload.get("n_lists", 32)), 96))
+    n_probe = max(1, min(int(payload.get("n_probe", 4)), n_lists))
+    k = max(1, min(int(payload.get("k", 10)), 50))
 
     with _IVF_LOCK:
         data = _lab_batch(n_vecs, dim, "clustered", seed=11)
@@ -1237,8 +1351,11 @@ def _api_ivf(payload: Dict[str, Any]) -> Dict[str, Any]:
         # selected-n_probe single-query view (first query) for the cell map
         qcent0 = qd[0] @ centroids.T
         probed0 = np.argsort(-qcent0)[:n_probe].tolist()
-        cand0 = np.concatenate([lists[c] for c in probed0 if lists[c].size]) \
-            if any(lists[c].size for c in probed0) else np.array([], dtype=int)
+        cand0 = (
+            np.concatenate([lists[c] for c in probed0 if lists[c].size])
+            if any(lists[c].size for c in probed0)
+            else np.array([], dtype=int)
+        )
         result0 = _ivf_topk(qd[0], data, cand0, k)
 
         # brute-force latency baseline
@@ -1261,19 +1378,31 @@ def _api_ivf(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     sel = next((s for s in sweep if s["n_probe"] == n_probe), sweep[0])
     return {
-        "n_vecs": n_vecs, "dim": dim, "n_lists": n_lists, "n_probe": n_probe, "k": k,
-        "recall": sel["recall"], "scanned_pct": sel["scanned_pct"],
+        "n_vecs": n_vecs,
+        "dim": dim,
+        "n_lists": n_lists,
+        "n_probe": n_probe,
+        "k": k,
+        "recall": sel["recall"],
+        "scanned_pct": sel["scanned_pct"],
         "sweep": sweep,
         "brute_ms": round(brute_ms, 4),
         "native": native,
-        "speedup": round(brute_ms / native["per_query_ms"], 1) if native and native["per_query_ms"] else None,
+        "speedup": round(brute_ms / native["per_query_ms"], 1)
+        if native and native["per_query_ms"]
+        else None,
         "points": [
-            {"x": round(float(pts_xy[i, 0] / scale), 4), "y": round(float(pts_xy[i, 1] / scale), 4),
-             "c": int(labels[idx_s[i]])}
+            {
+                "x": round(float(pts_xy[i, 0] / scale), 4),
+                "y": round(float(pts_xy[i, 1] / scale), 4),
+                "c": int(labels[idx_s[i]]),
+            }
             for i in range(take)
         ],
-        "centroids": [[round(float(cen_xy[c, 0] / scale), 4), round(float(cen_xy[c, 1] / scale), 4)]
-                      for c in range(n_lists)],
+        "centroids": [
+            [round(float(cen_xy[c, 0] / scale), 4), round(float(cen_xy[c, 1] / scale), 4)]
+            for c in range(n_lists)
+        ],
         "probed": probed0,
         "query": [round(float(q_xy[0] / scale), 4), round(float(q_xy[1] / scale), 4)],
         "result_cells": sorted({int(labels[r]) for r in result0}),
@@ -1337,23 +1466,25 @@ def _api_embed_search(payload: Dict[str, Any]) -> Dict[str, Any]:
     for raw_i in order:
         i = int(raw_i)
         matched = sorted(q_terms & (set(analyzer(docs[i])) & vocab))
-        results.append({
-            "doc":     docs[i],
-            "score":   round(float(sims[i]), 4),
-            "matched": matched,
-        })
+        results.append(
+            {
+                "doc": docs[i],
+                "score": round(float(sims[i]), 4),
+                "matched": matched,
+            }
+        )
 
     return {
-        "query":       query,
-        "n_docs":      len(docs),
-        "dim":         int(embeds.shape[1]),
-        "vocab_size":  len(vocab),
-        "k":           k,
+        "query": query,
+        "n_docs": len(docs),
+        "dim": int(embeds.shape[1]),
+        "vocab_size": len(vocab),
+        "k": k,
         "used_sample": used_sample,
         "compress": {
-            "ratio":         round(float(res.compression_ratio), 2),
-            "fidelity":      round(fidelity, 5),
-            "original_kb":   round(int(embeds.nbytes) / 1024, 2),
+            "ratio": round(float(res.compression_ratio), 2),
+            "fidelity": round(fidelity, 5),
+            "original_kb": round(int(embeds.nbytes) / 1024, 2),
             "compressed_kb": round(int(res.total_compressed_bytes) / 1024, 2),
         },
         "results": results,
@@ -1361,22 +1492,22 @@ def _api_embed_search(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 ROUTES_POST: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
-    "/api/compress":         _api_compress,
-    "/api/search":           _api_search,
-    "/api/benchmark":        _api_benchmark,
-    "/api/compact":          _api_compact,
-    "/api/filtered-search":  _api_filtered_search,
-    "/api/recall_estimate":  _api_recall_estimate,
-    "/api/quantize-lab":     _api_quantize_lab,
-    "/api/embed-search":     _api_embed_search,
-    "/api/ivf":              _api_ivf,
-    "/api/lora":             _api_lora,
+    "/api/compress": _api_compress,
+    "/api/search": _api_search,
+    "/api/benchmark": _api_benchmark,
+    "/api/compact": _api_compact,
+    "/api/filtered-search": _api_filtered_search,
+    "/api/recall_estimate": _api_recall_estimate,
+    "/api/quantize-lab": _api_quantize_lab,
+    "/api/embed-search": _api_embed_search,
+    "/api/ivf": _api_ivf,
+    "/api/lora": _api_lora,
 }
 ROUTES_GET: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
-    "/api/index-stats":  _api_index_stats,
-    "/api/hnsw-stats":   _api_hnsw_stats,
+    "/api/index-stats": _api_index_stats,
+    "/api/hnsw-stats": _api_hnsw_stats,
     "/api/recall_estimate": lambda _: _api_recall_estimate({}),
-    "/api/health":       _api_health,
+    "/api/health": _api_health,
 }
 
 
@@ -1392,12 +1523,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # quiet down the default access log a bit
     def log_message(self, fmt: str, *args: Any) -> None:
-        sys.stderr.write(
-            f"  {self.address_string()}  {fmt % args}\n"
-        )
+        sys.stderr.write(f"  {self.address_string()}  {fmt % args}\n")
 
     def _send_cors(self) -> None:
-        self.send_header("Access-Control-Allow-Origin",  "*")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
@@ -1430,7 +1559,7 @@ class Handler(BaseHTTPRequestHandler):
         m = _INDEX_ROUTE_RE.match(path)
         if not m:
             return False
-        name   = m.group("name")
+        name = m.group("name")
         action = m.group("action")
 
         try:
@@ -1481,17 +1610,17 @@ class Handler(BaseHTTPRequestHandler):
 
         return True
 
-    def do_OPTIONS(self) -> None:        # noqa: N802
+    def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(204)
         self._send_cors()
         self.end_headers()
 
-    def do_DELETE(self) -> None:         # noqa: N802
+    def do_DELETE(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if not self._dispatch_index_route("DELETE", path):
             self._send_json({"error": f"not found: {path}"}, status=404)
 
-    def do_GET(self) -> None:            # noqa: N802
+    def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path == "/" or path == "/index.html":
             self._send_html(INDEX_HTML)
@@ -1506,7 +1635,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": f"not found: {path}"}, status=404)
 
-    def do_POST(self) -> None:           # noqa: N802
+    def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if self._dispatch_index_route("POST", path):
             return

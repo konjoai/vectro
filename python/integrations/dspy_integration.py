@@ -29,6 +29,7 @@ The retriever follows the ``dspy.Retrieve`` duck-typing protocol — both
 ``dspy.Prediction`` when DSPy is installed (otherwise a structurally equivalent
 fallback object).
 """
+
 from __future__ import annotations
 
 import threading
@@ -43,18 +44,17 @@ QueryLike = Union[str, Sequence[str]]
 EmbedFn = Callable[[Union[str, List[str]]], Any]
 
 
-_DSPY_HINT = (
-    "dspy-ai is recommended for full DSPy integration. "
-    "Install with: pip install dspy-ai"
-)
+_DSPY_HINT = "dspy-ai is recommended for full DSPy integration. Install with: pip install dspy-ai"
 
 
 def _make_prediction(passages: List[str], **fields: Any) -> Any:
     """Return a ``dspy.Prediction`` if DSPy is installed, else a fallback."""
     try:
         import dspy  # type: ignore
+
         return dspy.Prediction(passages=list(passages), **fields)
     except Exception:
+
         class _Prediction:
             def __init__(self, **kw: Any) -> None:
                 self.__dict__.update(kw)
@@ -86,9 +86,7 @@ def _embed_many(embed_fn: EmbedFn, texts: List[str]) -> np.ndarray:
         # Per-call fallback — embed_fn does not batch
         arr = np.stack([_embed_one(embed_fn, t) for t in texts], axis=0)
     if arr.ndim != 2 or arr.shape[0] != len(texts):
-        raise ValueError(
-            f"embed_fn returned shape {arr.shape}; expected ({len(texts)}, dim)"
-        )
+        raise ValueError(f"embed_fn returned shape {arr.shape}; expected ({len(texts)}, dim)")
     return arr
 
 
@@ -222,8 +220,7 @@ class VectroDSPyRetriever:
             emb_matrix = np.asarray(embeddings, dtype=np.float32)
             if emb_matrix.ndim != 2 or emb_matrix.shape[0] != len(passages):
                 raise ValueError(
-                    f"embeddings shape {emb_matrix.shape} does not match "
-                    f"{len(passages)} passages"
+                    f"embeddings shape {emb_matrix.shape} does not match {len(passages)} passages"
                 )
 
         if metadatas is None:
@@ -292,9 +289,7 @@ class VectroDSPyRetriever:
         if query_embedding is not None:
             q_arr = np.asarray(query_embedding, dtype=np.float32)
             if q_arr.ndim != 1:
-                raise ValueError(
-                    f"query_embedding must be 1-D, got shape {q_arr.shape}"
-                )
+                raise ValueError(f"query_embedding must be 1-D, got shape {q_arr.shape}")
             scores = _cosine_scores_fn(q_arr, mat)
         else:
             queries = self._normalize_query(query_or_queries)
@@ -305,10 +300,7 @@ class VectroDSPyRetriever:
             for row in q_mat:
                 scores += _cosine_scores_fn(row, mat)
 
-        filtered_idx = [
-            i for i in range(n_corpus)
-            if self._matches_filters(metadatas[i], filters)
-        ]
+        filtered_idx = [i for i in range(n_corpus) if self._matches_filters(metadatas[i], filters)]
         if not filtered_idx:
             return _make_prediction(passages=[])
 
@@ -352,6 +344,7 @@ class VectroDSPyRetriever:
     ) -> Any:
         """Non-blocking variant of :meth:`forward`."""
         import asyncio
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
@@ -405,19 +398,14 @@ class VectroDSPyRetriever:
             embed_fn = self._ensure_embed_fn()
             q_arr = _embed_one(embed_fn, query)
 
-        filtered_idx = [
-            i for i in range(n_corpus)
-            if self._matches_filters(metadatas[i], filters)
-        ]
+        filtered_idx = [i for i in range(n_corpus) if self._matches_filters(metadatas[i], filters)]
         if not filtered_idx:
             return _make_prediction(passages=[])
 
         filtered_arr = np.array(filtered_idx)
         filtered_mat = mat[filtered_arr]
 
-        mmr_local = _mmr_select(
-            filtered_mat, q_arr, k=k, fetch_k=fetch_k, lambda_mult=lambda_mult
-        )
+        mmr_local = _mmr_select(filtered_mat, q_arr, k=k, fetch_k=fetch_k, lambda_mult=lambda_mult)
         chosen = [int(filtered_arr[i]) for i in mmr_local]
         return _make_prediction(
             passages=[passages[i] for i in chosen],
@@ -436,6 +424,7 @@ class VectroDSPyRetriever:
     ) -> Any:
         """Non-blocking variant of :meth:`forward_mmr`."""
         import asyncio
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
@@ -514,9 +503,7 @@ class VectroDSPyRetriever:
             meta = json.load(fh)
 
         if meta.get("store_type") != "dspy":
-            raise ValueError(
-                f"meta.json store_type={meta.get('store_type')!r} is not 'dspy'."
-            )
+            raise ValueError(f"meta.json store_type={meta.get('store_type')!r} is not 'dspy'.")
 
         rm = cls(
             embed_fn=embed_fn,
@@ -550,8 +537,8 @@ class VectroDSPyRetriever:
             if n == 0 or self._compressed is None:
                 return {"n_passages": 0, "compression_ratio": 1.0}
             d = self._n_dims
-            original_mb = n * d * 4 / (1024 ** 2)
-            compressed_mb = self._compressed.total_compressed_bytes / (1024 ** 2)
+            original_mb = n * d * 4 / (1024**2)
+            compressed_mb = self._compressed.total_compressed_bytes / (1024**2)
             return {
                 "n_passages": n,
                 "dimensions": d,

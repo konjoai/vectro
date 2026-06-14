@@ -3,6 +3,7 @@
 Wraps the official ``voyageai`` Python SDK.  Uses ``client.embed(texts,
 model=..., input_type=...)`` per batch.
 """
+
 from __future__ import annotations
 
 from typing import Any, List, Optional
@@ -12,10 +13,7 @@ import numpy as np
 from .base import BaseEmbeddingProvider
 
 
-_VOYAGE_HINT = (
-    "voyageai is required for VoyageEmbeddings.  "
-    "Install with: pip install voyageai"
-)
+_VOYAGE_HINT = "voyageai is required for VoyageEmbeddings.  Install with: pip install voyageai"
 
 
 class VoyageEmbeddings(BaseEmbeddingProvider):
@@ -74,13 +72,9 @@ class VoyageEmbeddings(BaseEmbeddingProvider):
     def _embed_batch(self, texts: List[str]) -> np.ndarray:
         return self._embed_batch_with_type(texts, self.input_type)
 
-    def _embed_batch_with_type(
-        self, texts: List[str], input_type: str
-    ) -> np.ndarray:
+    def _embed_batch_with_type(self, texts: List[str], input_type: str) -> np.ndarray:
         client = self._ensure_client()
-        resp = client.embed(
-            list(texts), model=self.model, input_type=input_type
-        )
+        resp = client.embed(list(texts), model=self.model, input_type=input_type)
         # voyageai>=0.3: resp.embeddings is a list[list[float]]
         embs = getattr(resp, "embeddings", None)
         if embs is None and isinstance(resp, dict):

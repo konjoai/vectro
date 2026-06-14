@@ -16,18 +16,16 @@ Install with::
 from __future__ import annotations
 
 import importlib
-import io
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import numpy as np
 
-from ..interface import QuantizationResult, reconstruct_embeddings
+from ..interface import QuantizationResult
 from ..batch_api import BatchQuantizationResult
 
 if TYPE_CHECKING:  # pragma: no cover
     import pyarrow as pa
-    import pyarrow.parquet as pq
 
 
 def _pa() -> Any:
@@ -68,7 +66,9 @@ def _build_schema(vector_dim: int, precision_mode: str = "int8") -> Any:
             pa.field("vector_dim", pa.int32()),
             pa.field("precision_mode", pa.string()),
         ],
-        metadata={_VECTRO_METADATA_KEY: f"vectro_npz_v2|dim={vector_dim}|prec={precision_mode}".encode()},
+        metadata={
+            _VECTRO_METADATA_KEY: f"vectro_npz_v2|dim={vector_dim}|prec={precision_mode}".encode()
+        },
     )
     return schema
 
@@ -105,7 +105,9 @@ def result_to_table(
         vector_dim = result.vector_dim
         precision_mode = result.precision_mode
     else:
-        q_arr = np.asarray(result.quantized, dtype=np.int8 if result.precision_mode == "int8" else np.uint8)
+        q_arr = np.asarray(
+            result.quantized, dtype=np.int8 if result.precision_mode == "int8" else np.uint8
+        )
         s_arr = np.asarray(result.scales, dtype=np.float32)
         vector_dim = result.dims
         precision_mode = result.precision_mode if hasattr(result, "precision_mode") else "int8"
@@ -155,14 +157,8 @@ def table_to_result(table: "pa.Table") -> BatchQuantizationResult:
 
     q_dtype = np.uint8 if precision_mode == "int4" else np.int8
 
-    q_rows = [
-        np.frombuffer(table.column("quantized")[i].as_py(), dtype=q_dtype)
-        for i in range(n)
-    ]
-    s_rows = [
-        np.frombuffer(table.column("scales")[i].as_py(), dtype=np.float32)
-        for i in range(n)
-    ]
+    q_rows = [np.frombuffer(table.column("quantized")[i].as_py(), dtype=q_dtype) for i in range(n)]
+    s_rows = [np.frombuffer(table.column("scales")[i].as_py(), dtype=np.float32) for i in range(n)]
 
     q_arr = np.vstack(q_rows)
     s_arr = np.asarray(s_rows, dtype=np.float32)

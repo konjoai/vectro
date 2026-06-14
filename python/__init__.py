@@ -12,7 +12,7 @@ from .vectro import (
     decompress_vectors,
     analyze_compression_quality,
     generate_compression_report,
-    get_version_info
+    get_version_info,
 )
 
 from .interface import (
@@ -20,7 +20,7 @@ from .interface import (
     quantize_embeddings,
     reconstruct_embeddings,
     mean_cosine_similarity,
-    get_backend_info
+    get_backend_info,
 )
 
 from .batch_api import (
@@ -28,7 +28,7 @@ from .batch_api import (
     BatchQuantizationResult,
     BatchCompressionAnalyzer,
     quantize_embeddings_batch,
-    benchmark_batch_compression
+    benchmark_batch_compression,
 )
 
 from .quality_api import (
@@ -37,7 +37,7 @@ from .quality_api import (
     QualityBenchmark,
     QualityReport,
     evaluate_quantization_quality,
-    generate_quality_report
+    generate_quality_report,
 )
 
 from .profiles_api import (
@@ -47,7 +47,7 @@ from .profiles_api import (
     CompressionOptimizer,
     ProfileComparison,
     get_compression_profile,
-    create_custom_profile
+    create_custom_profile,
 )
 
 from .integrations import (
@@ -163,41 +163,36 @@ __all__ = [
     "Vectro",
     "QuantizationConfig",
     "compress_vectors",
-    "decompress_vectors", 
+    "decompress_vectors",
     "analyze_compression_quality",
     "generate_compression_report",
-    
     # Core interface
     "QuantizationResult",
     "quantize_embeddings",
     "reconstruct_embeddings",
     "mean_cosine_similarity",
     "get_backend_info",
-    
     # Batch processing
     "VectroBatchProcessor",
     "BatchQuantizationResult",
     "BatchCompressionAnalyzer",
     "quantize_embeddings_batch",
     "benchmark_batch_compression",
-    
     # Quality analysis
     "VectroQualityAnalyzer",
-    "QualityMetrics", 
+    "QualityMetrics",
     "QualityBenchmark",
     "QualityReport",
     "evaluate_quantization_quality",
     "generate_quality_report",
-    
     # Compression profiles
     "ProfileManager",
     "CompressionProfile",
-    "CompressionStrategy", 
+    "CompressionStrategy",
     "CompressionOptimizer",
     "ProfileComparison",
     "get_compression_profile",
     "create_custom_profile",
-
     # Integrations
     "StoredVectorBatch",
     "VectorDBConnector",
@@ -239,7 +234,6 @@ __all__ = [
     "inspect_artifact",
     "upgrade_artifact",
     "validate_artifact",
-
     # v3 unified API
     "PQCodebook",
     "HNSWIndex",
@@ -273,7 +267,6 @@ __all__ = [
     # ONNX export
     "to_onnx_model",
     "export_onnx",
-
     # Hybrid retrieval
     "VectroRetriever",
     "RetrieverProtocol",
@@ -291,32 +284,27 @@ __all__ = [
     "IVFPQIndex",
     # BFloat16 vector store
     "Bf16Encoder",
-
     # v5.2.0 async pipeline
     "CompressionPipeline",
     "PipelineStage",
     "PipelineResult",
     "compress_async",
-
     # v5.3.0 telemetry & observability
     "TelemetryEvent",
     "TelemetryCollector",
     "TelemetryHook",
     "InMemoryTelemetryCollector",
     "attach_telemetry",
-
     # v5.4.0 pipeline checkpointing
     "PipelineCheckpoint",
     "save_pipeline",
     "load_pipeline",
     "checkpoint_info",
-
     # v5.5.0 quantization audit
     "QuantizationAuditor",
     "QuantizationReport",
     "VectorPairMetrics",
     "RecallResult",
-
     # Utilities
-    "get_version_info"
+    "get_version_info",
 ]

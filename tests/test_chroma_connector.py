@@ -20,6 +20,7 @@ from python.integrations.vector_db import StoredVectorBatch  # noqa: E402
 # Minimal in-memory Chroma mock
 # ---------------------------------------------------------------------------
 
+
 class _FakeChromaCollection:
     """Minimal mock of a chromadb Collection object."""
 
@@ -69,6 +70,7 @@ class _FakeChromaClient:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestChromaConnectorBasic(unittest.TestCase):
     def setUp(self):

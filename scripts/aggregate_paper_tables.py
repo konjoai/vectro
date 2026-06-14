@@ -13,6 +13,7 @@ Flags any (platform, wave) entries whose CoV exceeds 5 %.
 Usage:
     python scripts/aggregate_paper_tables.py results/paper/*.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -45,8 +46,11 @@ def _load(paths: List[str]) -> List[Dict[str, Any]]:
 
 
 def _bucket_key(rec: Dict[str, Any]) -> tuple:
-    return (rec.get("platform", "?"), int(rec.get("wave", 0)),
-            "cold" if rec.get("cold") else "warm")
+    return (
+        rec.get("platform", "?"),
+        int(rec.get("wave", 0)),
+        "cold" if rec.get("cold") else "warm",
+    )
 
 
 def _aggregate(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -59,8 +63,7 @@ def _aggregate(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         all_throughputs: List[float] = []
         for r in recs:
             all_throughputs.extend(
-                float(x) for x in (r.get("throughputs") or [])
-                if isinstance(x, (int, float))
+                float(x) for x in (r.get("throughputs") or []) if isinstance(x, (int, float))
             )
         n = len(all_throughputs)
         if n == 0:
@@ -70,19 +73,21 @@ def _aggregate(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             stdev = statistics.pstdev(all_throughputs) if n >= 2 else 0.0
             cov = 100.0 * (stdev / mean) if mean else 0.0
 
-        rows.append({
-            "platform":  platform,
-            "wave":      wave,
-            "mode":      mode,
-            "samples":   n,
-            "mean":      round(mean, 3) if n else None,
-            "stdev":     round(stdev, 3) if n else None,
-            "cov_pct":   round(cov, 3)   if n else None,
-            "git_rev":   recs[-1].get("git_rev", ""),
-            "simd":      recs[-1].get("simd", ""),
-            "thermal":   f"{recs[-1].get('thermal_before','?')}→{recs[-1].get('thermal_after','?')}",
-            "warn":      "⚠️ CoV>5%" if (n and cov > COV_GATE_PCT) else "",
-        })
+        rows.append(
+            {
+                "platform": platform,
+                "wave": wave,
+                "mode": mode,
+                "samples": n,
+                "mean": round(mean, 3) if n else None,
+                "stdev": round(stdev, 3) if n else None,
+                "cov_pct": round(cov, 3) if n else None,
+                "git_rev": recs[-1].get("git_rev", ""),
+                "simd": recs[-1].get("simd", ""),
+                "thermal": f"{recs[-1].get('thermal_before', '?')}→{recs[-1].get('thermal_after', '?')}",
+                "warn": "⚠️ CoV>5%" if (n and cov > COV_GATE_PCT) else "",
+            }
+        )
     return rows
 
 
@@ -101,8 +106,18 @@ def _write_md(rows: List[Dict[str, Any]], out: Path) -> None:
     if not rows:
         out.write_text("# (no rows)\n", encoding="utf-8")
         return
-    keys = ["platform", "wave", "mode", "samples", "mean", "stdev",
-            "cov_pct", "thermal", "simd", "warn"]
+    keys = [
+        "platform",
+        "wave",
+        "mode",
+        "samples",
+        "mean",
+        "stdev",
+        "cov_pct",
+        "thermal",
+        "simd",
+        "warn",
+    ]
     lines = []
     lines.append("# Vectro paper — cross-platform aggregate")
     lines.append("")
@@ -117,8 +132,9 @@ def _write_md(rows: List[Dict[str, Any]], out: Path) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("paths", nargs="+",
-                    help="JSON files (or globs) emitted by reproduce_paper.{sh,ps1}")
+    ap.add_argument(
+        "paths", nargs="+", help="JSON files (or globs) emitted by reproduce_paper.{sh,ps1}"
+    )
     args = ap.parse_args()
 
     records = _load(args.paths)
@@ -132,16 +148,15 @@ def main() -> int:
     out_dir = Path(first).resolve().parent
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "aggregate.csv"
-    md_path  = out_dir / "aggregate.md"
+    md_path = out_dir / "aggregate.md"
     _write_csv(rows, csv_path)
-    _write_md(rows,  md_path)
+    _write_md(rows, md_path)
 
     print(f"✓ wrote {csv_path}")
     print(f"✓ wrote {md_path}")
     flagged = sum(1 for r in rows if r["warn"])
     if flagged:
-        print(f"⚠️  {flagged} bucket(s) exceed CoV gate of {COV_GATE_PCT:.1f}%",
-              file=sys.stderr)
+        print(f"⚠️  {flagged} bucket(s) exceed CoV gate of {COV_GATE_PCT:.1f}%", file=sys.stderr)
     return 0
 
 

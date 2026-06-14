@@ -15,11 +15,12 @@ Both functions accept an empty matrix and a single point without
 raising — useful when the UI calls /project before any vectors are
 added.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import RLock
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -27,6 +28,7 @@ import numpy as np
 # ─────────────────────────────────────────────────────────────────────────
 # Index data structure
 # ─────────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class Index:
@@ -97,6 +99,7 @@ class IndexStore:
 # PCA — SVD on centred data, top 2 components
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def pca_2d(X: np.ndarray) -> np.ndarray:
     """Project ``X`` (N, D) onto its top-2 principal components.
 
@@ -129,6 +132,7 @@ def pca_2d(X: np.ndarray) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────
 # K-means — k-means++ init + Lloyd iterations
 # ─────────────────────────────────────────────────────────────────────────
+
 
 def kmeans(
     X: np.ndarray,
@@ -194,9 +198,8 @@ def kmeans(
 # Cosine search — used by the FastAPI /search route and demo viz
 # ─────────────────────────────────────────────────────────────────────────
 
-def cosine_topk(
-    M: np.ndarray, q: np.ndarray, k: int
-) -> List[Dict[str, Any]]:
+
+def cosine_topk(M: np.ndarray, q: np.ndarray, k: int) -> List[Dict[str, Any]]:
     """Return the top-``k`` rows of ``M`` by cosine similarity to ``q``.
 
     Empty matrix yields an empty result.  The returned list is sorted
@@ -207,9 +210,7 @@ def cosine_topk(
     if M.shape[0] == 0:
         return []
     if q.shape[0] != M.shape[1]:
-        raise ValueError(
-            f"query dim {q.shape[0]} does not match index dim {M.shape[1]}"
-        )
+        raise ValueError(f"query dim {q.shape[0]} does not match index dim {M.shape[1]}")
     q_norm = float(np.linalg.norm(q))
     if q_norm == 0.0:
         q_norm = 1.0
@@ -225,7 +226,4 @@ def cosine_topk(
     else:
         part = np.argpartition(-scores, k - 1)[:k]
         order = part[np.argsort(-scores[part])]
-    return [
-        {"index": int(i), "score": float(scores[i])}
-        for i in order
-    ]
+    return [{"index": int(i), "score": float(scores[i])} for i in order]

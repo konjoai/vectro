@@ -31,8 +31,8 @@ from .interface import QuantizationResult
 # INT2
 # ---------------------------------------------------------------------------
 
-_INT2_LEVELS = 3   # [-1, 0, +1] symmetric ternary (best quality in 2 bits)
-_INT2_MAX = 1      # clamped range
+_INT2_LEVELS = 3  # [-1, 0, +1] symmetric ternary (best quality in 2 bits)
+_INT2_MAX = 1  # clamped range
 
 
 def quantize_int2(
@@ -74,15 +74,15 @@ def quantize_int2(
     for g in range(n_groups):
         col_start = g * group_size
         col_end = min(col_start + group_size, d)
-        block = emb[:, col_start:col_end]           # (n, gs)
+        block = emb[:, col_start:col_end]  # (n, gs)
 
-        zero = block.mean(axis=1, keepdims=True)    # (n, 1)
+        zero = block.mean(axis=1, keepdims=True)  # (n, 1)
         shifted = block - zero
         abs_max = np.max(np.abs(shifted), axis=1, keepdims=True)
         scale = np.where(abs_max == 0, 1.0, abs_max).astype(np.float32)
 
         q_block = np.round(shifted / scale).astype(np.int8)
-        q_block = np.clip(q_block, -1, 1)           # ternary: {-1, 0, +1}
+        q_block = np.clip(q_block, -1, 1)  # ternary: {-1, 0, +1}
 
         q_flat[:, col_start:col_end] = q_block
         scales[:, g] = scale.ravel()
@@ -90,7 +90,7 @@ def quantize_int2(
 
     # Pack 4 ternary values per byte: map {-1→0, 0→1, 1→2}, store in 2 bits
     # Mapping: -1 → 00 (0), 0 → 01 (1), 1 → 10 (2)
-    q_ternary = (q_flat + 1).astype(np.uint8)       # {0, 1, 2}
+    q_ternary = (q_flat + 1).astype(np.uint8)  # {0, 1, 2}
     packed = _pack_int2(q_ternary, d)
 
     return packed, scales, zeroes
@@ -167,7 +167,7 @@ def dequantize_int2(
         vector_dim = packed.shape[1] * 4
 
     q_ternary = _unpack_int2(packed, vector_dim)
-    q_signed = q_ternary.astype(np.int8) - 1        # {0,1,2} → {-1,0,+1}
+    q_signed = q_ternary.astype(np.int8) - 1  # {0,1,2} → {-1,0,+1}
 
     n = q_signed.shape[0]
     n_groups = scales.shape[1]
@@ -236,12 +236,14 @@ def quantize_adaptive(
     for g in range(n_groups):
         col_start = g * effective_gs
         col_end = min(col_start + effective_gs, d)
-        block = emb[:, col_start:col_end].copy()   # (n, gs)
+        block = emb[:, col_start:col_end].copy()  # (n, gs)
 
         # Per-row MAD clipping
         med = np.median(block, axis=1, keepdims=True)
         mad = np.median(np.abs(block - med), axis=1, keepdims=True)
-        clip_val = np.where(mad == 0, np.max(np.abs(block), axis=1, keepdims=True), clip_ratio * mad)
+        clip_val = np.where(
+            mad == 0, np.max(np.abs(block), axis=1, keepdims=True), clip_ratio * mad
+        )
         block = np.clip(block, -clip_val, clip_val)
 
         abs_max = np.max(np.abs(block), axis=1, keepdims=True)
@@ -252,7 +254,7 @@ def quantize_adaptive(
         scales[:, g] = scale.ravel()
 
     if n_groups == 1:
-        scales_out = scales.ravel()   # (n,) for per-row
+        scales_out = scales.ravel()  # (n,) for per-row
     else:
         scales_out = scales  # (n, n_groups)
 

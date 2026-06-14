@@ -53,7 +53,9 @@ def compress_tensor(
     if arr.ndim == 1:
         arr = arr.reshape(1, -1)
 
-    return quantize_embeddings(arr, backend=backend, precision_mode=precision_mode, group_size=group_size)
+    return quantize_embeddings(
+        arr, backend=backend, precision_mode=precision_mode, group_size=group_size
+    )
 
 
 def reconstruct_tensor(

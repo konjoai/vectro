@@ -1,4 +1,5 @@
 """Type stubs for python.retrieval."""
+
 from .rrf_retriever import (
     reciprocal_rank_fusion as reciprocal_rank_fusion,
     rrf_top_k as rrf_top_k,

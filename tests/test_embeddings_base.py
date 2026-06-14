@@ -1,8 +1,8 @@
 """Tests for BaseEmbeddingProvider — batching, caching, and protocol surface."""
+
 from __future__ import annotations
 
 import asyncio
-import os
 import tempfile
 import threading
 import unittest
@@ -23,6 +23,7 @@ from python.embeddings.base import BaseEmbeddingProvider  # noqa: E402
 # ---------------------------------------------------------------------------
 # Deterministic stub provider — concatenates text to a tiny vocabulary vector.
 # ---------------------------------------------------------------------------
+
 
 class _StubProvider(BaseEmbeddingProvider):
     provider_name = "stub"
@@ -67,6 +68,7 @@ class _BadDimProvider(BaseEmbeddingProvider):
 # Construction / config
 # ---------------------------------------------------------------------------
 
+
 class TestConstruction(unittest.TestCase):
     def test_batch_size_must_be_positive(self):
         with self.assertRaises(ValueError):
@@ -86,6 +88,7 @@ class TestConstruction(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Auto-batching
 # ---------------------------------------------------------------------------
+
 
 class TestBatching(unittest.TestCase):
     def test_splits_into_batch_size(self):
@@ -123,6 +126,7 @@ class TestBatching(unittest.TestCase):
 # Caching
 # ---------------------------------------------------------------------------
 
+
 class TestCache(unittest.TestCase):
     def test_cache_hit_avoids_embed(self):
         with tempfile.TemporaryDirectory() as td:
@@ -155,8 +159,7 @@ class TestCache(unittest.TestCase):
 
             p2 = _StubProvider(model="m", cache_dir=td)
             v2 = p2("hello")
-            self.assertEqual(p2.batch_calls, [],
-                             "expected zero batch calls on cached re-load")
+            self.assertEqual(p2.batch_calls, [], "expected zero batch calls on cached re-load")
             np.testing.assert_array_equal(v1, v2)
 
     def test_clear_cache(self):
@@ -182,13 +185,13 @@ class TestCache(unittest.TestCase):
     def test_cache_keyed_by_provider(self):
         class _OtherStub(_StubProvider):
             provider_name = "other-stub"
+
         with tempfile.TemporaryDirectory() as td:
             a = _StubProvider(model="m", cache_dir=td)
             a("text")
             b = _OtherStub(model="m", cache_dir=td)
             b("text")
-            self.assertEqual(len(b.batch_calls), 1,
-                             "different provider must not collide")
+            self.assertEqual(len(b.batch_calls), 1, "different provider must not collide")
 
     def test_concurrent_calls_are_safe(self):
         with tempfile.TemporaryDirectory() as td:
@@ -202,8 +205,7 @@ class TestCache(unittest.TestCase):
                 except BaseException as e:
                     errors.append(e)
 
-            threads = [threading.Thread(target=worker, args=(i,))
-                       for i in range(8)]
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
             for t in threads:
                 t.start()
             for t in threads:
@@ -214,6 +216,7 @@ class TestCache(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Normalisation
 # ---------------------------------------------------------------------------
+
 
 class TestNormalize(unittest.TestCase):
     def test_normalize_unit_norm(self):
@@ -226,6 +229,7 @@ class TestNormalize(unittest.TestCase):
         # Provider returning all zeros must not divide-by-zero
         class _ZeroProvider(BaseEmbeddingProvider):
             provider_name = "zero"
+
             def _embed_batch(self, texts):
                 return np.zeros((len(texts), 4), dtype=np.float32)
 
@@ -238,6 +242,7 @@ class TestNormalize(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Protocol surfaces (LangChain + LlamaIndex)
 # ---------------------------------------------------------------------------
+
 
 class TestProtocols(unittest.TestCase):
     def test_langchain_embed_query_returns_list(self):
@@ -258,8 +263,7 @@ class TestProtocols(unittest.TestCase):
         p = _StubProvider(model="m")
         self.assertEqual(p._get_query_embedding("q"), p.embed_query("q"))
         self.assertEqual(p._get_text_embedding("t"), p.embed_query("t"))
-        self.assertEqual(p._get_text_embeddings(["a", "b"]),
-                         p.embed_documents(["a", "b"]))
+        self.assertEqual(p._get_text_embeddings(["a", "b"]), p.embed_documents(["a", "b"]))
 
     def test_async_methods(self):
         p = _StubProvider(model="m")
@@ -282,15 +286,15 @@ class TestProtocols(unittest.TestCase):
 # Vectro embed_fn contract — drop-in for VectroDSPyRetriever
 # ---------------------------------------------------------------------------
 
+
 class TestEmbedFnContract(unittest.TestCase):
     def test_used_as_dspy_embed_fn(self):
         # Ensure dspy fallback works (no real dspy installed during test)
         from python.integrations import VectroDSPyRetriever
+
         p = _StubProvider(model="m", batch_size=2)
         rm = VectroDSPyRetriever(embed_fn=p, k=2)
-        rm.add_texts(
-            ["paris france", "berlin germany", "tokyo japan", "machine learning"]
-        )
+        rm.add_texts(["paris france", "berlin germany", "tokyo japan", "machine learning"])
         out = rm("paris france")
         self.assertEqual(len(out.passages), 2)
         self.assertIn("paris france", out.passages)

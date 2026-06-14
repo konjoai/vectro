@@ -5,7 +5,6 @@ All tests use small synthetic datasets so they run without any model or GPU.
 
 from __future__ import annotations
 
-import math
 import numpy as np
 import pytest
 
@@ -20,6 +19,7 @@ try:
         PyEmbedding,
         hybrid_search_py,
     )
+
     _SKIP = False
 except ImportError:
     _SKIP = True
@@ -33,6 +33,7 @@ pytestmark = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # Tiny corpus helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_dataset(ids: list[str], vectors: list[list[float]]) -> "EmbeddingDataset":
     ds = EmbeddingDataset()
@@ -59,21 +60,22 @@ DOCS = [
     ("doc_d", "unrelated completely different text", [0.0, 0.0, 1.0]),
 ]
 
-IDS   = [d[0] for d in DOCS]
+IDS = [d[0] for d in DOCS]
 TEXTS = [d[1] for d in DOCS]
-VECS  = [d[2] for d in DOCS]
+VECS = [d[2] for d in DOCS]
 
 
 @pytest.fixture()
 def corpus():
     dataset = _make_dataset(IDS, VECS)
-    bm25    = BM25Index.build(IDS, TEXTS)
+    bm25 = BM25Index.build(IDS, TEXTS)
     return dataset, bm25
 
 
 # ---------------------------------------------------------------------------
 # Basic contract tests
 # ---------------------------------------------------------------------------
+
 
 def test_returns_list(corpus):
     dataset, bm25 = corpus
@@ -122,6 +124,7 @@ def test_sorted_descending(corpus):
 # Alpha=1.0 (pure dense) — ordering should follow cosine similarity
 # ---------------------------------------------------------------------------
 
+
 def test_alpha_1_matches_dense_winner(corpus):
     """With alpha=1.0 the result should rank doc_a highest (query=[1,0,0])."""
     dataset, bm25 = corpus
@@ -140,6 +143,7 @@ def test_alpha_1_ranks_d_last(corpus):
 # Alpha=0.0 (pure BM25) — ordering follows BM25 keyword ranking
 # ---------------------------------------------------------------------------
 
+
 def test_alpha_0_bm25_dominant(corpus):
     """'machine learning' query → doc_b or doc_c should appear in top-2."""
     dataset, bm25 = corpus
@@ -147,14 +151,13 @@ def test_alpha_0_bm25_dominant(corpus):
         dataset, bm25, np.array([0, 0, 0], dtype=np.float32), "machine learning", k=2, alpha=0.0
     )
     top_ids = {r[0] for r in results}
-    assert len(top_ids & {"doc_b", "doc_c"}) > 0, (
-        f"Expected doc_b or doc_c in top-2, got {top_ids}"
-    )
+    assert len(top_ids & {"doc_b", "doc_c"}) > 0, f"Expected doc_b or doc_c in top-2, got {top_ids}"
 
 
 # ---------------------------------------------------------------------------
 # Empty / edge cases
 # ---------------------------------------------------------------------------
+
 
 def test_empty_query_text_with_pure_dense(corpus):
     """Empty query text + alpha=1.0 must still return dense results."""
@@ -175,7 +178,9 @@ def test_oov_query_text(corpus):
 def test_empty_query_vector_bm25_only(corpus):
     """Empty query vector with alpha=0.0 must work (BM25-only path)."""
     dataset, bm25 = corpus
-    results = hybrid_search_py(dataset, bm25, np.array([], dtype=np.float32), "machine learning", k=4, alpha=0.0)
+    results = hybrid_search_py(
+        dataset, bm25, np.array([], dtype=np.float32), "machine learning", k=4, alpha=0.0
+    )
     assert len(results) > 0
 
 
@@ -189,9 +194,7 @@ def test_alpha_clamp_above_1(corpus):
 
 def test_alpha_clamp_below_0(corpus):
     dataset, bm25 = corpus
-    results = hybrid_search_py(
-        dataset, bm25, _unit([1, 0, 0]), "fox", k=3, alpha=-2.0
-    )
+    results = hybrid_search_py(dataset, bm25, _unit([1, 0, 0]), "fox", k=3, alpha=-2.0)
     scores = [s for _, s in results]
     assert all(0.0 <= s <= 1.0 + 1e-6 for s in scores)
 
@@ -199,6 +202,7 @@ def test_alpha_clamp_below_0(corpus):
 # ---------------------------------------------------------------------------
 # BM25Index Python binding tests (piggy-backed here to avoid extra file)
 # ---------------------------------------------------------------------------
+
 
 def test_bm25_build():
     idx = BM25Index.build(IDS, TEXTS)

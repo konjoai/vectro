@@ -3,6 +3,7 @@
 All tests use minimal stubs so llama-index-core is NOT required to run
 the suite.  The adapter logic is exercised against the real Vectro stack.
 """
+
 from __future__ import annotations
 
 import sys
@@ -25,6 +26,7 @@ ensure_repo_root_on_path()
 # ---------------------------------------------------------------------------
 # Minimal llama-index stubs — injected before the module-under-test imports
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class _TextNode:
@@ -89,18 +91,21 @@ def _make_nodes(n: int = 5, dim: int = DIM) -> List[_TextNode]:
     for i in range(n):
         v = RNG.standard_normal(dim).astype(np.float32)
         v /= np.linalg.norm(v) + 1e-10
-        nodes.append(_TextNode(
-            text=f"Document text {i}",
-            id_=f"node-{i}",
-            metadata={"idx": i, "doc_id": f"doc-{i // 2}"},
-            embedding=v.tolist(),
-        ))
+        nodes.append(
+            _TextNode(
+                text=f"Document text {i}",
+                id_=f"node-{i}",
+                metadata={"idx": i, "doc_id": f"doc-{i // 2}"},
+                embedding=v.tolist(),
+            )
+        )
     return nodes
 
 
 # ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
+
 
 class TestConstruction:
     def test_empty(self):
@@ -126,6 +131,7 @@ class TestConstruction:
 # ---------------------------------------------------------------------------
 # add
 # ---------------------------------------------------------------------------
+
 
 class TestAdd:
     def test_returns_ids(self):
@@ -156,6 +162,7 @@ class TestAdd:
 # ---------------------------------------------------------------------------
 # query
 # ---------------------------------------------------------------------------
+
 
 class TestQuery:
     def setup_method(self):
@@ -214,6 +221,7 @@ class TestQuery:
 # delete
 # ---------------------------------------------------------------------------
 
+
 class TestDelete:
     def test_delete_by_doc_id(self):
         store = VectroVectorStore()
@@ -239,6 +247,7 @@ class TestDelete:
 # ---------------------------------------------------------------------------
 # get_nodes
 # ---------------------------------------------------------------------------
+
 
 class TestGetNodes:
     def test_get_all_nodes(self):
@@ -266,6 +275,7 @@ class TestGetNodes:
 # compression_stats
 # ---------------------------------------------------------------------------
 
+
 class TestCompressionStats:
     def test_empty(self):
         store = VectroVectorStore()
@@ -285,6 +295,8 @@ class TestCompressionStats:
 # Import from top-level package
 # ---------------------------------------------------------------------------
 
+
 def test_importable_from_package():
     from python import LlamaIndexVectorStore
+
     assert LlamaIndexVectorStore is VectroVectorStore

@@ -45,13 +45,13 @@ log = logging.getLogger(__name__)
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 
-K = 10                    # Recall@K
-HNSW_M = 16               # HNSW bidirectional links per node
+K = 10  # Recall@K
+HNSW_M = 16  # HNSW bidirectional links per node
 HNSW_EF_CONSTRUCTION = 200
-IVF_NLIST = 100           # IVF number of coarse clusters
-N_QUERIES_EVAL = 200      # queries used for recall estimation + param search
-N_WARMUP = 5              # warmup iterations discarded before timing
-N_REPS = 5                # timed repetitions per batch size (median reported)
+IVF_NLIST = 100  # IVF number of coarse clusters
+N_QUERIES_EVAL = 200  # queries used for recall estimation + param search
+N_WARMUP = 5  # warmup iterations discarded before timing
+N_REPS = 5  # timed repetitions per batch size (median reported)
 
 # Monotonically increasing sweeps — we stop at the first param that meets target
 EF_SWEEP: List[int] = [10, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 2048]
@@ -88,6 +88,7 @@ BATCH_SIZES = [1, 10, 100]
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def _unit(v: np.ndarray) -> np.ndarray:
     """Row-normalise to unit length (float32)."""
     v = v.astype(np.float32)
@@ -112,6 +113,7 @@ def hardware_meta() -> Dict[str, Any]:
 
 
 # ── dataset download ──────────────────────────────────────────────────────────
+
 
 def download_dataset(name: str, data_dir: Path) -> Path:
     """Download an ANN-benchmark HDF5 file if not already cached."""
@@ -138,8 +140,7 @@ def download_dataset(name: str, data_dir: Path) -> Path:
                 if total:
                     pct = 100 * done // total
                     print(
-                        f"\r  {name}: {pct:3d}%  "
-                        f"({done >> 20}/{total >> 20} MiB)    ",
+                        f"\r  {name}: {pct:3d}%  ({done >> 20}/{total >> 20} MiB)    ",
                         end="",
                         flush=True,
                     )
@@ -149,6 +150,7 @@ def download_dataset(name: str, data_dir: Path) -> Path:
 
 
 # ── dataset loading ───────────────────────────────────────────────────────────
+
 
 def load_dataset(
     name: str,
@@ -169,6 +171,7 @@ def load_dataset(
 
 
 # ── brute-force ground truth ──────────────────────────────────────────────────
+
 
 def compute_exact_gt(
     train: np.ndarray,
@@ -193,16 +196,14 @@ def compute_exact_gt(
 
     blk = 100_000
     for ti in range(0, n_train, blk):
-        chunk = train_u[ti : ti + blk]                              # (B, d)
-        sims = (q_u @ chunk.T).astype(np.float32)                   # (n_q, B)
+        chunk = train_u[ti : ti + blk]  # (B, d)
+        sims = (q_u @ chunk.T).astype(np.float32)  # (n_q, B)
         blk_ids = np.arange(ti, ti + len(chunk), dtype=np.int64)
 
-        all_sims = np.concatenate([best_sims, sims], axis=1)         # (n_q, k+B)
-        all_ids = np.concatenate(
-            [best_ids, np.tile(blk_ids, (n_q, 1))], axis=1
-        )                                                             # (n_q, k+B)
+        all_sims = np.concatenate([best_sims, sims], axis=1)  # (n_q, k+B)
+        all_ids = np.concatenate([best_ids, np.tile(blk_ids, (n_q, 1))], axis=1)  # (n_q, k+B)
 
-        part_idx = np.argpartition(all_sims, -k, axis=1)[:, -k:]    # (n_q, k)
+        part_idx = np.argpartition(all_sims, -k, axis=1)[:, -k:]  # (n_q, k)
         rows = np.arange(n_q)[:, None]
         best_sims = all_sims[rows, part_idx]
         best_ids = all_ids[rows, part_idx]
@@ -213,6 +214,7 @@ def compute_exact_gt(
 
 
 # ── recall ────────────────────────────────────────────────────────────────────
+
 
 def batch_recall(results: List[np.ndarray], gt: np.ndarray, k: int) -> float:
     """Mean Recall@k over a list of per-query result arrays."""
@@ -226,6 +228,7 @@ def batch_recall(results: List[np.ndarray], gt: np.ndarray, k: int) -> float:
 
 
 # ── index backends ────────────────────────────────────────────────────────────
+
 
 class VectroHNSW:
     """Wraps python.hnsw_api.HNSWIndex with a uniform build/query interface."""
@@ -241,15 +244,11 @@ class VectroHNSW:
         self.index: Optional[Any] = None
 
     def build(self, train: np.ndarray) -> None:
-        idx = self._cls(
-            M=HNSW_M, ef_construction=HNSW_EF_CONSTRUCTION, space="cosine"
-        )
+        idx = self._cls(M=HNSW_M, ef_construction=HNSW_EF_CONSTRUCTION, space="cosine")
         idx.add(train)
         self.index = idx
 
-    def query_batch(
-        self, queries: np.ndarray, k: int, param: int
-    ) -> List[np.ndarray]:
+    def query_batch(self, queries: np.ndarray, k: int, param: int) -> List[np.ndarray]:
         assert self.index is not None
         return [self.index.search(q, k=k, ef=param)[0] for q in queries]
 
@@ -275,9 +274,7 @@ class FaissHNSW:
         idx.add(_unit(train))
         self.index = idx
 
-    def query_batch(
-        self, queries: np.ndarray, k: int, param: int
-    ) -> List[np.ndarray]:
+    def query_batch(self, queries: np.ndarray, k: int, param: int) -> List[np.ndarray]:
         assert self.index is not None
         self.index.hnsw.efSearch = param
         _, I = self.index.search(_unit(queries), k)
@@ -308,9 +305,7 @@ class FaissIVF:
         idx.add(train_u)
         self.index = idx
 
-    def query_batch(
-        self, queries: np.ndarray, k: int, param: int
-    ) -> List[np.ndarray]:
+    def query_batch(self, queries: np.ndarray, k: int, param: int) -> List[np.ndarray]:
         assert self.index is not None
         self.index.nprobe = param
         _, I = self.index.search(_unit(queries), k)
@@ -318,6 +313,7 @@ class FaissIVF:
 
 
 # ── parameter search ──────────────────────────────────────────────────────────
+
 
 def find_param(
     query_fn: Callable[[np.ndarray, int, int], List[np.ndarray]],
@@ -345,6 +341,7 @@ def find_param(
 
 # ── throughput ────────────────────────────────────────────────────────────────
 
+
 def measure_throughput(
     query_fn: Callable[[np.ndarray, int, int], List[np.ndarray]],
     queries: np.ndarray,
@@ -369,6 +366,7 @@ def measure_throughput(
 
 
 # ── single-condition benchmark ────────────────────────────────────────────────
+
 
 def run_one(
     backend: Any,
@@ -397,9 +395,7 @@ def run_one(
     }
 
     for target in recall_targets:
-        param = find_param(
-            backend.query_batch, queries, gt, k, target, backend.param_sweep
-        )
+        param = find_param(backend.query_batch, queries, gt, k, target, backend.param_sweep)
         if param is None:
             log.warning("[%s] Cannot reach recall %.2f — skipped", label, target)
             out["recalls"][str(target)] = {"skipped": True}
@@ -413,8 +409,13 @@ def run_one(
         qps = measure_throughput(backend.query_batch, queries, k, param, batch_sizes)
         log.info(
             "[%s] R=%.2f  %s=%d  actual=%.4f  qps@1=%.0f  qps@100=%.0f",
-            label, target, backend.param_name, param, actual_r,
-            qps.get(1, 0), qps.get(100, 0),
+            label,
+            target,
+            backend.param_name,
+            param,
+            actual_r,
+            qps.get(1, 0),
+            qps.get(100, 0),
         )
 
         out["recalls"][str(target)] = {
@@ -429,14 +430,15 @@ def run_one(
 
 # ── markdown table ────────────────────────────────────────────────────────────
 
+
 def _qps_cell(val: float) -> str:
     """Format a QPS value compactly."""
     if val == 0:
         return "      —"
     if val >= 1_000_000:
-        return f"{val/1e6:>5.1f}Mqps"
+        return f"{val / 1e6:>5.1f}Mqps"
     if val >= 1_000:
-        return f"{val/1e3:>5.1f}kqps"
+        return f"{val / 1e3:>5.1f}kqps"
     return f"{val:>7.1f}"
 
 
@@ -478,14 +480,10 @@ def md_section(
             rec = cond["recalls"].get(key, {})
             if rec.get("skipped"):
                 cells = (
-                    [cond["label"], f"{target:.2f}", "—", "—"]
-                    + ["—"] * len(batch_sizes)
-                    + ["—"]
+                    [cond["label"], f"{target:.2f}", "—", "—"] + ["—"] * len(batch_sizes) + ["—"]
                 )
             else:
-                param_val = rec.get(
-                    "ef", rec.get("nprobe", rec.get("param", "—"))
-                )
+                param_val = rec.get("ef", rec.get("nprobe", rec.get("param", "—")))
                 qps_d = rec.get("qps", {})
                 qps_cells = [_qps_cell(qps_d.get(str(bs), 0.0)) for bs in batch_sizes]
                 rss_mb = rec.get("peak_rss_kb", 0) // 1024
@@ -502,9 +500,7 @@ def md_section(
             lines.append(_row(cells))
 
         # Speedup row: vectro vs faiss-hnsw
-        vectro = next(
-            (c for c in conditions if c["label"] == "vectro-hnsw"), None
-        )
+        vectro = next((c for c in conditions if c["label"] == "vectro-hnsw"), None)
         if vectro and ref_qps:
             vrec = vectro["recalls"].get(key, {})
             if not vrec.get("skipped"):
@@ -513,13 +509,7 @@ def md_section(
                     f"{vqps_d.get(str(bs), 0.0) / max(ref_qps.get(bs, 1.0), 1e-9):.3f}x"
                     for bs in batch_sizes
                 ]
-                lines.append(
-                    _row(
-                        ["  ↳ vectro/faiss-hnsw", "", "", ""]
-                        + speedup_cells
-                        + [""]
-                    )
-                )
+                lines.append(_row(["  ↳ vectro/faiss-hnsw", "", "", ""] + speedup_cells + [""]))
 
         lines.append(_row([""] * len(header_parts)))  # blank separator row
 
@@ -527,6 +517,7 @@ def md_section(
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
+
 
 def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -604,15 +595,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             if n_train > n_train_full:
                 log.info(
                     "Skipping n=%d for %s (only %d vectors available)",
-                    n_train, ds_name, n_train_full,
+                    n_train,
+                    ds_name,
+                    n_train_full,
                 )
                 continue
 
             log.info("── %s  n=%d ──", ds_name, n_train)
             train, queries = load_dataset(ds_name, data_dir, n_train)
 
-            log.info("Computing brute-force ground truth (n_train=%d, n_q=%d)...",
-                     len(train), len(queries))
+            log.info(
+                "Computing brute-force ground truth (n_train=%d, n_q=%d)...",
+                len(train),
+                len(queries),
+            )
             gt = compute_exact_gt(train, queries, K)
 
             conditions: List[Dict[str, Any]] = []
@@ -631,7 +627,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 conditions.append(
                     run_one(
                         FaissIVF(nlist=safe_nlist),
-                        train, queries, gt, recall_targets, BATCH_SIZES,
+                        train,
+                        queries,
+                        gt,
+                        recall_targets,
+                        BATCH_SIZES,
                     )
                 )
 

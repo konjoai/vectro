@@ -98,6 +98,7 @@ class TestCodebookQuality(unittest.TestCase):
 
     def test_more_epochs_better_or_equal(self):
         """150-epoch model should not perform drastically worse than 50-epoch."""
+
         def run(epochs):
             cb = Codebook(target_dim=16, seed=42)
             cb.train(self.data, n_epochs=epochs)

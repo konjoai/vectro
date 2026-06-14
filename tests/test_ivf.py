@@ -32,6 +32,7 @@ except ImportError:
 # Fixture helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_vectors(n: int = 256, d: int = 32, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
     vecs = rng.standard_normal((n, d)).astype(np.float32)
@@ -44,12 +45,15 @@ def _make_vectors(n: int = 256, d: int = 32, seed: int = 0) -> np.ndarray:
 # IVFIndex — unit tests (mocked bindings)
 # ---------------------------------------------------------------------------
 
+
 class TestIVFIndexUnit:
     """Pure-unit tests — mock _PyIvfIndex to avoid native-build requirement."""
 
     def _make_ivf(self):
-        with patch("python.ivf_api._BINDINGS_AVAILABLE", True), \
-             patch("python.ivf_api._PyIvfIndex") as MockClass:
+        with (
+            patch("python.ivf_api._BINDINGS_AVAILABLE", True),
+            patch("python.ivf_api._PyIvfIndex") as MockClass,
+        ):
             mock_instance = MagicMock()
             MockClass.return_value = mock_instance
             idx = IVFIndex.__new__(IVFIndex)
@@ -129,10 +133,13 @@ class TestIVFIndexUnit:
 # IVFPQIndex — unit tests (mocked bindings)
 # ---------------------------------------------------------------------------
 
+
 class TestIVFPQIndexUnit:
     def _make_ivfpq(self):
-        with patch("python.ivf_api._BINDINGS_AVAILABLE", True), \
-             patch("python.ivf_api._PyIvfPqIndex") as MockClass:
+        with (
+            patch("python.ivf_api._BINDINGS_AVAILABLE", True),
+            patch("python.ivf_api._PyIvfPqIndex") as MockClass,
+        ):
             mock_instance = MagicMock()
             MockClass.return_value = mock_instance
             idx = IVFPQIndex.__new__(IVFPQIndex)
@@ -175,6 +182,7 @@ class TestIVFPQIndexUnit:
 # ---------------------------------------------------------------------------
 # Import-guard failure tests (no bindings)
 # ---------------------------------------------------------------------------
+
 
 class TestBindingsGuard:
     def test_ivfindex_raises_without_bindings(self):

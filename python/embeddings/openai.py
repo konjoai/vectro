@@ -4,6 +4,7 @@ Wraps the official ``openai`` Python SDK (>= 1.0).  Calls
 ``client.embeddings.create(model=..., input=[...])`` per batch and assembles
 the resulting vectors into a float32 matrix.
 """
+
 from __future__ import annotations
 
 from typing import Any, List, Optional
@@ -13,10 +14,7 @@ import numpy as np
 from .base import BaseEmbeddingProvider
 
 
-_OPENAI_HINT = (
-    "openai is required for OpenAIEmbeddings.  "
-    "Install with: pip install openai"
-)
+_OPENAI_HINT = "openai is required for OpenAIEmbeddings.  Install with: pip install openai"
 
 
 class OpenAIEmbeddings(BaseEmbeddingProvider):

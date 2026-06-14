@@ -16,12 +16,14 @@ import pytest
 try:
     import vectro_py  # noqa: F401
     from vectro_py import EmbeddingDataset, PyEmbedding
+
     _SKIP_BINDINGS = False
 except ImportError:
     _SKIP_BINDINGS = True
 
 try:
     from python.retriever import RetrievalResult, RetrieverProtocol, VectroRetriever
+
     _SKIP_RETRIEVER = False
 except ImportError:
     _SKIP_RETRIEVER = True
@@ -35,6 +37,7 @@ pytestmark = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _unit(v: list[float]) -> list[float]:
     norm = math.sqrt(sum(x * x for x in v))
@@ -71,6 +74,7 @@ _MOCK_EMBED_FN = lambda q: np.array(_unit([1.0, 0.1, 0.0]), dtype=np.float32)  #
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def retriever():
     ds = _make_dataset(IDS, VECS)
@@ -99,6 +103,7 @@ def retriever_no_embed():
 # Protocol compliance
 # ---------------------------------------------------------------------------
 
+
 def test_implements_protocol(retriever):
     assert isinstance(retriever, RetrieverProtocol)
 
@@ -110,6 +115,7 @@ def test_retriever_without_embed_implements_protocol(retriever_no_embed):
 # ---------------------------------------------------------------------------
 # Return-type and structure
 # ---------------------------------------------------------------------------
+
 
 def test_returns_list(retriever):
     results = retriever.retrieve("cats fluffy", k=3)
@@ -146,12 +152,11 @@ def test_ids_from_corpus(retriever):
 # Ordering and score range
 # ---------------------------------------------------------------------------
 
+
 def test_sorted_descending_by_combined_score(retriever):
     results = retriever.retrieve("cats", k=4)
     scores = [r.combined_score for r in results]
-    assert scores == sorted(scores, reverse=True), (
-        f"Results not sorted descending: {scores}"
-    )
+    assert scores == sorted(scores, reverse=True), f"Results not sorted descending: {scores}"
 
 
 def test_combined_scores_in_unit_interval(retriever):
@@ -165,6 +170,7 @@ def test_combined_scores_in_unit_interval(retriever):
 # ---------------------------------------------------------------------------
 # k parameter
 # ---------------------------------------------------------------------------
+
 
 def test_k_respected(retriever):
     for k in [1, 2, 3]:
@@ -180,6 +186,7 @@ def test_k_zero_returns_empty_list(retriever):
 # BM25-only mode (embed_fn=None)
 # ---------------------------------------------------------------------------
 
+
 def test_no_embed_fn_still_returns_results(retriever_no_embed):
     results = retriever_no_embed.retrieve("machine learning", k=3)
     assert isinstance(results, list)
@@ -189,14 +196,13 @@ def test_no_embed_fn_still_returns_results(retriever_no_embed):
 def test_no_embed_fn_bm25_wins_for_keyword(retriever_no_embed):
     """Without embedding, BM25 selects the keyword-matching doc."""
     results = retriever_no_embed.retrieve("machine learning algorithms", k=2)
-    assert results[0].id == "ml_doc", (
-        f"Expected ml_doc first (keyword match), got {results[0].id}"
-    )
+    assert results[0].id == "ml_doc", f"Expected ml_doc first (keyword match), got {results[0].id}"
 
 
 # ---------------------------------------------------------------------------
 # Property accessors
 # ---------------------------------------------------------------------------
+
 
 def test_alpha_property(retriever):
     assert retriever.alpha == pytest.approx(0.7)
@@ -213,6 +219,7 @@ def test_bm25_property_not_none(retriever):
 # ---------------------------------------------------------------------------
 # Constructor validation
 # ---------------------------------------------------------------------------
+
 
 def test_mismatched_ids_texts_raises_value_error():
     ds = _make_dataset(IDS, VECS)
@@ -244,6 +251,7 @@ def test_single_element_corpus():
 # ---------------------------------------------------------------------------
 # RetrievalResult dataclass
 # ---------------------------------------------------------------------------
+
 
 def test_retrieval_result_construction():
     r = RetrievalResult(

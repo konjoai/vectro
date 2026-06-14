@@ -1,4 +1,5 @@
 """Tests for HNSW Index (Phase 5)."""
+
 import os
 import tempfile
 import unittest
@@ -215,16 +216,15 @@ class TestHNSWRecallAtK(unittest.TestCase):
         q_norm = cls.queries / np.linalg.norm(cls.queries, axis=1, keepdims=True)
 
         # Brute-force ground truth
-        sims = q_norm @ db_norm.T          # (n_q, n_db)
-        cls.gt = np.argsort(-sims, axis=1)[:, :cls.k]  # (n_q, k) IDs
+        sims = q_norm @ db_norm.T  # (n_q, n_db)
+        cls.gt = np.argsort(-sims, axis=1)[:, : cls.k]  # (n_q, k) IDs
 
         cls.idx = build_hnsw_index(cls.db, M=16, ef_construction=200)
 
     def test_recall_at_10(self):
         r = recall_at_k(self.idx, self.queries, self.gt, k=self.k, ef=64)
         # Target: >= 0.90 on this small dataset with M=16
-        self.assertGreaterEqual(r, 0.90,
-                                msg=f"Recall@10 was {r:.3f}, expected >= 0.90")
+        self.assertGreaterEqual(r, 0.90, msg=f"Recall@10 was {r:.3f}, expected >= 0.90")
 
     def test_high_ef_improves_recall(self):
         r_low = recall_at_k(self.idx, self.queries, self.gt, k=self.k, ef=10)
@@ -304,8 +304,7 @@ class TestHNSWSaveLoad(unittest.TestCase):
 class TestCompressionInfo(unittest.TestCase):
     def test_key_presence(self):
         info = hnsw_compression_info(768)
-        for key in ("bytes_fp32", "bytes_int8", "bytes_graph",
-                    "bytes_total", "compression_ratio"):
+        for key in ("bytes_fp32", "bytes_int8", "bytes_graph", "bytes_total", "compression_ratio"):
             self.assertIn(key, info)
 
     def test_fp32_bytes(self):

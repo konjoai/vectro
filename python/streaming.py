@@ -28,7 +28,7 @@ from typing import Generator, Iterator, Optional, Union
 
 import numpy as np
 
-from .interface import reconstruct_embeddings, QuantizationResult, dequantize_int4
+from .interface import QuantizationResult, dequantize_int4
 from .batch_api import BatchQuantizationResult
 
 
@@ -244,17 +244,11 @@ class AsyncStreamingDecompressor:
             try:
                 for chunk in sync:
                     # Block the producer thread if the queue is full (backpressure).
-                    asyncio.run_coroutine_threadsafe(
-                        self._queue.put(chunk), loop
-                    ).result()
+                    asyncio.run_coroutine_threadsafe(self._queue.put(chunk), loop).result()
             except Exception as exc:
-                asyncio.run_coroutine_threadsafe(
-                    self._queue.put(exc), loop
-                ).result()
+                asyncio.run_coroutine_threadsafe(self._queue.put(exc), loop).result()
             finally:
-                asyncio.run_coroutine_threadsafe(
-                    self._queue.put(self._SENTINEL), loop
-                ).result()
+                asyncio.run_coroutine_threadsafe(self._queue.put(self._SENTINEL), loop).result()
 
         thread = threading.Thread(target=_produce, daemon=True)
         thread.start()

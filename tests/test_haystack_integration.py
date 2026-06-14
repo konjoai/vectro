@@ -3,6 +3,7 @@
 All tests use stub classes injected via sys.modules so that haystack-ai
 is not required to run the suite.
 """
+
 from __future__ import annotations
 
 import sys
@@ -25,6 +26,7 @@ ensure_repo_root_on_path()
 # Minimal haystack stub injected before importing the integration
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _Document:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -35,7 +37,11 @@ class _Document:
 
     # Expose __dataclass_fields__ for the integration helper functions
     __dataclass_fields__ = {
-        "id": None, "content": None, "embedding": None, "meta": None, "score": None
+        "id": None,
+        "content": None,
+        "embedding": None,
+        "meta": None,
+        "score": None,
     }
 
     def __post_init__(self):
@@ -81,8 +87,8 @@ def _docs(n: int, dim: int = 64) -> List[_Document]:
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestVectroDocumentStoreBasic(unittest.TestCase):
 
+class TestVectroDocumentStoreBasic(unittest.TestCase):
     def setUp(self):
         self.store = VectroDocumentStore(compression_profile="balanced")
 
@@ -150,7 +156,6 @@ class TestVectroDocumentStoreBasic(unittest.TestCase):
 
 
 class TestVectroDocumentStorePolicies(unittest.TestCase):
-
     def setUp(self):
         self.store = VectroDocumentStore()
 
@@ -181,7 +186,6 @@ class TestVectroDocumentStorePolicies(unittest.TestCase):
 
 
 class TestVectroDocumentStoreRetrieval(unittest.TestCase):
-
     def setUp(self):
         self.store = VectroDocumentStore(compression_profile="balanced")
         self.dim = 64
@@ -259,7 +263,6 @@ class TestVectroDocumentStoreRetrieval(unittest.TestCase):
 
 
 class TestVectroDocumentStoreCompressionStats(unittest.TestCase):
-
     def test_empty_stats(self):
         store = VectroDocumentStore()
         stats = store.compression_stats
@@ -276,9 +279,10 @@ class TestVectroDocumentStoreCompressionStats(unittest.TestCase):
 
 
 class TestVectroDocumentStorePersistence(unittest.TestCase):
-
     def test_save_and_load(self, tmp_path=None):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = VectroDocumentStore(compression_profile="balanced")
         store.write_documents(_docs(8, dim=64))
 
@@ -292,7 +296,10 @@ class TestVectroDocumentStorePersistence(unittest.TestCase):
             self.assertEqual(loaded.count_documents(), 8)
 
     def test_load_wrong_type_raises(self):
-        import tempfile, os, json
+        import tempfile
+        import os
+        import json
+
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "bad")
             os.makedirs(path)
@@ -302,7 +309,9 @@ class TestVectroDocumentStorePersistence(unittest.TestCase):
                 VectroDocumentStore.load(path)
 
     def test_persistence_retrieval_quality(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         rng = np.random.default_rng(99)
         dim = 64
         n = 16

@@ -17,6 +17,7 @@ No real API keys are required.  Run with::
 
     python3 demo/demo.py
 """
+
 from __future__ import annotations
 
 import os
@@ -76,6 +77,7 @@ console = Console(width=100)
 # Mock OpenAI client — deterministic, dependency-free, network-free
 # ---------------------------------------------------------------------------
 
+
 class _OAIData:
     def __init__(self, embedding):
         self.embedding = embedding
@@ -126,8 +128,7 @@ class _OAIEmbeddingsAPI:
 class _OAIClient:
     def __init__(self, vocabulary, dim=128):
         self._calls_log: List[dict] = []
-        self.embeddings = _OAIEmbeddingsAPI(vocabulary, dim=dim,
-                                             calls_log=self._calls_log)
+        self.embeddings = _OAIEmbeddingsAPI(vocabulary, dim=dim, calls_log=self._calls_log)
 
 
 # ---------------------------------------------------------------------------
@@ -196,9 +197,7 @@ CORPUS: List[str] = [
 assert len(CORPUS) == 50, f"expected 50 passages, got {len(CORPUS)}"
 
 
-VOCAB = sorted(set(
-    tok for text in CORPUS for tok in text.lower().split()
-))
+VOCAB = sorted(set(tok for text in CORPUS for tok in text.lower().split()))
 
 
 def banner() -> Panel:
@@ -223,6 +222,7 @@ def banner() -> Panel:
 # Section 1 — compression profiles
 # ---------------------------------------------------------------------------
 
+
 def section_1_compression(embeddings: np.ndarray) -> dict:
     console.print(Rule("[bold]1. Compression profiles[/]", style="cyan"))
     console.print()
@@ -231,8 +231,7 @@ def section_1_compression(embeddings: np.ndarray) -> dict:
     original_bytes = embeddings.nbytes
     vectro = Vectro()
 
-    table = Table(box=box.SIMPLE_HEAVY, expand=True,
-                  border_style="cyan", header_style="bold cyan")
+    table = Table(box=box.SIMPLE_HEAVY, expand=True, border_style="cyan", header_style="bold cyan")
     table.add_column("Profile", style="bold")
     table.add_column("Algorithm", style="dim")
     table.add_column("Bytes", justify="right")
@@ -278,8 +277,7 @@ def section_1_compression(embeddings: np.ndarray) -> dict:
 
     console.print(table)
     console.print(
-        f"[dim]Original float32 size: [bold]{original_bytes:,}[/] bytes "
-        f"({n} × {d} × 4)[/]"
+        f"[dim]Original float32 size: [bold]{original_bytes:,}[/] bytes ({n} × {d} × 4)[/]"
     )
     console.print()
     return results
@@ -289,6 +287,7 @@ def section_1_compression(embeddings: np.ndarray) -> dict:
 # Section 2 — k-NN search
 # ---------------------------------------------------------------------------
 
+
 def section_2_knn(rm: VectroDSPyRetriever, query: str) -> None:
     console.print(Rule("[bold]2. k-NN search (cosine)[/]", style="cyan"))
     console.print()
@@ -297,8 +296,9 @@ def section_2_knn(rm: VectroDSPyRetriever, query: str) -> None:
 
     out = rm.forward(query, k=5)
 
-    table = Table(box=box.SIMPLE_HEAVY, expand=True,
-                  border_style="green", header_style="bold green")
+    table = Table(
+        box=box.SIMPLE_HEAVY, expand=True, border_style="green", header_style="bold green"
+    )
     table.add_column("#", justify="right", style="bold")
     table.add_column("Score", justify="right", style="magenta")
     table.add_column("Bar", justify="left")
@@ -319,14 +319,16 @@ def section_2_knn(rm: VectroDSPyRetriever, query: str) -> None:
 # Section 3 — MMR diversity
 # ---------------------------------------------------------------------------
 
+
 def section_3_mmr(rm: VectroDSPyRetriever, query: str) -> None:
     console.print(Rule("[bold]3. MMR — diversity vs relevance[/]", style="cyan"))
     console.print()
     console.print(f"  query → [italic green]{query!r}[/]   k=4   fetch_k=12")
     console.print()
 
-    table = Table(box=box.SIMPLE_HEAVY, expand=True,
-                  border_style="yellow", header_style="bold yellow")
+    table = Table(
+        box=box.SIMPLE_HEAVY, expand=True, border_style="yellow", header_style="bold yellow"
+    )
     table.add_column("λ", justify="right", style="bold")
     table.add_column("Mode", style="dim")
     table.add_column("Selected passages")
@@ -349,13 +351,12 @@ def section_3_mmr(rm: VectroDSPyRetriever, query: str) -> None:
 # Section 4 — LangChain + LlamaIndex stores
 # ---------------------------------------------------------------------------
 
+
 def section_4_lc_li(embed_provider) -> None:
     console.print(Rule("[bold]4. LangChain + LlamaIndex stores[/]", style="cyan"))
     console.print()
 
-    lc_store = LangChainVectorStore(
-        embedding=embed_provider, compression_profile="balanced"
-    )
+    lc_store = LangChainVectorStore(embedding=embed_provider, compression_profile="balanced")
     seed_texts = CORPUS[:6]
     lc_store.add_texts(seed_texts, metadatas=[{"src": "demo"}] * len(seed_texts))
 
@@ -375,12 +376,9 @@ def section_4_lc_li(embed_provider) -> None:
             li_store._node_store[node_id] = (text, {"src": "demo"})
             li_store._node_ids.append(node_id)
         li_store._n_dims = li_embs.shape[1]
-        li_store._compressed = li_store._vectro.compress(
-            li_embs, profile=li_store._profile
-        )
+        li_store._compressed = li_store._vectro.compress(li_embs, profile=li_store._profile)
 
-    table = Table(box=box.SIMPLE_HEAVY, expand=True,
-                  border_style="blue", header_style="bold blue")
+    table = Table(box=box.SIMPLE_HEAVY, expand=True, border_style="blue", header_style="bold blue")
     table.add_column("Adapter", style="bold")
     table.add_column("Profile", style="cyan")
     table.add_column("Items", justify="right")
@@ -410,6 +408,7 @@ def section_4_lc_li(embed_provider) -> None:
 # print its summary card for visual continuity).
 # ---------------------------------------------------------------------------
 
+
 def section_5_dspy(rm: VectroDSPyRetriever) -> None:
     console.print(Rule("[bold]5. VectroDSPyRetriever[/]", style="cyan"))
     console.print()
@@ -421,20 +420,20 @@ def section_5_dspy(rm: VectroDSPyRetriever) -> None:
     info.add_row("passages", f"[bold]{stats['n_passages']}[/]")
     info.add_row("dimensions", f"[bold]{stats['dimensions']}[/]")
     info.add_row("profile", f"[bold cyan]{stats['compression_profile']}[/]")
-    info.add_row("original",   f"{stats['original_mb']:.3f} MB")
+    info.add_row("original", f"{stats['original_mb']:.3f} MB")
     info.add_row("compressed", f"[bold magenta]{stats['compressed_mb']:.3f} MB[/]")
-    info.add_row("saved",      f"[bold green]{stats['memory_saved_mb']:.3f} MB[/]")
-    info.add_row("ratio",      f"[bold]{stats['compression_ratio']:.2f}×[/]")
+    info.add_row("saved", f"[bold green]{stats['memory_saved_mb']:.3f} MB[/]")
+    info.add_row("ratio", f"[bold]{stats['compression_ratio']:.2f}×[/]")
     info.add_row("k (default)", f"[bold]{rm.k}[/]")
 
-    console.print(Panel(info, title="VectroDSPyRetriever",
-                        border_style="magenta", box=box.ROUNDED))
+    console.print(Panel(info, title="VectroDSPyRetriever", border_style="magenta", box=box.ROUNDED))
     console.print()
 
 
 # ---------------------------------------------------------------------------
 # Section 6 — OpenAIEmbeddings + cache stats
 # ---------------------------------------------------------------------------
+
 
 def section_6_openai(provider: OpenAIEmbeddings, client: _OAIClient) -> None:
     console.print(Rule("[bold]6. OpenAIEmbeddings (mock client) + cache[/]", style="cyan"))
@@ -446,24 +445,23 @@ def section_6_openai(provider: OpenAIEmbeddings, client: _OAIClient) -> None:
     #   - mixed batch (partial hit)
     fresh_query = "fresh-tokens-nobody-said-before " + str(os.getpid())
     provider(fresh_query)
-    provider(fresh_query)                       # hit
+    provider(fresh_query)  # hit
     provider([fresh_query, "another novel sentence for the demo"])  # 1 hit + 1 miss
 
     stats = provider.cache_stats()
 
-    info = Table(box=box.SIMPLE_HEAVY, expand=True,
-                 border_style="green", header_style="bold green")
+    info = Table(box=box.SIMPLE_HEAVY, expand=True, border_style="green", header_style="bold green")
     info.add_column("Metric", style="bold")
     info.add_column("Value", justify="right")
 
-    info.add_row("model",           f"[cyan]{provider.model}[/]")
-    info.add_row("batch_size",      str(provider.batch_size))
-    info.add_row("cache_dir",       str(provider.cache_dir))
-    info.add_row("dimension",       f"{provider.dimension}")
+    info.add_row("model", f"[cyan]{provider.model}[/]")
+    info.add_row("batch_size", str(provider.batch_size))
+    info.add_row("cache_dir", str(provider.cache_dir))
+    info.add_row("dimension", f"{provider.dimension}")
     info.add_row("API calls (mock)", f"[bold]{client.embeddings.calls}[/]")
-    info.add_row("cache hits",       f"[bold green]{stats['hits']}[/]")
-    info.add_row("cache misses",     f"[yellow]{stats['misses']}[/]")
-    info.add_row("rows in SQLite",   f"[bold magenta]{stats['size']}[/]")
+    info.add_row("cache hits", f"[bold green]{stats['hits']}[/]")
+    info.add_row("cache misses", f"[yellow]{stats['misses']}[/]")
+    info.add_row("rows in SQLite", f"[bold magenta]{stats['size']}[/]")
 
     console.print(info)
 
@@ -474,8 +472,9 @@ def section_6_openai(provider: OpenAIEmbeddings, client: _OAIClient) -> None:
         recent.add_column("inputs", justify="right")
         for i, call in enumerate(client._calls_log[-6:], 1):
             recent.add_row(str(i), call["model"], str(call["n_inputs"]))
-        console.print(Panel(recent, title="last 6 mock-API calls",
-                            border_style="dim", padding=(0, 1)))
+        console.print(
+            Panel(recent, title="last 6 mock-API calls", border_style="dim", padding=(0, 1))
+        )
 
     console.print()
 
@@ -483,6 +482,7 @@ def section_6_openai(provider: OpenAIEmbeddings, client: _OAIClient) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     console.print()
@@ -520,10 +520,11 @@ def main() -> None:
 
     # ----- build a retriever once for sections 2, 3, 5 --------------------
     rm = VectroDSPyRetriever(
-        embed_fn=provider, k=5, compression_profile="balanced",
+        embed_fn=provider,
+        k=5,
+        compression_profile="balanced",
     )
-    rm.add_texts(CORPUS, embeddings=embeddings,
-                 metadatas=[{"id": i} for i in range(len(CORPUS))])
+    rm.add_texts(CORPUS, embeddings=embeddings, metadatas=[{"id": i} for i in range(len(CORPUS))])
 
     # ----- 2. k-NN ---------------------------------------------------------
     section_2_knn(rm, "What is the capital of France?")
@@ -542,10 +543,12 @@ def main() -> None:
 
     # ----- footer ----------------------------------------------------------
     foot = Padding(
-        Align.center(Text(
-            "Build, ship, repeat.    ቆንጆ · 根性 · 康宙",
-            style="bold magenta",
-        )),
+        Align.center(
+            Text(
+                "Build, ship, repeat.    ቆንጆ · 根性 · 康宙",
+                style="bold magenta",
+            )
+        ),
         (0, 0),
     )
     console.print(Panel(foot, box=box.DOUBLE, border_style="magenta"))

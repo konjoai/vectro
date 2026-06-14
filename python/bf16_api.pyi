@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import List
 import numpy as np
 
-
 class Bf16Encoder:
     """BFloat16 encoder for lossless (within BF16 precision) vector compression.
 
@@ -22,7 +21,6 @@ class Bf16Encoder:
     """
 
     def __init__(self) -> None: ...
-
     def encode(self, vectors: List[List[float]]) -> None:
         """Encode and store ``vectors`` as BF16.
 
