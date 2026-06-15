@@ -5,6 +5,15 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — 2026-06-15
+
+### CI
+- `.github/workflows/ci.yml` — new **`api-tests`** job: installs FastAPI /
+  httpx and runs `pytest api/` on Python 3.12. Closes a coverage gap — the
+  `api/` suite (44 tests, including the V8 hybrid-search tests) previously
+  ran only locally; no workflow collected it. The Rust, Python-package, JS
+  addon, and Mojo lanes are unchanged.
+
 ## [V8 — Hybrid search] — 2026-06-14
 
 ### Added
