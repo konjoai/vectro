@@ -169,19 +169,16 @@ def dequantize_int2(
     q_ternary = _unpack_int2(packed, vector_dim)
     q_signed = q_ternary.astype(np.int8) - 1  # {0,1,2} → {-1,0,+1}
 
-    n = q_signed.shape[0]
     n_groups = scales.shape[1]
     group_size = int(np.ceil(vector_dim / n_groups))
 
-    out = np.zeros((n, vector_dim), dtype=np.float32)
-    for g in range(n_groups):
-        col_start = g * group_size
-        col_end = min(col_start + group_size, vector_dim)
-        s = scales[:, g : g + 1].astype(np.float32)
-        z = zeroes[:, g : g + 1].astype(np.float32)
-        out[:, col_start:col_end] = q_signed[:, col_start:col_end].astype(np.float32) * s + z
-
-    return out
+    # Expand each group's scale/zero across its columns, then truncate to d —
+    # equivalent to the per-group loop but fully vectorized (no Python loop).
+    s32 = scales.astype(np.float32, copy=False)
+    z32 = zeroes.astype(np.float32, copy=False)
+    col_scales = np.repeat(s32, group_size, axis=1)[:, :vector_dim]
+    col_zeros = np.repeat(z32, group_size, axis=1)[:, :vector_dim]
+    return q_signed.astype(np.float32) * col_scales + col_zeros
 
 
 # ---------------------------------------------------------------------------

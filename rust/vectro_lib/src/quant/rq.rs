@@ -152,16 +152,23 @@ pub fn rq_decode(codebook: &RQCodebook, codes: &[Vec<Vec<u8>>]) -> Vec<Vec<f32>>
 // ── internal ──────────────────────────────────────────────────────────────────
 
 /// Decode one flat-code vector: sum per-pass PQ reconstructions.
+///
+/// Accumulates centroid slices directly into `result` rather than allocating a
+/// fresh `Vec` (and spawning a single-element rayon job) per pass — the per-pass
+/// summation order is unchanged, so the result is numerically identical.
 fn decode_one(codebook: &RQCodebook, flat: &[u8]) -> Vec<f32> {
     let m = codebook.n_subspaces;
-    let dim = codebook.codebooks[0].sub_dim * m;
-    let mut result = vec![0.0f32; dim];
+    let sub_dim = codebook.codebooks[0].sub_dim;
+    let mut result = vec![0.0f32; sub_dim * m];
 
     for (pass, cb) in codebook.codebooks.iter().enumerate() {
         let code_slice = &flat[pass * m..(pass + 1) * m];
-        let recon = pq_decode(&[code_slice.to_vec()], cb);
-        for (r, v) in result.iter_mut().zip(recon[0].iter()) {
-            *r += v;
+        for (mi, &k) in code_slice.iter().enumerate() {
+            let cent = cb.centroid(mi, k as usize);
+            let off = mi * sub_dim;
+            for (r, &c) in result[off..off + sub_dim].iter_mut().zip(cent.iter()) {
+                *r += c;
+            }
         }
     }
 

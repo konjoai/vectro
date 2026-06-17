@@ -71,10 +71,11 @@ class BatchQuantizationResult:
             packed = np.stack(self.quantized_vectors)
             return dequantize_binary(packed, self.vector_dim)
 
-        reconstructed = np.zeros((self.batch_size, self.vector_dim), dtype=np.float32)
-        for i in range(self.batch_size):
-            reconstructed[i] = self.reconstruct_vector(i)
-        return reconstructed
+        # INT8: vectorized reconstruct — stack codes once and broadcast the
+        # per-vector scales, avoiding a Python-level loop over every row.
+        stacked = np.stack(self.quantized_vectors).astype(np.float32)
+        scales = np.asarray(self.scales, dtype=np.float32).reshape(-1, 1)
+        return stacked * scales
 
 
 class VectroBatchProcessor:
