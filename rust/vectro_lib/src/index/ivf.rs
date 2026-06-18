@@ -266,9 +266,9 @@ impl IvfIndex {
     ///
     /// # Errors
     /// Returns an error string when `training_data.len() < n_lists`.
-    pub fn train(
+    pub fn train<V: AsRef<[f32]>>(
         &mut self,
-        training_data: &[Vec<f32>],
+        training_data: &[V],
         max_iter: usize,
         seed: u64,
     ) -> Result<(), String> {
@@ -279,12 +279,13 @@ impl IvfIndex {
                 self.n_lists
             ));
         }
-        let d = training_data[0].len();
+        let d = training_data[0].as_ref().len();
         if d == 0 {
             return Err("vector dimension must be > 0".into());
         }
 
-        let norms: Vec<Vec<f32>> = training_data.iter().map(|v| Self::normalize(v)).collect();
+        let norms: Vec<Vec<f32>> =
+            training_data.iter().map(|v| Self::normalize(v.as_ref())).collect();
         let refs: Vec<&[f32]> = norms.iter().map(|v| v.as_slice()).collect();
         self.centroids = kmeans_lloyd(&refs, self.n_lists, d, max_iter, seed);
         self.dim = d;
@@ -308,8 +309,11 @@ impl IvfIndex {
     }
 
     /// Insert a batch of vectors; returns their global IDs.
-    pub fn add_batch(&mut self, vectors: &[Vec<f32>]) -> Vec<usize> {
-        vectors.iter().map(|v| self.add(v)).collect()
+    ///
+    /// Generic over `AsRef<[f32]>` so callers can pass borrowed row slices
+    /// (e.g. `&[&[f32]]` over a contiguous buffer) without an owning copy.
+    pub fn add_batch<V: AsRef<[f32]>>(&mut self, vectors: &[V]) -> Vec<usize> {
+        vectors.iter().map(|v| self.add(v.as_ref())).collect()
     }
 
     /// Approximate k-nearest-neighbour search.
@@ -556,6 +560,42 @@ mod tests {
         // Every vector should appear exactly once across all posting lists.
         let total: usize = idx.posting_lists.iter().map(|l| l.len()).sum();
         assert_eq!(total, 100);
+    }
+
+    #[test]
+    fn train_borrowed_slices_matches_owned() {
+        // Workstream A: the AsRef<[f32]> generic must produce bit-identical
+        // centroids whether fed owned `Vec<f32>` rows or borrowed `&[f32]` rows
+        // (the zero-copy path the PyO3 bindings take on contiguous arrays).
+        let vecs = make_vecs(120, 32);
+
+        let mut owned = IvfIndex::new(8, 4);
+        owned.train(&vecs, 20, 42).expect("owned train failed");
+
+        let refs: Vec<&[f32]> = vecs.iter().map(|v| v.as_slice()).collect();
+        let mut borrowed = IvfIndex::new(8, 4);
+        borrowed.train(&refs, 20, 42).expect("borrowed train failed");
+
+        assert_eq!(owned.centroids, borrowed.centroids);
+        assert_eq!(owned.dim, borrowed.dim);
+    }
+
+    #[test]
+    fn add_batch_borrowed_slices_matches_owned() {
+        let vecs = make_vecs(120, 32);
+        let refs: Vec<&[f32]> = vecs.iter().map(|v| v.as_slice()).collect();
+
+        let mut owned = IvfIndex::new(8, 4);
+        owned.train(&vecs, 20, 42).unwrap();
+        owned.add_batch(&vecs);
+
+        let mut borrowed = IvfIndex::new(8, 4);
+        borrowed.train(&refs, 20, 42).unwrap();
+        borrowed.add_batch(&refs);
+
+        assert_eq!(owned.len(), borrowed.len());
+        assert_eq!(owned.store, borrowed.store);
+        assert_eq!(owned.posting_lists, borrowed.posting_lists);
     }
 
     #[test]
