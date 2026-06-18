@@ -26,8 +26,8 @@ fn make_unit_vectors(n: usize, d: usize) -> Vec<f32> {
     for i in 0..n {
         // deterministic but non-degenerate row
         let mut row = vec![0.0_f32; d];
-        for j in 0..d {
-            row[j] = ((i + j) as f32 * 0.013_f32).sin()
+        for (j, slot) in row.iter_mut().enumerate() {
+            *slot = ((i + j) as f32 * 0.013_f32).sin()
                 * (((j as f32) * 0.011_f32).cos() + 0.5);
         }
         let n2: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
