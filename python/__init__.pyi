@@ -13,6 +13,14 @@ from .binary_api import (
     dequantize_binary as dequantize_binary,
     quantize_binary as quantize_binary,
 )
+from .scalar_quant import (
+    dequantize_sq2 as dequantize_sq2,
+    dequantize_sq3 as dequantize_sq3,
+    quantize_sq2 as quantize_sq2,
+    quantize_sq3 as quantize_sq3,
+    scalar_quant_compression_ratio as scalar_quant_compression_ratio,
+    scalar_quant_stats as scalar_quant_stats,
+)
 from .codebook_api import Codebook as Codebook
 from .embeddings import (
     BaseEmbeddingProvider as BaseEmbeddingProvider,
@@ -258,6 +266,12 @@ __all__ = [
     "select_outlier_dims",
     "quantize_binary",
     "dequantize_binary",
+    "quantize_sq2",
+    "dequantize_sq2",
+    "quantize_sq3",
+    "dequantize_sq3",
+    "scalar_quant_stats",
+    "scalar_quant_compression_ratio",
     "ResidualQuantizer",
     "Codebook",
     # LoRA adapter compression

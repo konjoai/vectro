@@ -93,6 +93,14 @@ from .nf4_api import (
     select_outlier_dims,
 )
 from .binary_api import quantize_binary, dequantize_binary
+from .scalar_quant import (
+    quantize_sq2,
+    dequantize_sq2,
+    quantize_sq3,
+    dequantize_sq3,
+    scalar_quant_stats,
+    scalar_quant_compression_ratio,
+)
 from .rq_api import ResidualQuantizer
 from .lora_api import compress_lora, decompress_lora, compress_lora_adapter, LoRAResult
 from .codebook_api import Codebook
@@ -247,6 +255,12 @@ __all__ = [
     "select_outlier_dims",
     "quantize_binary",
     "dequantize_binary",
+    "quantize_sq2",
+    "dequantize_sq2",
+    "quantize_sq3",
+    "dequantize_sq3",
+    "scalar_quant_stats",
+    "scalar_quant_compression_ratio",
     "ResidualQuantizer",
     "Codebook",
     # LoRA adapter compression
