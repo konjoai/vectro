@@ -154,5 +154,45 @@ class TestRustBridgeF16(unittest.TestCase):
             self.assertGreaterEqual(cos, 0.99, f"f16 row {i}: cos {cos:.5f} < 0.99")
 
 
+@unittest.skipUnless(_rust_bridge.is_available(), "vectro_py Rust extension not built")
+class TestRustBridgeRejectsNonFinite(unittest.TestCase):
+    """The INT8 encode boundary must reject NaN/Inf rather than silently
+    corrupting codes (an Inf poisons a row's scale; NaN casts to 0)."""
+
+    def _finite_batch(self) -> np.ndarray:
+        rng = np.random.default_rng(seed=7)
+        return rng.standard_normal((8, 16)).astype(np.float32)
+
+    def test_nan_raises_value_error(self):
+        v = self._finite_batch()
+        v[3, 5] = np.nan
+        with self.assertRaises(ValueError):
+            _rust_bridge.quantize_int8_batch(v)
+
+    def test_inf_raises_value_error(self):
+        v = self._finite_batch()
+        v[0, 0] = np.inf
+        with self.assertRaises(ValueError):
+            _rust_bridge.quantize_int8_batch(v)
+
+    def test_normalized_path_rejects_non_finite(self):
+        v = self._finite_batch()
+        v[2, 1] = -np.inf
+        with self.assertRaises(ValueError):
+            _rust_bridge.quantize_int8_batch(v, assume_normalized=True)
+
+    def test_f16_path_rejects_non_finite(self):
+        v = self._finite_batch().astype(np.float16)
+        v[1, 2] = np.float16(np.nan)
+        with self.assertRaises(ValueError):
+            _rust_bridge.quantize_int8_batch_from_f16(v)
+
+    def test_finite_input_still_succeeds(self):
+        # Positive control: a clean batch must encode without raising.
+        codes, scales = _rust_bridge.quantize_int8_batch(self._finite_batch())
+        self.assertEqual(codes.shape, (8, 16))
+        self.assertEqual(scales.shape, (8,))
+
+
 if __name__ == "__main__":
     unittest.main()
