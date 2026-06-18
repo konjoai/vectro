@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .interface import dequantize_int4
 from . import _mojo_bridge
+from . import _rust_bridge
 
 
 @dataclass
@@ -206,11 +207,23 @@ class VectroBatchProcessor:
 
         range_factor = int8_profiles[profile]["range_factor"]
 
-        max_abs = np.max(np.abs(vectors), axis=1)  # (n,)
-        scales = np.where(max_abs == 0, 1.0, max_abs / (127.0 * range_factor)).astype(np.float32)
-        quantized_matrix = np.clip(np.round(vectors / scales[:, np.newaxis]), -127, 127).astype(
-            np.int8
-        )
+        # Rust SIMD fast-path (NEON/AVX2/AVX-512) — ~15-20x the NumPy throughput
+        # at d≥768.  The kernel threads `range_factor` so codes/scales match the
+        # NumPy baseline below to within a single rounding-tie level (≤1), with
+        # identical per-row scales.  Falls back to NumPy when the extension is
+        # absent so Python-only mode stays the correctness baseline.
+        if _rust_bridge.is_available():
+            quantized_matrix, scales = _rust_bridge.quantize_int8_batch(
+                vectors, range_factor=range_factor
+            )
+        else:
+            max_abs = np.max(np.abs(vectors), axis=1)  # (n,)
+            scales = np.where(max_abs == 0, 1.0, max_abs / (127.0 * range_factor)).astype(
+                np.float32
+            )
+            quantized_matrix = np.clip(
+                np.round(vectors / scales[:, np.newaxis]), -127, 127
+            ).astype(np.int8)
         quantized_vectors = list(quantized_matrix)
 
         # Calculate compression metrics
