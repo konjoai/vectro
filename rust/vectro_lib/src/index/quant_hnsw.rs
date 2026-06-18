@@ -29,6 +29,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashSet};
 
+use super::neighbor_store::{neighbors_serde, NeighborList, NodeId};
 use crate::quant::{
     Bf16Quantizer, BinaryQuantizer, Int8Quantizer, Nf4Quantizer, Quantizer, Sq2Quantizer,
     Sq3Quantizer,
@@ -89,8 +90,10 @@ pub struct QuantHnswIndex<Q: Quantizer> {
     ml: f64,
     /// Per-node quantized representations.
     encoded: Vec<Q::Encoded>,
-    /// `neighbors[node][layer] = [neighbor_id, ...]`
-    neighbors: Vec<Vec<Vec<usize>>>,
+    /// `neighbors[node][layer] = [neighbor_id, ...]`; `u32` ids in
+    /// inline-capable lists (see [`super::neighbor_store`]).
+    #[serde(with = "neighbors_serde")]
+    neighbors: Vec<Vec<NeighborList>>,
     entry_point: Option<usize>,
     max_level: usize,
     /// Soft-deletion tombstones; always aligned to `encoded.len()`.
@@ -197,12 +200,13 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             if d_c > worst && window.len() >= ef {
                 break;
             }
-            let nbrs: Vec<usize> = if layer < self.neighbors[c].len() {
-                self.neighbors[c][layer].clone()
-            } else {
-                vec![]
-            };
-            for nb in nbrs {
+            if layer >= self.neighbors[c].len() {
+                continue;
+            }
+            // Iterate adjacency by reference — `neighbors` and `encoded` are
+            // distinct shared borrows of `self`, so no clone is needed here.
+            for &nb in &self.neighbors[c][layer] {
+                let nb = nb as usize;
                 if !visited.insert(nb) {
                     continue;
                 }
@@ -251,7 +255,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         let node_level = self.random_level();
 
         self.encoded.push(Q::encode(&norm_vec));
-        self.neighbors.push(vec![vec![]; node_level + 1]);
+        self.neighbors.push(vec![NeighborList::new(); node_level + 1]);
         self.deleted.push(false);
 
         match self.entry_point {
@@ -278,20 +282,21 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                     let max_m = if lc == 0 { self.m0 } else { self.m };
                     let nbrs = Self::select_neighbors(&candidates, max_m);
 
-                    self.neighbors[node_id][lc] = nbrs.clone();
+                    self.neighbors[node_id][lc] =
+                        nbrs.iter().map(|&id| id as NodeId).collect();
                     curr_ep = candidates.into_iter().map(|(_, id)| id).collect();
 
                     // Add reverse links and prune if over max_m.
-                    for nb_id in nbrs {
+                    for &nb_id in &nbrs {
                         if lc < self.neighbors[nb_id].len() {
-                            self.neighbors[nb_id][lc].push(node_id);
+                            self.neighbors[nb_id][lc].push(node_id as NodeId);
                             if self.neighbors[nb_id][lc].len() > max_m {
                                 // Decode nb to use as the query for scoring its neighbors.
                                 let nb_decoded = Q::decode(&self.encoded[nb_id], 0);
-                                let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
+                                let mut scored: Vec<(f32, NodeId)> = self.neighbors[nb_id][lc]
                                     .iter()
                                     .map(|&n| {
-                                        (Q::dist_to_query(&self.encoded[n], &nb_decoded), n)
+                                        (Q::dist_to_query(&self.encoded[n as usize], &nb_decoded), n)
                                     })
                                     .collect();
                                 scored.sort_by(|a, b| {

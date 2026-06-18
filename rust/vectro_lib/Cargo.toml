@@ -18,6 +18,7 @@ nalgebra = "0.32"
 anyhow = "1.0"
 simsimd = "6"
 half = "2.4"
+smallvec = "1.15"
 
 [features]
 default = []
