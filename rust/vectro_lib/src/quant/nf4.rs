@@ -335,7 +335,16 @@ mod proptest_tests {
             }
         }
 
-        /// Scale invariance: encoding v and α·v (α > 0) gives same nibbles.
+        /// Scale invariance: encoding `v` and `α·v` (α > 0) yields NF4 codes
+        /// that agree up to a single adjacent level.
+        ///
+        /// Exact byte equality does *not* hold in general.  The strategy admits
+        /// magnitudes up to 1e18, where the float product `x·α` and the scaled
+        /// abs-max round such that the normalised value `x·α / abs_max` lands
+        /// ~1 ULP across an NF4 level boundary, flipping that nibble to the
+        /// neighbouring level.  That perturbation (~1e-7 relative) is far below
+        /// the ~0.04 minimum spacing between NF4 decision boundaries, so a code
+        /// can shift by at most one level — which is the honest invariant here.
         #[test]
         fn scale_invariance(
             v in arb_nonzero_vec(16),
@@ -345,8 +354,19 @@ mod proptest_tests {
             let scaled: Vec<f32> = v.iter().map(|x| x * scale).collect();
             let enc1 = Nf4Vector::encode(&v);
             let enc2 = Nf4Vector::encode(&scaled);
-            prop_assert_eq!(enc1.packed, enc2.packed,
-                "packed bytes differ under scale factor {}", scale);
+            prop_assert_eq!(enc1.packed.len(), enc2.packed.len());
+            for (b, (&p1, &p2)) in enc1.packed.iter().zip(enc2.packed.iter()).enumerate() {
+                // Each byte holds two 4-bit codes: low nibble then high nibble.
+                for shift in [0u8, 4u8] {
+                    let c1 = ((p1 >> shift) & 0x0F) as i16;
+                    let c2 = ((p2 >> shift) & 0x0F) as i16;
+                    prop_assert!(
+                        (c1 - c2).abs() <= 1,
+                        "NF4 code differs by >1 level at byte {b} (nibble shift {shift}) \
+                         under scale {scale}: {c1} vs {c2}"
+                    );
+                }
+            }
         }
 
         /// Decoded length always equals the original dimension.
