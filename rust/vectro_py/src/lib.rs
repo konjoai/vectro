@@ -1221,6 +1221,22 @@ fn encode_nf4_fast(vec: Vec<f32>) -> PyResult<(Vec<u8>, f32, usize)> {
     Ok((q.packed, q.scale, q.dim))
 }
 
+/// Reject non-finite (NaN/Inf) input at the encode boundary.
+///
+/// INT8 abs-max quantisation silently corrupts on non-finite input: an `Inf`
+/// poisons a row's scale so every code saturates to 0, and `NaN` casts to 0.
+/// Failing fast with a precise location beats shipping masked overflow.
+fn ensure_finite(flat: &[f32], d: usize) -> PyResult<()> {
+    if let Some(pos) = flat.iter().position(|x| !x.is_finite()) {
+        let (row, col) = if d > 0 { (pos / d, pos % d) } else { (0, pos) };
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "input contains a non-finite value (NaN or Inf) at row {row}, col {col}; \
+             quantization requires finite float32 input"
+        )));
+    }
+    Ok(())
+}
+
 /// Batch encode a 2-D float32 numpy array [N, D] to INT8 using rayon-parallel
 /// abs-max quantisation with zero per-row heap allocation.
 ///
@@ -1228,6 +1244,7 @@ fn encode_nf4_fast(vec: Vec<f32>) -> PyResult<(Vec<u8>, f32, usize)> {
 /// `scales` is shape [N] dtype `float32` (`abs_max / 127.0` per row).
 ///
 /// Zero-copy on C-contiguous input; auto-vectorised inner loop (NEON/AVX2).
+/// Rejects non-finite (NaN/Inf) input with a `ValueError`.
 #[pyfunction]
 fn quantize_int8_batch<'py>(
     py: Python<'py>,
@@ -1239,10 +1256,12 @@ fn quantize_int8_batch<'py>(
     let mut scales = vec![0.0f32; n];
     match arr.as_slice() {
         Some(flat) => {
+            ensure_finite(flat, d)?;
             vectro_lib::quant::int8::batch_encode_into(flat, n, d, &mut codes_flat, &mut scales);
         }
         None => {
             let flat: Vec<f32> = arr.iter().copied().collect();
+            ensure_finite(&flat, d)?;
             vectro_lib::quant::int8::batch_encode_into(&flat, n, d, &mut codes_flat, &mut scales);
         }
     }
@@ -1272,6 +1291,7 @@ fn quantize_int8_batch_normalized<'py>(
     let mut scales = vec![0.0f32; n];
     match arr.as_slice() {
         Some(flat) => {
+            ensure_finite(flat, d)?;
             vectro_lib::quant::int8::batch_encode_normalized_into(
                 flat, n, d, &mut codes_flat, &mut scales,
             );
@@ -1279,6 +1299,7 @@ fn quantize_int8_batch_normalized<'py>(
         None => {
             // Non-contiguous — collapse to a contiguous copy first.
             let flat: Vec<f32> = arr.iter().copied().collect();
+            ensure_finite(&flat, d)?;
             vectro_lib::quant::int8::batch_encode_normalized_into(
                 &flat, n, d, &mut codes_flat, &mut scales,
             );
@@ -1321,6 +1342,10 @@ fn quantize_int8_batch_from_f16<'py>(
             }
         }
     }
+
+    // Validate after widening so f16 NaN/Inf (which widen to f32 NaN/Inf) are
+    // caught with the same contract as the f32 entry points.
+    ensure_finite(&buf, d)?;
 
     let mut codes_flat = vec![0i8; n * d];
     let mut scales = vec![0.0f32; n];

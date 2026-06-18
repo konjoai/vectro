@@ -249,7 +249,9 @@ impl IvfIndex {
                 (ci, Self::cosine_dist(v, c))
             })
             .collect();
-        scores.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        // NaN-safe ordering: a NaN distance (e.g. a non-finite query) sorts as
+        // equal rather than panicking, matching HnswIndex / IvfPqIndex.
+        scores.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         scores.into_iter().take(n_probe).map(|(ci, _)| ci).collect()
     }
 
@@ -345,7 +347,7 @@ impl IvfIndex {
             })
             .collect();
 
-        candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         candidates.dedup_by_key(|e| e.0);
         candidates.truncate(k);
         candidates
@@ -475,7 +477,7 @@ impl IvfIndex {
             })
             .collect();
 
-        candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         candidates.dedup_by_key(|e| e.0);
         candidates.truncate(k);
         candidates
@@ -606,6 +608,25 @@ mod tests {
         let q = vec![0.1f32; 8];
         let res = idx.search(&q, 5);
         assert!(res.is_empty());
+    }
+
+    #[test]
+    fn search_with_nan_query_does_not_panic() {
+        // A non-finite query produces NaN cosine distances; the centroid /
+        // candidate sorts must degrade gracefully (NaN-as-equal) rather than
+        // panicking on `partial_cmp().unwrap()`.
+        let vecs = make_vecs(40, 16);
+        let mut idx = IvfIndex::new(4, 4);
+        idx.train(&vecs, 10, 3).unwrap();
+        idx.add_batch(&vecs);
+
+        let mut q = vec![0.1f32; 16];
+        q[3] = f32::NAN;
+        q[7] = f32::INFINITY;
+        // Must not panic on any search variant that sorts by distance.
+        let _ = idx.search(&q, 5);
+        let _ = idx.search_with_probe(&q, 5, 4);
+        let _ = idx.search_filtered_with_probe(&q, 5, 4, |id| id % 2 == 0);
     }
 
     #[test]
