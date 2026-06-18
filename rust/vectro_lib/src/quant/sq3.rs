@@ -144,6 +144,30 @@ mod tests {
     }
 
     #[test]
+    fn decode_bit_exact_vs_formula() {
+        // Pins `decode` bit-for-bit to the documented reconstruction formula so
+        // any future decode optimisation (LUT/SIMD) cannot silently drift,
+        // including codes that straddle a byte boundary (dim=101 → 303 bits).
+        let v = unit_vec(101, 0.029);
+        let enc = Sq3Vector::encode(&v);
+        let dec = enc.decode();
+        for (i, &got) in dec.iter().enumerate() {
+            let bit_pos = i * 3;
+            let byte_idx = bit_pos / 8;
+            let bit_shift = bit_pos % 8;
+            let code = if bit_shift <= 5 {
+                (enc.packed[byte_idx] >> bit_shift) & 0x7
+            } else {
+                let lo = enc.packed[byte_idx] >> bit_shift;
+                let hi = enc.packed[byte_idx + 1] << (8 - bit_shift);
+                (lo | hi) & 0x7
+            };
+            let want = enc.scale * ((2 * code as i32 - 7) as f32 / 8.0);
+            assert_eq!(got.to_bits(), want.to_bits(), "decode mismatch at index {i}");
+        }
+    }
+
+    #[test]
     fn odd_dim_roundtrip() {
         // dims that are not multiples of 8* — exercises cross-byte boundary
         for d in [1, 3, 7, 9, 13, 17, 23, 100, 101] {

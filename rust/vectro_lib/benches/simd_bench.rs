@@ -10,6 +10,8 @@
 //!   HNSW recall@10: reported by `recall_at_k_bench`
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use vectro_lib::quant::sq2::Sq2Vector;
+use vectro_lib::quant::sq3::Sq3Vector;
 use vectro_lib::quant::{int8, nf4};
 use vectro_lib::index::hnsw::HnswIndex;
 use vectro_lib::index::ivf::IvfIndex;
@@ -108,5 +110,52 @@ fn bench_ivfpq_search(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_int8_throughput, bench_nf4_throughput, bench_hnsw_search, bench_ivf_search, bench_ivfpq_search);
+/// SQ2 batch decode throughput (LUT-based reconstruction).
+fn bench_sq2_decode(c: &mut Criterion) {
+    const N: usize = 1_000;
+    const D: usize = 768;
+    let vecs = make_vecs(N, D);
+    let encoded: Vec<Sq2Vector> = vecs.iter().map(|v| Sq2Vector::encode(v)).collect();
+
+    let mut group = c.benchmark_group("sq2_decode");
+    group.throughput(Throughput::Elements((N * D) as u64));
+    group.bench_function("decode_n1000_d768", |b| {
+        b.iter(|| {
+            for e in &encoded {
+                black_box(e.decode());
+            }
+        })
+    });
+    group.finish();
+}
+
+/// SQ3 batch decode throughput (LUT-based reconstruction).
+fn bench_sq3_decode(c: &mut Criterion) {
+    const N: usize = 1_000;
+    const D: usize = 768;
+    let vecs = make_vecs(N, D);
+    let encoded: Vec<Sq3Vector> = vecs.iter().map(|v| Sq3Vector::encode(v)).collect();
+
+    let mut group = c.benchmark_group("sq3_decode");
+    group.throughput(Throughput::Elements((N * D) as u64));
+    group.bench_function("decode_n1000_d768", |b| {
+        b.iter(|| {
+            for e in &encoded {
+                black_box(e.decode());
+            }
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_int8_throughput,
+    bench_nf4_throughput,
+    bench_hnsw_search,
+    bench_ivf_search,
+    bench_ivfpq_search,
+    bench_sq2_decode,
+    bench_sq3_decode
+);
 criterion_main!(benches);
