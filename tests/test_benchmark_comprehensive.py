@@ -25,6 +25,9 @@ def _has(mod: str) -> bool:
 
 
 requires_faiss = pytest.mark.skipif(not _has("faiss"), reason="faiss-cpu not installed")
+requires_vectro_py = pytest.mark.skipif(
+    not _has("vectro_py"), reason="vectro_py Rust extension not installed"
+)
 
 
 @pytest.fixture(scope="module")
@@ -44,6 +47,7 @@ def test_pin_single_thread_returns_tag():
 def test_vectro_backend_recall_and_size(tiny):
     train, queries, gt = tiny
     backend = bc.VectroHNSW()
+    backend.param_sweep = [16, 64, 256]  # short sweep keeps the pure-Python path fast in CI
     backend.build(train)
     pts = bc.sweep_pareto(backend, queries, gt, bc.K)
     assert pts, "expected at least one operating point"
@@ -63,6 +67,7 @@ def test_all_search_backends_build_and_recall(tiny):
     assert exact["max_recall"] >= 0.999  # exact flat == ground truth
 
 
+@requires_vectro_py
 def test_vectro_int8_quant_beats_baseline_quality(tiny):
     train, _, _ = tiny
     row = bc._bench_vectro_int8(train)

@@ -5,6 +5,28 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Benchmarks
+- `scripts/benchmark_comprehensive.py` — comprehensive **real-data** head-to-head
+  vs FAISS and hnswlib, across two axes: (1) ANN search Recall@10 vs QPS
+  (single-thread, recall-matched, build time, index size) for vectro-hnsw /
+  faiss-hnsw / faiss-ivf / hnswlib / exact-faiss; (2) quantization encode
+  throughput / compression / reconstruction cosine for vectro INT8 + PQ vs FAISS
+  ScalarQuantizer + IndexPQ. ann-benchmarks methodology (HDF5 datasets,
+  brute-force ground truth, strict Recall@k, Pareto sweeps), single-thread
+  fairness (`faiss.omp_set_num_threads(1)`), JSON + markdown + PNG plots to
+  `benchmarks/results/<ts>_comprehensive/`. Tested by
+  `tests/test_benchmark_comprehensive.py` (synthetic smoke tests, dep-gated).
+  First real run (glove-100-angular, n=20k, single-thread, generic faiss-cpu):
+  - vectro INT8 encode **10.9M vec/s vs FAISS ScalarQuantizer 4.4M** (2.5×,
+    cosine 1.0000) — vectro's core competency confirmed.
+  - vectro PQ encode 47K vs FAISS IndexPQ 867K vec/s (same 16× ratio / 0.95
+    cosine) and vectro's pure-Python HNSW ~248 vs faiss-hnsw ~10.8K QPS@R0.90
+    — honest losses that scope future work.
+- `scripts/benchmark_vs_faiss.py` — added `glove-25-angular` (127 MB) and
+  `nytimes-256-angular` to the dataset registry.
+
 ## [5.6.0] — 2026-06-18 — INT8 batch path routed through the Rust SIMD kernel
 
 ### Performance

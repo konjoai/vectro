@@ -1,0 +1,438 @@
+{
+  "timestamp": "20260618_230443",
+  "dataset": "glove-100-angular",
+  "n_train": 20000,
+  "d": 100,
+  "k": 10,
+  "metric": "cosine",
+  "faiss_simd": "generic",
+  "single_thread": true,
+  "hardware": {
+    "platform": "Linux-6.18.5-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "machine": "x86_64",
+    "python_version": "3.11.15",
+    "numpy_version": "2.4.6"
+  },
+  "config": {
+    "HNSW_M": 16,
+    "HNSW_EF_CONSTRUCTION": 200,
+    "N_QUERIES": 200,
+    "N_WARMUP": 3,
+    "N_REPS": 5,
+    "EF_SWEEP": [
+      10,
+      16,
+      24,
+      32,
+      48,
+      64,
+      96,
+      128,
+      192,
+      256,
+      384,
+      512,
+      768,
+      1024,
+      2048
+    ],
+    "NPROBE_SWEEP": [
+      1,
+      2,
+      4,
+      5,
+      8,
+      10,
+      16,
+      20,
+      32,
+      50,
+      64,
+      100
+    ]
+  },
+  "search": [
+    {
+      "label": "vectro-hnsw",
+      "build_s": 133.61,
+      "index_mb": 8.56,
+      "max_recall": 0.9975,
+      "pareto": [
+        {
+          "param": 10.0,
+          "recall": 0.5625,
+          "qps": 1514.2
+        },
+        {
+          "param": 16.0,
+          "recall": 0.645,
+          "qps": 1113.9
+        },
+        {
+          "param": 24.0,
+          "recall": 0.7095,
+          "qps": 813.8
+        },
+        {
+          "param": 32.0,
+          "recall": 0.753,
+          "qps": 687.9
+        },
+        {
+          "param": 48.0,
+          "recall": 0.802,
+          "qps": 515.8
+        },
+        {
+          "param": 64.0,
+          "recall": 0.8385,
+          "qps": 419.0
+        },
+        {
+          "param": 96.0,
+          "recall": 0.873,
+          "qps": 312.9
+        },
+        {
+          "param": 128.0,
+          "recall": 0.903,
+          "qps": 248.2
+        },
+        {
+          "param": 192.0,
+          "recall": 0.9345,
+          "qps": 178.3
+        },
+        {
+          "param": 256.0,
+          "recall": 0.95,
+          "qps": 143.9
+        },
+        {
+          "param": 384.0,
+          "recall": 0.97,
+          "qps": 98.6
+        },
+        {
+          "param": 512.0,
+          "recall": 0.978,
+          "qps": 76.6
+        },
+        {
+          "param": 768.0,
+          "recall": 0.9865,
+          "qps": 58.1
+        },
+        {
+          "param": 1024.0,
+          "recall": 0.9915,
+          "qps": 46.5
+        },
+        {
+          "param": 2048.0,
+          "recall": 0.9975,
+          "qps": 28.3
+        }
+      ],
+      "qps_at_recall": {
+        "0.90": 248.2,
+        "0.95": 143.9,
+        "0.99": 46.5
+      }
+    },
+    {
+      "label": "faiss-hnsw",
+      "build_s": 6.235,
+      "index_mb": 10.38,
+      "max_recall": 1.0,
+      "pareto": [
+        {
+          "param": 10.0,
+          "recall": 0.604,
+          "qps": 42677.4
+        },
+        {
+          "param": 16.0,
+          "recall": 0.699,
+          "qps": 32657.5
+        },
+        {
+          "param": 24.0,
+          "recall": 0.768,
+          "qps": 23970.9
+        },
+        {
+          "param": 32.0,
+          "recall": 0.8165,
+          "qps": 19512.6
+        },
+        {
+          "param": 48.0,
+          "recall": 0.866,
+          "qps": 14136.5
+        },
+        {
+          "param": 64.0,
+          "recall": 0.901,
+          "qps": 10825.3
+        },
+        {
+          "param": 96.0,
+          "recall": 0.943,
+          "qps": 7690.4
+        },
+        {
+          "param": 128.0,
+          "recall": 0.962,
+          "qps": 5594.2
+        },
+        {
+          "param": 192.0,
+          "recall": 0.981,
+          "qps": 4002.4
+        },
+        {
+          "param": 256.0,
+          "recall": 0.99,
+          "qps": 2980.8
+        },
+        {
+          "param": 384.0,
+          "recall": 0.993,
+          "qps": 1997.6
+        },
+        {
+          "param": 512.0,
+          "recall": 0.997,
+          "qps": 1527.3
+        },
+        {
+          "param": 768.0,
+          "recall": 0.9995,
+          "qps": 1048.6
+        },
+        {
+          "param": 1024.0,
+          "recall": 1.0,
+          "qps": 764.8
+        },
+        {
+          "param": 2048.0,
+          "recall": 1.0,
+          "qps": 351.4
+        }
+      ],
+      "qps_at_recall": {
+        "0.90": 10825.3,
+        "0.95": 5594.2,
+        "0.99": 2980.8
+      }
+    },
+    {
+      "label": "faiss-ivf",
+      "build_s": 0.116,
+      "index_mb": 7.82,
+      "max_recall": 1.0,
+      "pareto": [
+        {
+          "param": 1.0,
+          "recall": 0.4075,
+          "qps": 106873.2
+        },
+        {
+          "param": 2.0,
+          "recall": 0.5455,
+          "qps": 70008.4
+        },
+        {
+          "param": 4.0,
+          "recall": 0.6725,
+          "qps": 41864.4
+        },
+        {
+          "param": 5.0,
+          "recall": 0.7095,
+          "qps": 34450.1
+        },
+        {
+          "param": 8.0,
+          "recall": 0.7805,
+          "qps": 23483.3
+        },
+        {
+          "param": 10.0,
+          "recall": 0.809,
+          "qps": 19735.2
+        },
+        {
+          "param": 16.0,
+          "recall": 0.8685,
+          "qps": 12898.9
+        },
+        {
+          "param": 20.0,
+          "recall": 0.8995,
+          "qps": 10598.2
+        },
+        {
+          "param": 32.0,
+          "recall": 0.9565,
+          "qps": 6696.8
+        },
+        {
+          "param": 50.0,
+          "recall": 0.9775,
+          "qps": 4325.6
+        },
+        {
+          "param": 64.0,
+          "recall": 0.99,
+          "qps": 3436.4
+        },
+        {
+          "param": 100.0,
+          "recall": 1.0,
+          "qps": 2301.6
+        }
+      ],
+      "qps_at_recall": {
+        "0.90": 6696.8,
+        "0.95": 6696.8,
+        "0.99": 3436.4
+      }
+    },
+    {
+      "label": "hnswlib",
+      "build_s": 4.545,
+      "index_mb": 10.46,
+      "max_recall": 1.0,
+      "pareto": [
+        {
+          "param": 10.0,
+          "recall": 0.607,
+          "qps": 55822.3
+        },
+        {
+          "param": 16.0,
+          "recall": 0.681,
+          "qps": 37697.8
+        },
+        {
+          "param": 24.0,
+          "recall": 0.7475,
+          "qps": 30220.8
+        },
+        {
+          "param": 32.0,
+          "recall": 0.7935,
+          "qps": 23091.8
+        },
+        {
+          "param": 48.0,
+          "recall": 0.846,
+          "qps": 17160.7
+        },
+        {
+          "param": 64.0,
+          "recall": 0.885,
+          "qps": 13500.1
+        },
+        {
+          "param": 96.0,
+          "recall": 0.9285,
+          "qps": 9399.5
+        },
+        {
+          "param": 128.0,
+          "recall": 0.954,
+          "qps": 7621.6
+        },
+        {
+          "param": 192.0,
+          "recall": 0.974,
+          "qps": 5233.8
+        },
+        {
+          "param": 256.0,
+          "recall": 0.985,
+          "qps": 3890.0
+        },
+        {
+          "param": 384.0,
+          "recall": 0.9925,
+          "qps": 2665.8
+        },
+        {
+          "param": 512.0,
+          "recall": 0.996,
+          "qps": 2078.3
+        },
+        {
+          "param": 768.0,
+          "recall": 0.9985,
+          "qps": 1439.2
+        },
+        {
+          "param": 1024.0,
+          "recall": 0.9995,
+          "qps": 1150.9
+        },
+        {
+          "param": 2048.0,
+          "recall": 1.0,
+          "qps": 655.2
+        }
+      ],
+      "qps_at_recall": {
+        "0.90": 9399.5,
+        "0.95": 7621.6,
+        "0.99": 2665.8
+      }
+    },
+    {
+      "label": "exact-faiss",
+      "build_s": 0.008,
+      "index_mb": 7.63,
+      "max_recall": 1.0,
+      "pareto": [
+        {
+          "param": 0.0,
+          "recall": 1.0,
+          "qps": 2647.4
+        }
+      ],
+      "qps_at_recall": {
+        "0.90": 2647.4,
+        "0.95": 2647.4,
+        "0.99": 2647.4
+      }
+    }
+  ],
+  "quantization": [
+    {
+      "method": "vectro-int8 (rust simd)",
+      "throughput_vec_s": 10908610,
+      "compression_ratio": 3.85,
+      "reconstruction_cosine": 0.99998
+    },
+    {
+      "method": "faiss-scalarquantizer-int8",
+      "throughput_vec_s": 4418807,
+      "compression_ratio": 4.0,
+      "reconstruction_cosine": 0.99993
+    },
+    {
+      "method": "vectro-pq (M=25)",
+      "throughput_vec_s": 46824,
+      "compression_ratio": 16.0,
+      "reconstruction_cosine": 0.95027
+    },
+    {
+      "method": "faiss-indexpq (M=25)",
+      "throughput_vec_s": 867430,
+      "compression_ratio": 16.0,
+      "reconstruction_cosine": 0.95118
+    }
+  ]
+}
