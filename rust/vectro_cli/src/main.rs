@@ -248,6 +248,17 @@ fn execute_search_command(query: &str, top_k: usize, dataset: Option<&str>) -> V
 }
 
 fn main() -> anyhow::Result<()> {
+    // Initialise tracing so library/CLI `warn!`s surface on stderr. Defaults to
+    // WARN; `RUST_LOG` (e.g. `RUST_LOG=info`) overrides. `try_init` keeps a
+    // double-init (tests, embedding) from panicking.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .try_init();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -357,13 +368,15 @@ fn main() -> anyhow::Result<()> {
                                 for (f, med, _mean, _unit) in &rows {
                                     if let Some(m) = med { new_hist.insert(f.clone(), *m); }
                                 }
-                                let _ = save_bench_history(&history_path, &new_hist);
+                                if let Err(e) = save_bench_history(&history_path, &new_hist) {
+                                    tracing::warn!(path = %history_path.display(), error = %e, "couldn't save benchmark history");
+                                }
 
                                 // Generate HTML summary in criterion dir
                                 let html_summary = generate_html_summary(&rows, &history);
                                 let summary_path = crit_dir.join("vectro_summary.html");
                                 if let Err(e) = fs::write(&summary_path, html_summary) {
-                                    eprintln!("Warning: couldn't write HTML summary: {}", e);
+                                    tracing::warn!(path = %summary_path.display(), error = %e, "couldn't write HTML summary");
                                 } else {
                                     println!("\n📊 HTML summary saved to: {}", summary_path.display());
                                 }
@@ -378,12 +391,18 @@ fn main() -> anyhow::Result<()> {
                             Err(_) => "ts".to_string(),
                         };
                         let target_copy = dest_dir.join(format!("criterion-report-{}", ts));
-                        let _ = fs::create_dir_all(&target_copy);
-                        let _ = copy_dir_all(&crit_dir, &target_copy);
+                        if let Err(e) = fs::create_dir_all(&target_copy) {
+                            tracing::warn!(path = %target_copy.display(), error = %e, "couldn't create report directory");
+                        }
+                        if let Err(e) = copy_dir_all(&crit_dir, &target_copy) {
+                            tracing::warn!(dest = %target_copy.display(), error = %e, "couldn't copy Criterion report");
+                        }
                         println!("Saved Criterion report to {}", target_copy.display());
                         if open_report {
                             let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-                            let _ = Command::new(opener).arg(target_copy.join("index.html")).spawn();
+                            if let Err(e) = Command::new(opener).arg(target_copy.join("index.html")).spawn() {
+                                tracing::warn!(opener, error = %e, "couldn't open report in browser");
+                            }
                         }
                     } else if open_report {
                         // try to find an index.html anywhere under crit_dir
