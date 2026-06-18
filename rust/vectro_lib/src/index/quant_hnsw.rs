@@ -180,56 +180,59 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         layer: usize,
         filter: F,
     ) -> Vec<(f32, usize)> {
-        let mut visited: HashSet<usize> = HashSet::with_capacity(ef * 4);
-        // cands: min-heap on distance (pop closest first)
-        let mut cands: BinaryHeap<(std::cmp::Reverse<OrdF32>, usize)> = BinaryHeap::new();
-        // window W: max-heap on distance (pop worst to enforce size <= ef)
-        let mut window: BinaryHeap<(OrdF32, usize)> = BinaryHeap::new();
+        // Reusable thread-local epoch visited set (see `super::scratch`): O(1)
+        // mark/check, allocated once per thread instead of once per layer call.
+        super::scratch::with_visited(self.encoded.len(), |visited| {
+            // cands: min-heap on distance (pop closest first)
+            let mut cands: BinaryHeap<(std::cmp::Reverse<OrdF32>, usize)> = BinaryHeap::new();
+            // window W: max-heap on distance (pop worst to enforce size <= ef)
+            let mut window: BinaryHeap<(OrdF32, usize)> = BinaryHeap::new();
 
-        for &ep in entry_points {
-            let d = Q::dist_to_query(&self.encoded[ep], query);
-            visited.insert(ep);
-            cands.push((std::cmp::Reverse(OrdF32(d)), ep));
-            if !self.is_deleted(ep) && filter(ep) {
-                window.push((OrdF32(d), ep));
+            for &ep in entry_points {
+                let d = Q::dist_to_query(&self.encoded[ep], query);
+                visited.visit(ep);
+                cands.push((std::cmp::Reverse(OrdF32(d)), ep));
+                if !self.is_deleted(ep) && filter(ep) {
+                    window.push((OrdF32(d), ep));
+                }
             }
-        }
 
-        while let Some((std::cmp::Reverse(OrdF32(d_c)), c)) = cands.pop() {
-            let worst = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
-            if d_c > worst && window.len() >= ef {
-                break;
-            }
-            if layer >= self.neighbors[c].len() {
-                continue;
-            }
-            // Iterate adjacency by reference — `neighbors` and `encoded` are
-            // distinct shared borrows of `self`, so no clone is needed here.
-            for &nb in &self.neighbors[c][layer] {
-                let nb = nb as usize;
-                if !visited.insert(nb) {
+            while let Some((std::cmp::Reverse(OrdF32(d_c)), c)) = cands.pop() {
+                let worst = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
+                if d_c > worst && window.len() >= ef {
+                    break;
+                }
+                if layer >= self.neighbors[c].len() {
                     continue;
                 }
-                let d_nb = Q::dist_to_query(&self.encoded[nb], query);
-                let worst2 = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
-                if d_nb < worst2 || window.len() < ef {
-                    cands.push((std::cmp::Reverse(OrdF32(d_nb)), nb));
-                    if !self.is_deleted(nb) && filter(nb) {
-                        window.push((OrdF32(d_nb), nb));
-                        if window.len() > ef {
-                            window.pop();
+                // Iterate adjacency by reference — `neighbors` and `encoded` are
+                // distinct shared borrows of `self`, so no clone is needed here.
+                for &nb in &self.neighbors[c][layer] {
+                    let nb = nb as usize;
+                    if !visited.visit(nb) {
+                        continue;
+                    }
+                    let d_nb = Q::dist_to_query(&self.encoded[nb], query);
+                    let worst2 = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
+                    if d_nb < worst2 || window.len() < ef {
+                        cands.push((std::cmp::Reverse(OrdF32(d_nb)), nb));
+                        if !self.is_deleted(nb) && filter(nb) {
+                            window.push((OrdF32(d_nb), nb));
+                            if window.len() > ef {
+                                window.pop();
+                            }
                         }
                     }
                 }
             }
-        }
 
-        let mut result: Vec<(f32, usize)> =
-            window.into_iter().map(|(d, id)| (d.0, id)).collect();
-        result.sort_by(|a, b| {
-            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        result
+            let mut result: Vec<(f32, usize)> =
+                window.into_iter().map(|(d, id)| (d.0, id)).collect();
+            result.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            result
+        })
     }
 
     fn search_layer(
