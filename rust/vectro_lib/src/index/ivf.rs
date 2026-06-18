@@ -125,16 +125,9 @@ fn kmeans_lloyd(data: &[&[f32]], k: usize, d: usize, max_iter: usize, seed: u64)
             }
             let inv = 1.0 / counts[ki] as f32;
             let start = ki * d;
-            for s in &mut cents[start..start + d] {
-                *s *= 0.0; // reset
-            }
-            for s_add in &sums[start..start + d] {
-                cents[start..start + d]
-                    .iter_mut()
-                    .zip(std::iter::once(s_add))
-                    .for_each(|(c, &a)| *c += a * inv);
-            }
-            // Simpler: just copy
+            // Centroid = mean of assigned points. (Earlier revisions had a
+            // redundant reset+accumulate pass here that this single write
+            // already subsumes.)
             for (c, s) in cents[start..start + d].iter_mut().zip(sums[start..start + d].iter()) {
                 *c = s * inv;
             }
