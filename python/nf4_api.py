@@ -153,14 +153,14 @@ def dequantize_nf4(
 
     d_even = (d // 2) * 2
     if d_even > 0:
-        lo = (packed[:, : d_even // 2] & 0x0F).astype(np.int32)
-        hi = ((packed[:, : d_even // 2] >> 4) & 0x0F).astype(np.int32)
-        out[:, 0::2][:, : d_even // 2] = NF4_LEVELS[lo]
-        out[:, 1::2][:, : d_even // 2] = NF4_LEVELS[hi]
+        # uint8 nibbles index NF4_LEVELS directly — no int32 cast needed, and a
+        # single strided slice writes through to `out` without intermediate views.
+        nibbles = packed[:, : d_even // 2]
+        out[:, 0:d_even:2] = NF4_LEVELS[nibbles & 0x0F]
+        out[:, 1:d_even:2] = NF4_LEVELS[(nibbles >> 4) & 0x0F]
 
     if d % 2 == 1:
-        lo_last = (packed[:, bytes_per_vec - 1] & 0x0F).astype(np.int32)
-        out[:, d - 1] = NF4_LEVELS[lo_last]
+        out[:, d - 1] = NF4_LEVELS[packed[:, bytes_per_vec - 1] & 0x0F]
 
     out *= scales[:, np.newaxis]
     return out

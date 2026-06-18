@@ -55,3 +55,7 @@ harness = false
 [[bench]]
 name = "int8_fused_bench"
 harness = false
+
+[[bench]]
+name = "train_bench"
+harness = false
