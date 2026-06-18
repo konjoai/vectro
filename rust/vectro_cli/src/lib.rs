@@ -103,7 +103,7 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
             }
         }
 
-        if parsed % 100 == 0 { pb.set_message(format!("parsed {} entries", parsed)); }
+        if parsed.is_multiple_of(100) { pb.set_message(format!("parsed {} entries", parsed)); }
     }
 
     if quantize {

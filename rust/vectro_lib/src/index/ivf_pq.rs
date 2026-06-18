@@ -89,7 +89,7 @@ fn kmeans_lloyd(
     max_iter: usize,
     seed: u64,
 ) -> Vec<f32> {
-    let n = data.len();
+    let _n = data.len();
     let mut centroids = kmeans_pp_init(data, k, d, seed);
 
     for _ in 0..max_iter {
@@ -680,7 +680,7 @@ mod tests {
             idx.add(v);
         }
         let (results, n_probe) = idx.search_for_recall(&data[0], 5, 0.8);
-        assert!(n_probe >= 1 && n_probe <= 4);
+        assert!((1..=4).contains(&n_probe));
         assert!(!results.is_empty());
     }
 
@@ -705,13 +705,6 @@ mod tests {
 mod proptest_tests {
     use super::*;
     use proptest::prelude::*;
-
-    fn arb_unit_vec(d: usize) -> impl Strategy<Value = Vec<f32>> {
-        prop::collection::vec(-1.0f32..=1.0f32, d).prop_map(|v| {
-            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
-            v.into_iter().map(|x| x / norm).collect()
-        })
-    }
 
     proptest! {
         #[test]

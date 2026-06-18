@@ -78,7 +78,7 @@ mod tests {
     use super::*;
 
     fn unit_vec(d: usize, seed: f32) -> Vec<f32> {
-        let v: Vec<f32> = (0..d).map(|i| ((i as f32 * seed + 0.1).sin())).collect();
+        let v: Vec<f32> = (0..d).map(|i| (i as f32 * seed + 0.1).sin()).collect();
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         v.into_iter().map(|x| x / norm).collect()
     }

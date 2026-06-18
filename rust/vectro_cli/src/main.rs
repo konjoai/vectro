@@ -315,7 +315,7 @@ fn main() -> anyhow::Result<()> {
                     if summary {
                         // parse JSON summaries in target/criterion/*/new/*.json and present a clean table
                         if let Ok(entries) = fs::read_dir(&crit_dir) {
-                            let mut rows: Vec<(String, Option<f64>, Option<f64>, Option<String>)> = Vec::new();
+                            let mut rows: Vec<BenchRow> = Vec::new();
                             for e in entries.flatten() {
                                 let p = e.path();
                                 if p.is_dir() {
@@ -604,14 +604,10 @@ fn get_estimate(v: &Value, key: &str) -> Option<f64> {
     if let Some(direct) = find_number_in_json(v, key) { return Some(direct); }
     // try path: estimates -> key -> point_estimate
     if let Value::Object(map) = v {
-        if let Some(est) = map.get("estimates") {
-            if let Value::Object(est_map) = est {
-                if let Some(kv) = est_map.get(key) {
-                    if let Value::Object(kmap) = kv {
-                        if let Some(pe) = kmap.get("point_estimate") {
-                            return pe.as_f64();
-                        }
-                    }
+        if let Some(Value::Object(est_map)) = map.get("estimates") {
+            if let Some(Value::Object(kmap)) = est_map.get(key) {
+                if let Some(pe) = kmap.get("point_estimate") {
+                    return pe.as_f64();
                 }
             }
         }
@@ -634,8 +630,11 @@ fn get_bench_name(v: &Value) -> Option<String> {
     None
 }
 
+/// A single benchmark summary row: (name, median_s, mean_s, unit_label).
+type BenchRow = (String, Option<f64>, Option<f64>, Option<String>);
+
 /// Generate a compact HTML summary from benchmark results
-fn generate_html_summary(rows: &[(String, Option<f64>, Option<f64>, Option<String>)], history: &std::collections::HashMap<String, f64>) -> String {
+fn generate_html_summary(rows: &[BenchRow], history: &std::collections::HashMap<String, f64>) -> String {
     let mut html = String::from(r#"<!DOCTYPE html>
 <html>
 <head>

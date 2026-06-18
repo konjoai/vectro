@@ -6,7 +6,6 @@ use clap::Parser;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize)]

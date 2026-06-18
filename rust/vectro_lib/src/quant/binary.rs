@@ -32,7 +32,7 @@ impl BinaryVector {
     /// when `normalize` is true.
     pub fn encode(v: &[f32], normalize: bool) -> Self {
         let dim = v.len();
-        let bytes_per_vec = (dim + 7) / 8;
+        let bytes_per_vec = dim.div_ceil(8);
         let mut packed = vec![0u8; bytes_per_vec];
 
         // Use f64 for the norm to avoid f32 overflow on extreme-valued vectors.
@@ -137,7 +137,7 @@ mod tests {
         // SimSIMD returns None when byte lengths differ; hamming must not panic
         // and returns the documented fallback (0), logging a warning.
         let a = BinaryVector::encode(&vec![1.0f32; 64], false);
-        let b = BinaryVector::encode(&vec![1.0f32; 32], false);
+        let b = BinaryVector::encode(&[1.0f32; 32], false);
         assert_eq!(a.hamming(&b), 0);
     }
 

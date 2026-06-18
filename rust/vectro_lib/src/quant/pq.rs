@@ -34,14 +34,6 @@ impl PQCodebook {
         let start = m * stride + k * self.sub_dim;
         &self.centroids[start..start + self.sub_dim]
     }
-
-    /// Mutable centroid slice.
-    #[inline]
-    fn centroid_mut(&mut self, m: usize, k: usize) -> &mut [f32] {
-        let stride = self.n_centroids * self.sub_dim;
-        let start = m * stride + k * self.sub_dim;
-        &mut self.centroids[start..start + self.sub_dim]
-    }
 }
 
 /// Train a PQ codebook with Lloyd's K-means.
@@ -63,7 +55,7 @@ pub fn train_pq_codebook(
         return Err("training_data is empty".into());
     }
     let d = training_data[0].len();
-    if d % n_subspaces != 0 {
+    if !d.is_multiple_of(n_subspaces) {
         return Err(format!("d={d} not divisible by n_subspaces={n_subspaces}"));
     }
     if n_centroids > 256 {
@@ -74,7 +66,7 @@ pub fn train_pq_codebook(
     }
 
     let sub_dim = d / n_subspaces;
-    let n = training_data.len();
+    let _n = training_data.len();
     let total = n_subspaces * n_centroids * sub_dim;
     let mut centroids_flat = vec![0.0f32; total];
 

@@ -135,8 +135,8 @@ unsafe fn encode_avx2(v: &[f32]) -> Int8Vector {
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
     // Scalar tail
-    for i in chunks8 * 8..n {
-        *out_ptr.add(i) = (v[i] * inv).round().clamp(-127.0, 127.0) as i8;
+    for (i, &val) in v.iter().enumerate().skip(chunks8 * 8) {
+        *out_ptr.add(i) = (val * inv).round().clamp(-127.0, 127.0) as i8;
     }
 
     Int8Vector { codes, scale }
@@ -378,8 +378,8 @@ unsafe fn encode_avx2_into(v: &[f32], out: &mut [i8]) -> f32 {
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
     // scalar tail
-    for i in chunks8 * 8..n {
-        *out_ptr.add(i) = (v[i] * inv).round().clamp(-127.0, 127.0) as i8;
+    for (i, &val) in v.iter().enumerate().skip(chunks8 * 8) {
+        *out_ptr.add(i) = (val * inv).round().clamp(-127.0, 127.0) as i8;
     }
 
     scale
@@ -556,8 +556,8 @@ pub fn cosine_int8(query: &[f32], encoded: &Int8Vector) -> f32 {
 /// * `input`      — flat f32 slice, length = `n * d`
 /// * `n`, `d`     — number of vectors and dimension
 /// * `codes_out`  — caller-allocated i8 slice, length = `n * d` (written in-place)
-/// * `scales_out` — caller-allocated f32 slice, length = `n`  
-///                  stores `abs_max / 127.0` per row (direct dequant factor)
+/// * `scales_out` — caller-allocated f32 slice, length = `n`;
+///   stores `abs_max / 127.0` per row (direct dequant factor)
 ///
 /// Uses rayon for row-parallel execution; each worker thread calls
 /// `encode_fast_into` which dispatches to the NEON (AArch64) or AVX2 (x86-64)
@@ -776,8 +776,8 @@ unsafe fn encode_normalized_avx2(v: &[f32], out: &mut [i8]) {
         let i8s  = _mm_packs_epi16(i16s, i16s);
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
-    for i in chunks8 * 8..n {
-        *out_ptr.add(i) = (v[i] * 127.0_f32).round().clamp(-127.0, 127.0) as i8;
+    for (i, &val) in v.iter().enumerate().skip(chunks8 * 8) {
+        *out_ptr.add(i) = (val * 127.0_f32).round().clamp(-127.0, 127.0) as i8;
     }
 }
 
@@ -936,8 +936,10 @@ unsafe fn encode_avx2_fused_into(v: &[f32], out: &mut [i8]) -> f32 {
         let i8s = _mm_packs_epi16(i16s, i16s);
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
-    for i in chunks8 * 8..n {
-        *out_ptr.add(i) = (buf[i] * inv).round().clamp(-127.0, 127.0) as i8;
+    // `buf` is a fixed ROW_CAP-sized scratch array, so iterate only its first
+    // `n` entries — writing past `n` would overflow the `out_ptr` allocation.
+    for (i, &val) in buf[..n].iter().enumerate().skip(chunks8 * 8) {
+        *out_ptr.add(i) = (val * inv).round().clamp(-127.0, 127.0) as i8;
     }
     scale
 }
@@ -1199,8 +1201,8 @@ mod tests {
         let d = 1536usize;
         for seed in 0..50usize {
             let raw: Vec<f32> = (0..d)
-                .map(|j| (((seed * 397 + j) as f32 * 0.0029).sin()
-                          * ((j as f32 * 0.011).cos() + 0.5)))
+                .map(|j| ((seed * 397 + j) as f32 * 0.0029).sin()
+                          * ((j as f32 * 0.011).cos() + 0.5))
                 .collect();
             let n2: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
             let v: Vec<f32> = raw.iter().map(|x| x / n2).collect();
@@ -1308,11 +1310,11 @@ mod tests {
         for &d in &[64usize, 128, 256, 768, 1024, 2048, 4000] {
             // Linear-congruential pseudo-random in [-1e6, 1e6]
             let mut v = vec![0.0_f32; d];
-            for i in 0..d {
+            for slot in v.iter_mut() {
                 rng_state = rng_state.wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
                 let u = ((rng_state >> 33) as u32) as f32 / (1u32 << 31) as f32 - 1.0;
-                v[i] = u * 1.0e6;
+                *slot = u * 1.0e6;
             }
             let mut codes = vec![0i8; d];
             let scale = encode_fast_fused_into(&v, &mut codes);

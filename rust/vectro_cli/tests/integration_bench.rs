@@ -4,6 +4,9 @@ use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+/// A single benchmark summary row: (name, median_s, mean_s, unit_label).
+type BenchRow = (String, Option<f64>, Option<f64>, Option<String>);
+
 #[test]
 fn test_bench_history_persistence() {
     // Create temp directory for history file
@@ -35,7 +38,7 @@ fn test_bench_history_persistence() {
 #[test]
 fn test_bench_summary_data_format() {
     // Test bench summary data structure
-    let rows: Vec<(String, Option<f64>, Option<f64>, Option<String>)> = vec![
+    let rows: Vec<BenchRow> = vec![
         ("bench1".to_string(), Some(1.234), Some(1.250), Some("ms".to_string())),
         ("bench2".to_string(), Some(5.678), Some(5.700), Some("ms".to_string())),
         ("bench3".to_string(), None, None, None),
@@ -101,7 +104,7 @@ fn test_html_report_generation() {
     for (name, med, mean, unit) in &rows {
         let med_str = med.map(|v| format!("{:.6}", v)).unwrap_or_else(|| "-".to_string());
         let mean_str = mean.map(|v| format!("{:.6}", v)).unwrap_or_else(|| "-".to_string());
-        let unit_str = unit.clone().unwrap_or_else(|| "".to_string());
+        let _unit_str = unit.clone().unwrap_or_else(|| "".to_string());
         
         assert!(!med_str.is_empty());
         assert!(!mean_str.is_empty());

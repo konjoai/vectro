@@ -119,11 +119,11 @@ fn kmeans_lloyd(data: &[&[f32]], k: usize, d: usize, max_iter: usize, seed: u64)
             }
             counts[ki] += 1;
         }
-        for ki in 0..k {
-            if counts[ki] == 0 {
+        for (ki, &count) in counts.iter().enumerate() {
+            if count == 0 {
                 continue;
             }
-            let inv = 1.0 / counts[ki] as f32;
+            let inv = 1.0 / count as f32;
             let start = ki * d;
             for s in &mut cents[start..start + d] {
                 *s *= 0.0; // reset
@@ -781,7 +781,7 @@ mod tests {
         }
         let (results, n_probe) = idx.search_for_recall(&vecs[0], 5, 0.8);
         // n_probe must be within [1, n_lists].
-        assert!(n_probe >= 1 && n_probe <= 8);
+        assert!((1..=8).contains(&n_probe));
         // Results must be non-empty.
         assert!(!results.is_empty());
     }

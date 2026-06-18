@@ -21,7 +21,7 @@ use std::arch::x86_64::*;
 pub const NF4_LEVELS: [f32; 16] = [
     -1.0,
     -0.6961928,
-    -0.5250730,
+    -0.525_073,
     -0.3949003,
     -0.2844677,
     -0.1848745,
@@ -33,7 +33,7 @@ pub const NF4_LEVELS: [f32; 16] = [
     0.33791524,
     0.44070983,
     0.56266755,
-    0.72295761,
+    0.722_957_6,
     1.0,
 ];
 
@@ -85,7 +85,7 @@ impl Nf4Vector {
         let scale = if abs_max == 0.0 { 1.0 } else { abs_max };
         let inv = 1.0 / scale;
 
-        let bytes_per_vec = (dim + 1) / 2;
+        let bytes_per_vec = dim.div_ceil(2);
         let mut packed = vec![0u8; bytes_per_vec];
 
         let mut i = 0;
@@ -134,7 +134,7 @@ impl Nf4Vector {
         let scale = if abs_max == 0.0 { 1.0 } else { abs_max };
         let inv = 1.0 / scale;
 
-        let bytes_per_vec = (dim + 1) / 2;
+        let bytes_per_vec = dim.div_ceil(2);
         let mut packed = vec![0u8; bytes_per_vec];
 
         let mut i = 0;
@@ -205,8 +205,8 @@ unsafe fn avx2_abs_max(v: &[f32]) -> f32 {
 
     // Scalar tail
     let tail_start = chunks * 8;
-    for i in tail_start..n {
-        let val = v[i].abs();
+    for &x in &v[tail_start..n] {
+        let val = x.abs();
         if val > result {
             result = val;
         }
