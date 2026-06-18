@@ -1248,15 +1248,29 @@ fn ensure_finite(flat: &[f32], d: usize) -> PyResult<()> {
 /// abs-max quantisation with zero per-row heap allocation.
 ///
 /// Returns `(codes, scales)` where `codes` is shape [N, D] dtype `int8` and
-/// `scales` is shape [N] dtype `float32` (`abs_max / 127.0` per row).
+/// `scales` is shape [N] dtype `float32` (`abs_max / (127 · range_factor)` per
+/// row).
+///
+/// `range_factor` (rf, in `(0, 1]`, default `1.0`) reproduces the Python
+/// `VectroBatchProcessor` profiles: `1.0` = `fast` (max element → ±127),
+/// `0.95` = `balanced`, `0.90` = `quality` (headroom below ±127).  Codes use
+/// `round(v · 127 · rf / abs_max)`.
 ///
 /// Zero-copy on C-contiguous input; auto-vectorised inner loop (NEON/AVX2).
-/// Rejects non-finite (NaN/Inf) input with a `ValueError`.
+/// Rejects non-finite (NaN/Inf) input with a `ValueError`, and a
+/// `range_factor` outside `(0, 1]` with a `ValueError`.
 #[pyfunction]
+#[pyo3(signature = (vectors, range_factor = 1.0))]
 fn quantize_int8_batch<'py>(
     py: Python<'py>,
     vectors: PyReadonlyArray2<f32>,
+    range_factor: f32,
 ) -> PyResult<(&'py PyArray2<i8>, &'py PyArray1<f32>)> {
+    if !(range_factor > 0.0 && range_factor <= 1.0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "range_factor must be in (0, 1], got {range_factor}"
+        )));
+    }
     let arr = vectors.as_array();
     let (n, d) = (arr.nrows(), arr.ncols());
     let mut codes_flat = vec![0i8; n * d];
@@ -1264,12 +1278,16 @@ fn quantize_int8_batch<'py>(
     match arr.as_slice() {
         Some(flat) => {
             ensure_finite(flat, d)?;
-            vectro_lib::quant::int8::batch_encode_into(flat, n, d, &mut codes_flat, &mut scales);
+            vectro_lib::quant::int8::batch_encode_into_with_range(
+                flat, n, d, &mut codes_flat, &mut scales, range_factor,
+            );
         }
         None => {
             let flat: Vec<f32> = arr.iter().copied().collect();
             ensure_finite(&flat, d)?;
-            vectro_lib::quant::int8::batch_encode_into(&flat, n, d, &mut codes_flat, &mut scales);
+            vectro_lib::quant::int8::batch_encode_into_with_range(
+                &flat, n, d, &mut codes_flat, &mut scales, range_factor,
+            );
         }
     }
     let codes_arr = Array2::from_shape_vec((n, d), codes_flat)

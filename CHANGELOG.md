@@ -5,6 +5,47 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.6.0] — 2026-06-18 — INT8 batch path routed through the Rust SIMD kernel
+
+### Performance
+- `python/batch_api.py` — `VectroBatchProcessor.quantize_batch` (INT8 profiles)
+  now dispatches to the `vectro_py` Rust SIMD kernel
+  (`quantize_int8_batch`) when the extension is installed, falling back to the
+  NumPy path otherwise. The processor previously **always** used the NumPy
+  abs-max path even though the compiled kernel was available — leaving a
+  ~15-20× speedup on the table. End-to-end `VectroBatchProcessor` throughput at
+  d=1536 rises from ~42K to ~110K vec/s (the Python `list`/`np.stack` wrapper,
+  not the kernel at ~730K vec/s, is now the ceiling). This fixes the
+  `test_int8_throughput_minimum_floor[1536]` failure on x86 hosts, where the
+  NumPy path fell just below the 45K floor.
+
+### Added
+- `rust/vectro_lib/src/quant/int8.rs` — `batch_encode_into_with_range(input, n,
+  d, codes, scales, range_factor)`: threads a `range_factor` (rf, `(0, 1]`)
+  through the per-row SIMD encode so the effective scale is `abs_max / rf`
+  (codes use `127·rf/abs_max`). `batch_encode_into` is now a `rf = 1.0` wrapper.
+  This lets the Rust path reproduce the `balanced` (0.95) and `quality` (0.90)
+  profiles bit-for-bit modulo round-half-to-even vs round-half-away ties (≤1
+  level), with identical per-row scales — preserving Python-only mode as the
+  correctness baseline.
+- `rust/vectro_py/src/lib.rs` — `quantize_int8_batch(vectors, range_factor=1.0)`
+  gains an optional `range_factor` keyword (validated to `(0, 1]`,
+  `ValueError` otherwise). Backward compatible: existing one-arg calls are
+  unchanged (`rf = 1.0`).
+- `python/_rust_bridge.py` — `quantize_int8_batch(..., range_factor=1.0)`
+  passthrough.
+
+### Tests
+- `rust/vectro_lib` — `batch_encode_with_range_matches_baseline`: rf=1.0 is
+  bit-identical to `batch_encode_into`; rf∈{0.95, 0.90} matches the scalar
+  baseline codes/scales exactly.
+- `tests/test_python_api.py` — `test_rust_path_matches_numpy_baseline` (codes
+  ≤1 level, scales identical, cosine ≥ 0.9999 for all profiles) and
+  `test_numpy_fallback_when_rust_absent`.
+- `tests/test_cross_platform_benchmarks.py` — `test_rust_quantize_int8_batch_range_factor`
+  and `..._validation`; corrected the `test_int8_throughput_minimum_floor`
+  docstring to describe the end-to-end wrapper path it actually measures.
+
 ## [Unreleased] — 2026-06-15
 
 ### CI

@@ -76,6 +76,7 @@ def simd_tier() -> str:
 def quantize_int8_batch(
     vectors: np.ndarray,
     assume_normalized: bool = False,
+    range_factor: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Quantize [N, D] float32 array to INT8 using Rust SIMD.
 
@@ -90,11 +91,16 @@ def quantize_int8_batch(
         Caller asserts every row has ``||·||_2 ≤ 1``.  ~1.4× faster on
         memory-bandwidth-bound workloads at the cost of ~0.99 cosine
         recall floor instead of 0.9999.
+    range_factor : float, default 1.0
+        Headroom factor in ``(0, 1]`` matching the ``VectroBatchProcessor``
+        profiles (``1.0`` = fast, ``0.95`` = balanced, ``0.90`` = quality).
+        The per-row scale becomes ``abs_max / (127 · range_factor)``.
+        Ignored when ``assume_normalized`` is True (fixed scale ``1/127``).
 
     Returns
     -------
     codes  : np.ndarray, shape [N, D], dtype int8
-    scales : np.ndarray, shape [N],    dtype float32  (abs_max per row)
+    scales : np.ndarray, shape [N],    dtype float32  (abs_max / (127·rf))
 
     Raises
     ------
@@ -111,6 +117,8 @@ def quantize_int8_batch(
         arr = arr.reshape(1, -1)
     if assume_normalized and hasattr(_vectro_py, "quantize_int8_batch_normalized"):
         codes, scales = _vectro_py.quantize_int8_batch_normalized(arr)
+    elif range_factor != 1.0:
+        codes, scales = _vectro_py.quantize_int8_batch(arr, range_factor)
     else:
         codes, scales = _vectro_py.quantize_int8_batch(arr)
     if was_1d:

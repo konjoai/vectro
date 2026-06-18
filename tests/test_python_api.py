@@ -160,6 +160,61 @@ class TestBatchProcessing(unittest.TestCase):
         self.assertEqual(len(quantized), 256)
         self.assertIsInstance(scale, float)
 
+    def test_rust_path_matches_numpy_baseline(self):
+        """The Rust SIMD batch path must match the NumPy baseline numerically.
+
+        Python-only mode is the correctness baseline (CLAUDE.md): codes may
+        differ by at most one level at rounding ties, scales are identical, and
+        reconstruction cosine stays ≥ 0.9999 for every INT8 profile.
+        """
+        from python import _rust_bridge
+
+        if not _rust_bridge.is_available():
+            self.skipTest("vectro_py Rust extension not installed")
+
+        rng = np.random.default_rng(123)
+        vectors = rng.standard_normal((400, 384)).astype(np.float32)
+        profiles = {"fast": 1.0, "balanced": 0.95, "quality": 0.90}
+
+        for profile, rf in profiles.items():
+            result = self.processor.quantize_batch(vectors, profile)
+            codes = np.stack(result.quantized_vectors).astype(np.int16)
+
+            max_abs = np.max(np.abs(vectors), axis=1)
+            scales_np = np.where(max_abs == 0, 1.0, max_abs / (127.0 * rf)).astype(np.float32)
+            codes_np = np.clip(np.round(vectors / scales_np[:, None]), -127, 127).astype(np.int16)
+
+            self.assertTrue(
+                np.allclose(result.scales, scales_np, rtol=1e-5, atol=1e-8),
+                f"{profile}: scales diverge from NumPy baseline",
+            )
+            max_code_diff = int(np.abs(codes - codes_np).max())
+            self.assertLessEqual(max_code_diff, 1, f"{profile}: code diff {max_code_diff} > 1")
+
+            recon = result.reconstruct_batch()
+            cos = np.sum(vectors * recon, axis=1) / (
+                np.linalg.norm(vectors, axis=1) * np.linalg.norm(recon, axis=1) + 1e-12
+            )
+            self.assertGreaterEqual(float(cos.min()), 0.9999, f"{profile}: cosine floor")
+
+    def test_numpy_fallback_when_rust_absent(self):
+        """With the Rust extension unavailable, the NumPy path must still work."""
+        from python import _rust_bridge
+
+        original = _rust_bridge._vectro_py
+        _rust_bridge._vectro_py = None  # force is_available() → False
+        try:
+            result = self.processor.quantize_batch(self.test_vectors, "balanced")
+            self.assertEqual(result.batch_size, 500)
+            self.assertEqual(np.stack(result.quantized_vectors).shape, (500, 256))
+            recon = result.reconstruct_batch()
+            cos = np.sum(self.test_vectors * recon, axis=1) / (
+                np.linalg.norm(self.test_vectors, axis=1) * np.linalg.norm(recon, axis=1) + 1e-12
+            )
+            self.assertGreaterEqual(float(cos.min()), 0.9999)
+        finally:
+            _rust_bridge._vectro_py = original
+
     def test_streaming_quantization(self):
         """Test streaming quantization for large datasets."""
         large_vectors = np.random.randn(2500, 128).astype(np.float32)

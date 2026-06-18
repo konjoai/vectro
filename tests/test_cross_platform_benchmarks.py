@@ -157,12 +157,19 @@ class TestINT8Throughput:
     )
     @pytest.mark.parametrize("dimension", [128, 384, 768, 1536])
     def test_int8_throughput_minimum_floor(self, dimension, random_vectors):
-        """INT8 throughput must meet dimension-scaled floor (Rust SIMD path).
+        """End-to-end `VectroBatchProcessor` INT8 throughput must meet a
+        dimension-scaled floor.
+
+        This measures the full Python batch wrapper — abs-max quantize plus the
+        ``list(codes)`` / ``np.stack`` round-trip the dataclass contract
+        requires — which dispatches to the Rust SIMD kernel (NEON/AVX2/AVX-512)
+        when ``vectro_py`` is installed.  The wrapper overhead keeps these
+        floors well below the raw-kernel numbers asserted by
+        ``test_rust_int8_throughput_*`` (≥500K-1M vec/s).
 
         Floors: 120K (d=128), 80K (d=384), 60K (d=768), 45K (d=1536). Throughput
         scales roughly inversely with dimension, so a flat 60K gate over-penalizes
         large-dim paths. Uses best-of-5 to avoid OS scheduler jitter.
-        These floors are calibrated for the Rust SIMD path (vectro_py installed).
         """
         # Throughput scales roughly inversely with dimension; use proportional floors.
         FLOOR = {128: 120_000, 384: 80_000, 768: 60_000, 1536: 45_000}[dimension]
@@ -243,6 +250,31 @@ class TestRustSIMDPath:
         vectors = random_vectors(dim=768, num_vectors=100)
         _, scales = vectro_py.quantize_int8_batch(vectors)
         assert np.all(scales > 0), "All scales must be positive"
+
+    def test_rust_quantize_int8_batch_range_factor(self, random_vectors):
+        """`range_factor` < 1 scales the per-row scale by 1/rf and matches the
+        NumPy baseline within one rounding-tie level."""
+        import vectro_py
+
+        vectors = np.ascontiguousarray(random_vectors(dim=384, num_vectors=300))
+        rf = 0.95
+        codes, scales = vectro_py.quantize_int8_batch(vectors, range_factor=rf)
+
+        max_abs = np.max(np.abs(vectors), axis=1)
+        scales_np = (max_abs / (127.0 * rf)).astype(np.float32)
+        codes_np = np.clip(np.round(vectors / scales_np[:, None]), -127, 127).astype(np.int16)
+
+        assert np.allclose(scales, scales_np, rtol=1e-5, atol=1e-8)
+        assert int(np.abs(codes.astype(np.int16) - codes_np).max()) <= 1
+
+    def test_rust_quantize_int8_batch_range_factor_validation(self, random_vectors):
+        """`range_factor` outside (0, 1] must raise ValueError."""
+        import vectro_py
+
+        vectors = np.ascontiguousarray(random_vectors(dim=128, num_vectors=8))
+        for bad in (0.0, -0.5, 1.5):
+            with pytest.raises(ValueError):
+                vectro_py.quantize_int8_batch(vectors, range_factor=bad)
 
     def test_rust_dequantize_roundtrip_quality(self, random_vectors):
         """Rust INT8 round-trip must meet ≥0.9997 cosine similarity."""
