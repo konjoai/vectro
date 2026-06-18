@@ -47,6 +47,13 @@ class BatchQuantizationResult:
             return dequantize_binary(self.quantized_vectors[index].reshape(1, -1), self.vector_dim)[
                 0
             ]
+        if self.precision_mode in ("sq2", "sq3"):
+            from .scalar_quant import dequantize_sq2, dequantize_sq3
+
+            decode = dequantize_sq2 if self.precision_mode == "sq2" else dequantize_sq3
+            packed = np.asarray(self.quantized_vectors[index], dtype=np.uint8).reshape(1, -1)
+            scale = np.asarray([self.scales[index]], dtype=np.float32)
+            return decode(packed, scale, self.vector_dim)[0]
         quantized, scale = self.get_vector(index)
         if self.precision_mode == "int4":
             return dequantize_int4(
@@ -70,6 +77,14 @@ class BatchQuantizationResult:
 
             packed = np.stack(self.quantized_vectors)
             return dequantize_binary(packed, self.vector_dim)
+
+        if self.precision_mode in ("sq2", "sq3"):
+            from .scalar_quant import dequantize_sq2, dequantize_sq3
+
+            decode = dequantize_sq2 if self.precision_mode == "sq2" else dequantize_sq3
+            packed = np.asarray(self.quantized_vectors, dtype=np.uint8)
+            scales = np.asarray(self.scales, dtype=np.float32)
+            return decode(packed, scales, self.vector_dim)
 
         # INT8: vectorized reconstruct — stack codes once and broadcast the
         # per-vector scales, avoiding a Python-level loop over every row.

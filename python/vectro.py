@@ -41,7 +41,7 @@ _STORAGE_FORMAT_VERSION = 2
 _STORAGE_FORMAT_NAME = "vectro_npz"
 
 # Valid precision modes and backends exposed at the module boundary.
-_VALID_PRECISION_MODES = frozenset({"int8", "nf4", "binary", "int4", "int2"})
+_VALID_PRECISION_MODES = frozenset({"int8", "nf4", "binary", "int4", "int2", "sq2", "sq3"})
 _VALID_BACKENDS = frozenset({"auto", "mojo", "rust", "python"})
 _VALID_PROFILES = frozenset({"fast", "balanced", "quality", "ultra", "binary", "int8", "nf4"})
 
@@ -63,7 +63,8 @@ class QuantizationConfig:
     Attributes
     ----------
     precision_mode : Quantization method.  One of ``"int8"`` (default), ``"nf4"``,
-        ``"binary"``, ``"int4"``, ``"int2"``.
+        ``"binary"``, ``"int4"``, ``"int2"``, ``"sq2"`` (2-bit scalar), or
+        ``"sq3"`` (3-bit scalar).
     profile : Named compression profile.  When set, ``profile`` supplies defaults
         for ``precision_mode`` and ``group_size`` unless those fields are given
         explicitly.  One of ``"fast"``, ``"balanced"``, ``"quality"``, ``"ultra"``,
@@ -219,7 +220,7 @@ class Vectro:
         Args:
             vectors: Input vectors to compress (single vector or batch)
             profile: Compression profile to use (None = use default)
-            precision_mode: Override quantization method (int8, nf4, binary, int4)
+            precision_mode: Override quantization method (int8, nf4, binary, int4, sq2, sq3)
             return_quality_metrics: Return quality analysis alongside results
             model_dir: Path to a HuggingFace model directory for auto-routing
             config: Optional :class:`QuantizationConfig` instance.  When provided,
@@ -308,6 +309,26 @@ class Vectro:
                     )
                     return single_result, quality
                 return single_result
+            if requested_precision in ("sq2", "sq3"):
+                from .scalar_quant import quantize_sq2, quantize_sq3
+
+                encode = quantize_sq2 if requested_precision == "sq2" else quantize_sq3
+                packed, sq_scales = encode(vectors)  # (1, ceil), (1,)
+                single_result = QuantizationResult(
+                    quantized=packed[0],
+                    scales=np.asarray(sq_scales[0:1], dtype=np.float32),
+                    dims=vectors.shape[1],
+                    n=1,
+                    precision_mode=requested_precision,
+                    group_size=0,
+                )
+                if return_quality_metrics:
+                    reconstructed = self.decompress(single_result)
+                    quality = self.quality_analyzer.evaluate_quality(
+                        vectors, reconstructed.reshape(1, -1)
+                    )
+                    return single_result, quality
+                return single_result
             quantized_result = quantize_embeddings(
                 vectors,
                 backend=self.backend,
@@ -357,6 +378,25 @@ class Vectro:
                     total_original_bytes=orig_bytes,
                     total_compressed_bytes=comp_bytes,
                     precision_mode="binary",
+                    group_size=0,
+                )
+            elif requested_precision in ("sq2", "sq3"):
+                from .scalar_quant import quantize_sq2, quantize_sq3
+
+                encode = quantize_sq2 if requested_precision == "sq2" else quantize_sq3
+                n, d = vectors.shape
+                packed, sq_scales = encode(vectors)
+                orig_bytes = n * d * 4
+                comp_bytes = int(packed.nbytes + sq_scales.nbytes)
+                result = BatchQuantizationResult(
+                    quantized_vectors=[packed[i] for i in range(n)],
+                    scales=sq_scales.astype(np.float32),
+                    batch_size=n,
+                    vector_dim=d,
+                    compression_ratio=float(orig_bytes) / float(comp_bytes),
+                    total_original_bytes=orig_bytes,
+                    total_compressed_bytes=comp_bytes,
+                    precision_mode=requested_precision,
                     group_size=0,
                 )
             elif self.enable_batch_optimization and len(vectors) > 1:
@@ -438,6 +478,17 @@ class Vectro:
                 if packed.ndim == 1:
                     packed = packed.reshape(1, -1)
                 reconstructed = dequantize_binary(packed, result.dims)
+                return reconstructed[0] if result.n == 1 else reconstructed
+            if getattr(result, "precision_mode", "") in ("sq2", "sq3"):
+                from .scalar_quant import dequantize_sq2, dequantize_sq3
+
+                decode = dequantize_sq2 if result.precision_mode == "sq2" else dequantize_sq3
+                packed = result.quantized
+                if packed.ndim == 1:
+                    packed = packed.reshape(1, -1)
+                reconstructed = decode(
+                    packed, np.asarray(result.scales, dtype=np.float32), result.dims
+                )
                 return reconstructed[0] if result.n == 1 else reconstructed
             recon = reconstruct_embeddings(result, backend=self.backend)
             # Single-vector QuantizationResult: squeeze (1, d) → (d,)
