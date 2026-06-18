@@ -1,7 +1,7 @@
 # Vectro — Plan
 
-> Last updated: 2026-05-19
-> Current version: **5.5.0** (Python) / **8.0.0** (Rust) — quantization audit, QuantizationAuditor, QuantizationReport, VectorPairMetrics, RecallResult.
+> Last updated: 2026-06-18
+> Current version: **5.6.0** (Python) / **8.1.0** (Rust) — INT8 batch path routed through the Rust SIMD kernel with `range_factor` profile parity.
 
 ---
 
@@ -42,6 +42,42 @@ user impact × implementation cost.
 | **Persistent HNSW on disk** | `save(path)` / `load(path)` upgraded from pickle to numpy `.npz` format — no arbitrary code execution on load, magic-byte detection, backward-compat DeprecationWarning for old pickle files. | ✅ v5.2.0 (HNSW) |
 | **Multi-vector per document** | Multiple embeddings per document ID (title + body), max-pool distances. | ⬜ Planned |
 | **Namespace partitioning** | Logical namespaces within a collection, isolated HNSW graphs, unified cross-namespace search. | ⬜ Planned |
+
+---
+
+## v5.6.0 — INT8 batch path → Rust SIMD kernel ✅ COMPLETE (2026-06-18)
+
+### Summary
+`VectroBatchProcessor.quantize_batch` always used the NumPy abs-max path for
+INT8 — even when the compiled `vectro_py` SIMD kernel was installed — leaving a
+~15-20× speedup unused and dropping the d=1536 end-to-end throughput just below
+its 45K vec/s floor on x86 hosts. Routing the batch path through the kernel
+(with a NumPy fallback) fixes both. Shipped as PR #36; the throughput-test
+de-jitter follow-up shipped on top.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `VectroBatchProcessor` INT8 profiles dispatch to `vectro_py.quantize_int8_batch` when the extension is present; NumPy fallback otherwise | ✅ |
+| 2 | `batch_encode_into_with_range(..., range_factor)` in `vectro_lib` — threads rf through the per-row SIMD encode (effective scale `abs_max/rf`); `batch_encode_into` is now a `rf=1.0` wrapper | ✅ |
+| 3 | `quantize_int8_batch(vectors, range_factor=1.0)` PyO3 keyword, validated to `(0, 1]`; backward compatible | ✅ |
+| 4 | `_rust_bridge` / `batch_api` thread `range_factor`; new Rust + Python parity/fallback/validation tests | ✅ |
+| 5 | De-jitter `test_rust_int8_throughput_{1m_floor,cross_dimension}` to best-of-5 with warm-up (floors unchanged) | ✅ |
+
+### Results
+- d=1536 end-to-end `VectroBatchProcessor`: ~42K → ~110K vec/s (raw kernel
+  ~730K; the `list`/`np.stack` wrapper is the remaining ceiling).
+- Numeric parity vs the NumPy baseline (the correctness baseline): scales
+  identical, codes differ by ≤1 level only at round-half-to-even vs
+  round-half-away ties, cosine ≥ 0.9999 across `fast`/`balanced`/`quality`.
+
+### Rejected: fused single-pass kernel for the batch path
+Measured (`int8_fused_bench`, n=100k × d=768): two-pass **7.72 Gelem/s** vs
+rayon-fused **5.17 Gelem/s** — fused is **~33% slower**. At d=768 a 3 KB row
+already fits L1, so the two-pass second read is a cache hit and the fused
+buffer-copy is pure overhead. The two-pass abs-max kernel is optimal here; the
+1M-floor flakiness was a measurement-statistic issue (mean-of-3 vs best-of-5),
+not a kernel-speed issue (peak on the x86 CI runner is ~1.5-2M vec/s).
 
 ---
 
