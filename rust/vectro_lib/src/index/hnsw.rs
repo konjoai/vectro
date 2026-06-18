@@ -279,9 +279,12 @@ impl HnswIndex {
     }
 
     /// Insert a batch of vectors.
-    pub fn add_batch(&mut self, vectors: &[Vec<f32>]) {
+    ///
+    /// Generic over `AsRef<[f32]>` so callers can pass borrowed row slices
+    /// (e.g. `&[&[f32]]` over a contiguous buffer) without an owning copy.
+    pub fn add_batch<V: AsRef<[f32]>>(&mut self, vectors: &[V]) {
         for v in vectors {
-            self.add(v);
+            self.add(v.as_ref());
         }
     }
 

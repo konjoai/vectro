@@ -824,12 +824,19 @@ impl PyIvfIndex {
     fn train_np(&mut self, array: PyReadonlyArray2<f32>, max_iter: usize, seed: u64) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
-        let vecs: Vec<Vec<f32>> = match arr.as_slice() {
-            Some(flat) => (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect(),
-            None => arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect(),
-        };
-        self.inner.train(&vecs, max_iter, seed)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+        // Borrow contiguous rows directly; only copy when the array is strided.
+        match arr.as_slice() {
+            Some(flat) => {
+                let rows: Vec<&[f32]> = (0..n).map(|i| &flat[i * d..(i + 1) * d]).collect();
+                self.inner.train(&rows, max_iter, seed)
+            }
+            None => {
+                let owned: Vec<Vec<f32>> =
+                    arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
+                self.inner.train(&owned, max_iter, seed)
+            }
+        }
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
     }
 
     /// Add a single vector; returns its global id.
@@ -842,12 +849,14 @@ impl PyIvfIndex {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
         if let Some(flat) = arr.as_slice() {
-            self.inner.add_batch(
-                &(0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect::<Vec<_>>(),
-            );
+            for i in 0..n {
+                self.inner.add(&flat[i * d..(i + 1) * d]);
+            }
         } else {
-            let vecs: Vec<Vec<f32>> = arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
-            self.inner.add_batch(&vecs);
+            for row in arr.rows() {
+                let v: Vec<f32> = row.iter().copied().collect();
+                self.inner.add(&v);
+            }
         }
         Ok(())
     }
@@ -969,12 +978,19 @@ impl PyIvfPqIndex {
     ) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
-        let vecs: Vec<Vec<f32>> = match arr.as_slice() {
-            Some(flat) => (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect(),
-            None => arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect(),
-        };
-        self.inner.train(&vecs, n_subspaces, n_centroids, max_iter, seed)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+        // Borrow contiguous rows directly; only copy when the array is strided.
+        match arr.as_slice() {
+            Some(flat) => {
+                let rows: Vec<&[f32]> = (0..n).map(|i| &flat[i * d..(i + 1) * d]).collect();
+                self.inner.train(&rows, n_subspaces, n_centroids, max_iter, seed)
+            }
+            None => {
+                let owned: Vec<Vec<f32>> =
+                    arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
+                self.inner.train(&owned, n_subspaces, n_centroids, max_iter, seed)
+            }
+        }
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
     }
 
     /// Add a single vector; returns its global id.
@@ -986,11 +1002,16 @@ impl PyIvfPqIndex {
     fn add_np(&mut self, array: PyReadonlyArray2<f32>) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
-        let vecs: Vec<Vec<f32>> = match arr.as_slice() {
-            Some(flat) => (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect(),
-            None => arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect(),
-        };
-        for v in &vecs { self.inner.add(v); }
+        if let Some(flat) = arr.as_slice() {
+            for i in 0..n {
+                self.inner.add(&flat[i * d..(i + 1) * d]);
+            }
+        } else {
+            for row in arr.rows() {
+                let v: Vec<f32> = row.iter().copied().collect();
+                self.inner.add(&v);
+            }
+        }
         Ok(())
     }
 

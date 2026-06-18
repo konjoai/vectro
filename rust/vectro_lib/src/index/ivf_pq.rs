@@ -212,9 +212,9 @@ impl IvfPqIndex {
     /// * `n_centroids`   — PQ centroids K per sub-space; ≤ 256
     /// * `max_iter`      — Lloyd's iterations for both k-means passes
     /// * `seed`          — RNG seed
-    pub fn train(
+    pub fn train<V: AsRef<[f32]>>(
         &mut self,
-        training_data: &[Vec<f32>],
+        training_data: &[V],
         n_subspaces: usize,
         n_centroids: usize,
         max_iter: usize,
@@ -230,11 +230,11 @@ impl IvfPqIndex {
                 training_data.len()
             ));
         }
-        let d = training_data[0].len();
+        let d = training_data[0].as_ref().len();
         if d == 0 {
             return Err("vector dimension is 0".into());
         }
-        if !training_data.iter().all(|v| v.len() == d) {
+        if !training_data.iter().all(|v| v.as_ref().len() == d) {
             return Err("training vectors have inconsistent lengths".into());
         }
 
@@ -242,6 +242,7 @@ impl IvfPqIndex {
         let normed: Vec<Vec<f32>> = training_data
             .iter()
             .map(|v| {
+                let v = v.as_ref();
                 let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
                 v.iter().map(|x| x / norm).collect()
             })
