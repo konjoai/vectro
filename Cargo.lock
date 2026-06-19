@@ -2551,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "vectro_lib"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2574,7 +2574,7 @@ dependencies = [
 
 [[package]]
 name = "vectro_py"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "half",
  "ndarray",

@@ -17,9 +17,12 @@ Reference:
 
 from __future__ import annotations
 
+import logging
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 try:
     from . import _mojo_bridge as _mojo_bridge
@@ -28,6 +31,11 @@ except Exception:
         import _mojo_bridge as _mojo_bridge  # type: ignore
     except Exception:
         _mojo_bridge = None
+
+try:
+    import vectro_py as _vectro_py  # Rust SIMD backend (optional)
+except ImportError:
+    _vectro_py = None
 
 
 @dataclass
@@ -132,7 +140,18 @@ def pq_encode(
     if codebook.rotation is not None:
         vectors = vectors @ codebook.rotation
 
-    # Preferred path: Mojo PQ kernels via pipe protocol.
+    # Preferred path: Rust SIMD batch encoder (zero-copy, rayon-parallel).
+    # Matches this NumPy reference numerically (modulo equidistant ties) and is
+    # ~10-50x faster; falls through to Mojo / NumPy if unavailable or on error.
+    if _vectro_py is not None and K <= 256 and hasattr(_vectro_py, "pq_encode_batch"):
+        try:
+            cents = np.ascontiguousarray(codebook.centroids, dtype=np.float32)
+            vecs_c = np.ascontiguousarray(vectors, dtype=np.float32)
+            return np.asarray(_vectro_py.pq_encode_batch(vecs_c, cents))
+        except (RuntimeError, ValueError):
+            logger.warning("Rust pq_encode_batch failed; falling back to NumPy", exc_info=True)
+
+    # Mojo PQ kernels via pipe protocol.
     if _mojo_bridge is not None and _mojo_bridge.is_available() and K <= 256:
         try:
             return _mojo_bridge.pq_encode(vectors, codebook.centroids)

@@ -5,6 +5,33 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.7.0] — 2026-06-18 — PQ encode routed through the Rust SIMD kernel
+
+### Performance
+- `python/pq_api.py` — `pq_encode` now dispatches to a new zero-copy,
+  rayon-parallel Rust kernel (`vectro_py.pq_encode_batch`) when the extension is
+  installed, falling back to Mojo / NumPy otherwise. Like the v5.6.0 INT8 work,
+  a fast Rust PQ path already existed but the Python API only used the
+  per-sub-space NumPy loop. **~6.4× faster** (glove-100-style d=100, M=25,
+  K=256: ~30K → ~192K vec/s) with **perfect code parity** to the NumPy baseline
+  (identical reconstruction; only rare equidistant ties may differ by the
+  distance formula). Still trails FAISS `IndexPQ` (~870K vec/s) — an explicit
+  SIMD distance-table encoder is the next step.
+
+### Added
+- `rust/vectro_lib/src/quant/pq.rs` — `pq_encode_into(vectors, &PQCodebook,
+  codes_out)`: flat-slice, rayon-parallel batch PQ encode with no per-row heap
+  allocation.
+- `rust/vectro_py/src/lib.rs` — `pq_encode_batch(vectors, centroids)` PyO3
+  function: encodes an `[N, D]` f32 array against an `[M, K, sub_dim]` centroid
+  table, returns `[N, M]` uint8 codes (`K ≤ 256`, validated).
+
+### Tests
+- `rust/vectro_lib` — `pq_encode_into_matches_encode_one` (bit-identical to the
+  per-row reference).
+- `tests/test_pq.py` — `TestPQRustPath`: Rust-vs-NumPy code agreement ≥ 0.999
+  and identical reconstruction cosine; dep-gated skip when `vectro_py` absent.
+
 ## [5.6.0] — 2026-06-18 — INT8 batch path routed through the Rust SIMD kernel
 
 ### Performance
