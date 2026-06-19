@@ -1,6 +1,6 @@
 [package]
 name = "vectro_py"
-version = "8.1.0"
+version = "8.2.0"
 edition = "2021"
 authors = ["Wesley Scholl <128409641+wesleyscholl@users.noreply.github.com>"]
 description = "Python bindings for Vectro high-performance vector compression and search"

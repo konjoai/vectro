@@ -7,7 +7,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3};
 use ndarray::{Array1, Array2};
 use vectro_lib::{Embedding, EmbeddingDataset};
 use vectro_lib::search::{SearchIndex, QuantizedIndex};
@@ -1418,6 +1418,47 @@ fn dequantize_int8_batch<'py>(
     Ok(out_arr.into_pyarray(py))
 }
 
+/// Batch PQ-encode an [N, D] float32 array against a trained centroid table.
+///
+/// `centroids` has shape `[M, K, sub_dim]` (`K ≤ 256`, `D == M * sub_dim`).
+/// Returns codes of shape `[N, M]` dtype `uint8` — the nearest centroid index
+/// per sub-space.  Rayon-parallel; numerically matches the NumPy reference in
+/// `python/pq_api.py` (modulo equidistant-tie selection).  This is the fast
+/// path that lets `pq_api.pq_encode` skip the per-sub-space NumPy loop.
+#[pyfunction]
+fn pq_encode_batch<'py>(
+    py: Python<'py>,
+    vectors: PyReadonlyArray2<f32>,
+    centroids: PyReadonlyArray3<f32>,
+) -> PyResult<&'py PyArray2<u8>> {
+    let varr = vectors.as_array();
+    let (n, d) = (varr.nrows(), varr.ncols());
+    let cdims = centroids.shape();
+    let (m, k, sub_dim) = (cdims[0], cdims[1], cdims[2]);
+
+    if k > 256 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "PQ requires K ≤ 256 (got {k})"
+        )));
+    }
+    if m * sub_dim != d {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "centroid shape M*sub_dim ({m}*{sub_dim}) != vector dim {d}"
+        )));
+    }
+
+    let vflat: Vec<f32> = varr.iter().copied().collect();
+    let cflat: Vec<f32> = centroids.as_array().iter().copied().collect();
+    let cb = pq::PQCodebook { n_subspaces: m, n_centroids: k, sub_dim, centroids: cflat };
+
+    let mut codes_flat = vec![0u8; n * m];
+    pq::pq_encode_into(&vflat, &cb, &mut codes_flat);
+
+    let codes_arr = Array2::from_shape_vec((n, m), codes_flat)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(codes_arr.into_pyarray(py))
+}
+
 // ─────────────────────── BM25 + Hybrid Search (v6.0.0) ─────────────────────
 
 /// Okapi BM25 full-text index (Python binding).
@@ -1548,6 +1589,7 @@ fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(quantize_int8_batch_normalized, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_int8_batch_from_f16, m)?)?;
     m.add_function(wrap_pyfunction!(dequantize_int8_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(pq_encode_batch, m)?)?;
     // BM25 + hybrid search (v6.0.0)
     m.add_class::<PyBM25Index>()?;
     m.add_function(wrap_pyfunction!(hybrid_search_py, m)?)?;

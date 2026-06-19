@@ -120,5 +120,52 @@ class TestPQCompressionRatio(unittest.TestCase):
         self.assertAlmostEqual(ratio, 32.0, places=3)
 
 
+@unittest.skipUnless(_SKLEARN, "scikit-learn required for PQ tests")
+class TestPQRustPath(unittest.TestCase):
+    """The Rust SIMD encode path must match the NumPy reference numerically."""
+
+    def setUp(self):
+        import python.pq_api as _pq
+
+        self._pq = _pq
+        if _pq._vectro_py is None or not hasattr(_pq._vectro_py, "pq_encode_batch"):
+            self.skipTest("vectro_py Rust extension (pq_encode_batch) not installed")
+        rng = np.random.default_rng(7)
+        self.train = rng.standard_normal((2000, 64)).astype(np.float32)
+        self.data = rng.standard_normal((1500, 64)).astype(np.float32)
+        self.cb = train_pq_codebook(self.train, n_subspaces=8, n_centroids=64, max_iter=10)
+
+    def _numpy_codes(self):
+        saved = self._pq._vectro_py
+        self._pq._vectro_py = None
+        try:
+            return pq_encode(self.data, self.cb)
+        finally:
+            self._pq._vectro_py = saved
+
+    def test_rust_matches_numpy_codes(self):
+        codes_rust = pq_encode(self.data, self.cb)
+        codes_np = self._numpy_codes()
+        self.assertEqual(codes_rust.shape, codes_np.shape)
+        self.assertEqual(codes_rust.dtype, np.uint8)
+        # Codes agree except at rare equidistant ties (different formula); the
+        # decoded reconstruction is identical in quality regardless.
+        agreement = float((codes_rust == codes_np).mean())
+        self.assertGreaterEqual(agreement, 0.999, f"code agreement {agreement:.4f} < 0.999")
+
+    def test_rust_reconstruction_matches_numpy(self):
+        rec_rust = pq_decode(pq_encode(self.data, self.cb), self.cb)
+        rec_np = pq_decode(self._numpy_codes(), self.cb)
+
+        def mean_cos(a, b):
+            num = (a * b).sum(axis=1)
+            den = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1) + 1e-8
+            return float((num / den).mean())
+
+        self.assertAlmostEqual(
+            mean_cos(self.data, rec_rust), mean_cos(self.data, rec_np), places=4
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
