@@ -673,8 +673,12 @@ impl PyHnswIndex {
     }
 
     /// Batch search: queries shape [Q, D], returns list of lists of (id, dist).
+    ///
+    /// Parallelised across queries (rayon, in the Rust core) — the GIL is
+    /// released so other Python threads run while the search fans out.
     fn search_batch_np(
         &self,
+        py: Python<'_>,
         queries: PyReadonlyArray2<f32>,
         k: usize,
         ef: usize,
@@ -682,17 +686,11 @@ impl PyHnswIndex {
         let arr = queries.as_array();
         let (q, d) = (arr.nrows(), arr.ncols());
         if let Some(flat) = arr.as_slice() {
-            (0..q)
-                .map(|i| self.inner.search(&flat[i * d..(i + 1) * d], k, ef))
-                .collect()
+            py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, ef))
         } else {
-            arr.rows()
-                .into_iter()
-                .map(|row| {
-                    let v: Vec<f32> = row.iter().copied().collect();
-                    self.inner.search(&v, k, ef)
-                })
-                .collect()
+            // Non-contiguous fallback: materialise then search in parallel.
+            let owned: Vec<f32> = arr.iter().copied().collect();
+            py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, ef))
         }
     }
 
@@ -1112,6 +1110,25 @@ macro_rules! quant_hnsw_pyclass {
                         let v: Vec<f32> = q.iter().copied().collect();
                         self.inner.search(&v, k, ef)
                     }
+                }
+            }
+
+            /// Batch search: queries shape [Q, D], parallelised across queries
+            /// (rayon) with the GIL released. Returns one (id, dist) list per row.
+            fn search_batch_np(
+                &self,
+                py: Python<'_>,
+                queries: PyReadonlyArray2<f32>,
+                k: usize,
+                ef: usize,
+            ) -> Vec<Vec<(usize, f32)>> {
+                let arr = queries.as_array();
+                let d = arr.ncols();
+                if let Some(flat) = arr.as_slice() {
+                    py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, ef))
+                } else {
+                    let owned: Vec<f32> = arr.iter().copied().collect();
+                    py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, ef))
                 }
             }
 

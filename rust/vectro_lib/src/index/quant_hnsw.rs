@@ -639,6 +639,26 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         res.into_iter().take(k).map(|(d, id)| (id, d)).collect()
     }
 
+    /// Batch k-NN search over a row-major `[q, d]` flat query buffer, run in
+    /// parallel across queries (rayon). Search is `&self`/read-only, so queries
+    /// are independent — scales with cores for batched/serving workloads.
+    pub fn search_batch_flat(
+        &self,
+        flat: &[f32],
+        d: usize,
+        k: usize,
+        ef: usize,
+    ) -> Vec<Vec<(usize, f32)>> {
+        if d == 0 {
+            return Vec::new();
+        }
+        let q = flat.len() / d;
+        (0..q)
+            .into_par_iter()
+            .map(|i| self.search(&flat[i * d..(i + 1) * d], k, ef))
+            .collect()
+    }
+
     /// Compute mean recall@k over a set of queries.
     pub fn recall_at_k(
         &self,
