@@ -473,7 +473,11 @@ pub(crate) fn encode_fast_into(v: &[f32], out: &mut [i8]) -> f32 {
             return crate::quant::accelerate::encode_accelerate_into(v, out);
         }
 
-        // 3. NEON 32-wide (always available on any ARMv8 / Apple Silicon).
+        // 3. NEON 32-wide two-pass (always available on any ARMv8 / Apple
+        //    Silicon). NOTE: the "fused" single-pass kernel was measured
+        //    *slower* here — it zero-inits a 16 KiB stack buffer per row and
+        //    the row already stays L1-resident between the two passes at
+        //    production dims, so two-pass wins. See encode_neon_fused_into.
         // SAFETY: AArch64-v8 mandates NEON; no runtime probe needed.
         #[cfg(not(target_feature = "sme"))]
         return unsafe { encode_neon_into(v, out) };
@@ -489,7 +493,8 @@ pub(crate) fn encode_fast_into(v: &[f32], out: &mut [i8]) -> f32 {
             return unsafe { encode_avx512_vnni_into(v, out) };
         }
         if is_x86_feature_detected!("avx2") {
-            // SAFETY: guarded by runtime AVX2 feature detection.
+            // SAFETY: guarded by runtime AVX2 feature detection. (Two-pass; the
+            // fused kernel was measured slower — see the NEON note above.)
             return unsafe { encode_avx2_into(v, out) };
         }
     }
