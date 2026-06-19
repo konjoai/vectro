@@ -59,6 +59,27 @@ impl BinaryVector {
         }).collect()
     }
 
+    /// Asymmetric cosine distance to a full-precision unit query, computed
+    /// directly from the packed sign bits — no `decode()` allocation.
+    ///
+    /// Equivalent to `cosine_dist_f32(&self.decode(), query)`: decoded values
+    /// are ±1 so the norm is `sqrt(dim)` and the dot is `Σ ±query_i`. Called
+    /// per candidate during HNSW search, so avoiding the per-call `Vec<f32>` is
+    /// a large win.
+    #[inline]
+    pub fn cosine_dist_to_query(&self, query: &[f32]) -> f32 {
+        let mut dot = 0.0f32;
+        for (i, &q) in query.iter().enumerate().take(self.dim) {
+            let bit = (self.packed[i / 8] >> (i % 8)) & 1;
+            dot += if bit == 1 { q } else { -q };
+        }
+        let norm = (self.dim as f32).sqrt();
+        if norm < 1e-8 {
+            return 1.0;
+        }
+        (1.0 - dot / norm).max(0.0)
+    }
+
     /// Hamming distance to another BinaryVector of the same dimension.
     ///
     /// Uses SimSIMD's SIMD popcount path (NEON/SVE on ARM, Haswell/Ice on x86)

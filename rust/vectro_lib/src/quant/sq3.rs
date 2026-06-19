@@ -70,6 +70,35 @@ impl Sq3Vector {
         Self { packed, scale, dim }
     }
 
+    /// Asymmetric cosine distance to a full-precision query, computed directly
+    /// from the packed 3-bit codes — no `decode()` allocation. Equivalent to
+    /// `cosine_dist_f32(&self.decode(), query)`.
+    #[inline]
+    pub fn cosine_dist_to_query(&self, query: &[f32]) -> f32 {
+        let mut dot = 0.0f32;
+        let mut norm_sq = 0.0f32;
+        for (i, &q) in query.iter().enumerate().take(self.dim) {
+            let bit_pos = i * 3;
+            let byte_idx = bit_pos / 8;
+            let bit_shift = bit_pos % 8;
+            let code = if bit_shift <= 5 {
+                (self.packed[byte_idx] >> bit_shift) & 0x7
+            } else {
+                let lo = self.packed[byte_idx] >> bit_shift;
+                let hi = self.packed[byte_idx + 1] << (8 - bit_shift);
+                (lo | hi) & 0x7
+            };
+            let dv = self.scale * ((2 * code as i32 - 7) as f32 / 8.0);
+            dot += dv * q;
+            norm_sq += dv * dv;
+        }
+        let norm = norm_sq.sqrt();
+        if norm < 1e-8 {
+            return 1.0;
+        }
+        (1.0 - dot / norm).max(0.0)
+    }
+
     /// Decode back to approximate f32.
     ///
     /// Reconstruction levels: `(2 * code − 7) / 8 * scale`.

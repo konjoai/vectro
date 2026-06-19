@@ -153,6 +153,35 @@ impl Nf4Vector {
         Self { packed, scale, dim }
     }
 
+    /// Asymmetric cosine distance to a full-precision query, computed directly
+    /// from the packed nibbles via codebook lookup — no `decode()` allocation.
+    /// Equivalent to `cosine_dist_f32(&self.decode(), query)`.
+    #[inline]
+    pub fn cosine_dist_to_query(&self, query: &[f32]) -> f32 {
+        let mut dot = 0.0f32;
+        let mut norm_sq = 0.0f32;
+        let mut i = 0;
+        while i + 1 < self.dim {
+            let byte = self.packed[i / 2];
+            let lo = NF4_LEVELS[(byte & 0x0F) as usize] * self.scale;
+            let hi = NF4_LEVELS[((byte >> 4) & 0x0F) as usize] * self.scale;
+            dot += lo * query[i] + hi * query[i + 1];
+            norm_sq += lo * lo + hi * hi;
+            i += 2;
+        }
+        if self.dim % 2 == 1 {
+            let byte = self.packed[self.packed.len() - 1];
+            let lo = NF4_LEVELS[(byte & 0x0F) as usize] * self.scale;
+            dot += lo * query[self.dim - 1];
+            norm_sq += lo * lo;
+        }
+        let norm = norm_sq.sqrt();
+        if norm < 1e-8 {
+            return 1.0;
+        }
+        (1.0 - dot / norm).max(0.0)
+    }
+
     pub fn decode(&self) -> Vec<f32> {
         let mut out = Vec::with_capacity(self.dim);
         let mut i = 0;

@@ -52,22 +52,6 @@ pub trait Quantizer: Send + Sync + 'static {
 
 // ─────────────────────────── shared helper ────────────────────────────────────
 
-/// Cosine distance between `a` and `b`.
-///
-/// `b` is assumed to be unit-normalised (e.g. the f32 query in
-/// [`QuantHnswIndex`]).  `a` (the decoded stored vector) is normalised
-/// here to handle quantizers whose decoded vectors are not exactly unit-norm
-/// (e.g. binary, SQ2, SQ3, NF4).
-#[inline]
-pub(crate) fn cosine_dist_f32(a: &[f32], b: &[f32]) -> f32 {
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a < 1e-8 {
-        return 1.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
-    (1.0 - dot / norm_a).max(0.0)
-}
-
 /// Cosine distance between two vectors that are **both already unit-normalised**.
 ///
 /// Uses SimSIMD's SIMD dot dispatch (NEON/SVE/AVX2/AVX-512). This is the hot
@@ -92,7 +76,8 @@ impl Quantizer for Bf16Quantizer {
     fn encode(v: &[f32]) -> Self::Encoded { bf16::Bf16Vector::encode(v) }
     fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
-        cosine_dist_f32(&enc.decode(), query)
+        // Direct from codes — no per-call decode allocation.
+        enc.cosine_dist_to_query(query)
     }
     fn bits_per_dim() -> u32 { 16 }
 }
@@ -122,7 +107,7 @@ impl Quantizer for Nf4Quantizer {
     fn encode(v: &[f32]) -> Self::Encoded { nf4::Nf4Vector::encode_fast(v) }
     fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
-        cosine_dist_f32(&enc.decode(), query)
+        enc.cosine_dist_to_query(query)
     }
     fn bits_per_dim() -> u32 { 4 }
 }
@@ -136,8 +121,8 @@ impl Quantizer for BinaryQuantizer {
     fn encode(v: &[f32]) -> Self::Encoded { binary::BinaryVector::encode(v, true) }
     fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
-        // Decode to {+1, -1} then compute cosine against f32 query.
-        cosine_dist_f32(&enc.decode(), query)
+        // Sign bits → asymmetric cosine, directly from the packed bits.
+        enc.cosine_dist_to_query(query)
     }
     fn bits_per_dim() -> u32 { 1 }
 }
@@ -151,7 +136,7 @@ impl Quantizer for Sq2Quantizer {
     fn encode(v: &[f32]) -> Self::Encoded { sq2::Sq2Vector::encode(v) }
     fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
-        cosine_dist_f32(&enc.decode(), query)
+        enc.cosine_dist_to_query(query)
     }
     fn bits_per_dim() -> u32 { 2 }
 }
@@ -165,7 +150,59 @@ impl Quantizer for Sq3Quantizer {
     fn encode(v: &[f32]) -> Self::Encoded { sq3::Sq3Vector::encode(v) }
     fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
-        cosine_dist_f32(&enc.decode(), query)
+        enc.cosine_dist_to_query(query)
     }
     fn bits_per_dim() -> u32 { 3 }
+}
+
+#[cfg(test)]
+mod dist_parity_tests {
+    use super::*;
+
+    /// Reference: cosine distance of a decoded vector vs the f32 query, the
+    /// behaviour `dist_to_query` had before the alloc-free direct-from-codes
+    /// rewrite. Each quantizer's `cosine_dist_to_query` must match this.
+    fn ref_dist(decoded: &[f32], query: &[f32]) -> f32 {
+        let norm: f32 = decoded.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm < 1e-8 {
+            return 1.0;
+        }
+        let dot: f32 = decoded.iter().zip(query).map(|(&x, &y)| x * y).sum();
+        (1.0 - dot / norm).max(0.0)
+    }
+
+    fn make(d: usize, seed: u64) -> Vec<f32> {
+        (0..d)
+            .map(|i| (((i as u64 + seed).wrapping_mul(2654435761) % 1000) as f32 / 500.0) - 1.0)
+            .collect()
+    }
+
+    macro_rules! parity {
+        ($name:ident, $enc:expr) => {
+            #[test]
+            fn $name() {
+                for d in [16usize, 31, 64, 127, 256] {
+                    let v = make(d, 7);
+                    let q = {
+                        let raw = make(d, 99);
+                        let n: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+                        raw.iter().map(|x| x / n).collect::<Vec<f32>>()
+                    };
+                    let enc = $enc(&v);
+                    let direct = enc.cosine_dist_to_query(&q);
+                    let reference = ref_dist(&enc.decode(), &q);
+                    assert!(
+                        (direct - reference).abs() < 1e-4,
+                        "d={d}: direct={direct} reference={reference}"
+                    );
+                }
+            }
+        };
+    }
+
+    parity!(parity_binary, |v| binary::BinaryVector::encode(v, true));
+    parity!(parity_nf4, |v| nf4::Nf4Vector::encode_fast(v));
+    parity!(parity_sq2, |v| sq2::Sq2Vector::encode(v));
+    parity!(parity_sq3, |v| sq3::Sq3Vector::encode(v));
+    parity!(parity_bf16, |v| bf16::Bf16Vector::encode(v));
 }
