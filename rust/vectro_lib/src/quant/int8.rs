@@ -61,10 +61,71 @@ impl Int8Vector {
 
     /// Dot product with an f32 query without full dequantization.
     /// Uses the scale factor to weight the result correctly.
+    ///
+    /// This is the per-candidate distance kernel during INT8 HNSW search, so the
+    /// i8×f32 dot is SIMD-accelerated on aarch64 (NEON), with a scalar fallback
+    /// elsewhere.
+    #[inline]
     pub fn dot_query(&self, query_norm: &[f32]) -> f32 {
-        let raw: f32 = self.codes.iter().zip(query_norm.iter()).map(|(&q, &qv)| (q as f32) * qv).sum();
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: AArch64-v8 mandates NEON; the helper reads only in-bounds
+        // lanes (min length) and handles the tail scalarly.
+        let raw = unsafe { dot_i8_f32_neon(&self.codes, query_norm) };
+        #[cfg(not(target_arch = "aarch64"))]
+        let raw: f32 = self
+            .codes
+            .iter()
+            .zip(query_norm.iter())
+            .map(|(&q, &qv)| (q as f32) * qv)
+            .sum();
         raw * (self.scale / 127.0)
     }
+}
+
+/// NEON i8×f32 dot product: `Σ codes[i] as f32 * query[i]`.
+///
+/// Widens 16 i8 lanes → f32 and multiply-accumulates into four independent
+/// `f32x4` accumulators (breaks the reduction dependency chain), with a scalar
+/// tail. Used as the per-candidate distance kernel for INT8 HNSW search.
+///
+/// # Safety
+/// Requires NEON (mandated on AArch64-v8). Reads only `min(codes, query)` lanes.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn dot_i8_f32_neon(codes: &[i8], query: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+
+    let n = codes.len().min(query.len());
+    let cptr = codes.as_ptr();
+    let qptr = query.as_ptr();
+
+    let mut acc0 = vdupq_n_f32(0.0);
+    let mut acc1 = vdupq_n_f32(0.0);
+    let mut acc2 = vdupq_n_f32(0.0);
+    let mut acc3 = vdupq_n_f32(0.0);
+
+    let chunks = n / 16;
+    for i in 0..chunks {
+        let c = vld1q_s8(cptr.add(i * 16)); // 16× i8
+        let lo16 = vmovl_s8(vget_low_s8(c)); // 8× i16
+        let hi16 = vmovl_s8(vget_high_s8(c)); // 8× i16
+        let c0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo16)));
+        let c1 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo16)));
+        let c2 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi16)));
+        let c3 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi16)));
+        acc0 = vmlaq_f32(acc0, c0, vld1q_f32(qptr.add(i * 16)));
+        acc1 = vmlaq_f32(acc1, c1, vld1q_f32(qptr.add(i * 16 + 4)));
+        acc2 = vmlaq_f32(acc2, c2, vld1q_f32(qptr.add(i * 16 + 8)));
+        acc3 = vmlaq_f32(acc3, c3, vld1q_f32(qptr.add(i * 16 + 12)));
+    }
+    let sum = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
+    let mut total = vaddvq_f32(sum);
+
+    for i in chunks * 16..n {
+        total += codes[i] as f32 * query[i];
+    }
+    total
 }
 
 /// AVX2-vectorised INT8 encode for x86-64.
@@ -988,6 +1049,22 @@ pub fn batch_decode_into(codes: &[i8], scales: &[f32], d: usize, out: &mut [f32]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dot_query_matches_scalar_across_dims() {
+        // The SIMD dot_query (NEON on aarch64) must match the scalar reference
+        // at the SIMD-width boundaries and odd tails.
+        for d in [1usize, 7, 15, 16, 17, 31, 64, 127, 128, 768] {
+            let v: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.013) - 0.5).sin()).collect();
+            let q: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.027) + 0.2).cos()).collect();
+            let enc = Int8Vector::encode(&v);
+            let got = enc.dot_query(&q);
+            let factor = enc.scale / 127.0;
+            let want: f32 =
+                enc.codes.iter().zip(q.iter()).map(|(&c, &qv)| c as f32 * qv).sum::<f32>() * factor;
+            assert!((got - want).abs() < 1e-3, "d={d}: got={got} want={want}");
+        }
+    }
 
     #[test]
     fn roundtrip_reconstruct_quality() {
