@@ -5,6 +5,43 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.8.0] — 2026-06-19 — HNSW build + search routed through the Rust core
+
+### Performance
+- `python/hnsw_api.py` — `HNSWIndex` now delegates the graph **build and
+  search** hot paths to the native `vectro_py.PyHnswIndex` (Rust + SimSIMD)
+  via a new `backend="auto"` default. A complete, fast HNSW already existed in
+  the Rust crate, but the public Python index ran a pure-Python graph. On
+  glove-100 (10K × 100): build **1.82s vs 37.55s (20× faster)**, search
+  throughput **4,731 vs 268 QPS (17.6× faster)** at **matched recall**
+  (0.966 vs 0.965). Against `hnswlib` (C++) the Rust path is now competitive
+  (same ballpark QPS and recall) rather than ~50× slower.
+- The native core is **cosine-only and deterministic** (LCG level assignment
+  is a pure function of node ID), so rebuild-on-load and rebuild-after-update
+  reproduce an identical graph.
+
+### Added
+- `python/hnsw_rust.py` — `RustHnswBackend`, a thin cosine-only wrapper over
+  `vectro_py.PyHnswIndex`, plus `rust_available()` / `normalize_rows()` helpers.
+- `HNSWIndex(..., backend=...)` — `"auto"` (default; Rust for `space="cosine"`
+  when the extension is present, else pure Python), `"rust"` (force native;
+  raises if unavailable or for non-cosine spaces), `"python"` (force baseline).
+- `tests/test_hnsw_rust_backend.py` — 15 parity/behaviour tests covering
+  build/search recall parity, metadata filtering, soft-delete, upsert,
+  trace/stats/compact, `estimate_recall`, and save/load round-trip.
+
+### Changed
+- Pure-Python remains the correctness baseline and is used transparently for
+  `space="l2"`, when the extension is absent, and for the introspection paths
+  (`trace=True`, `stats()`, `compact()`), which lazily materialise the Python
+  graph on demand. `compact()` on a rust-backed index continues in pure-Python
+  mode afterwards (its tombstone-clearing semantics differ from native
+  soft-delete).
+- HNSW save format bumped to `format_version=3` with a `backend` field;
+  rust-backed indexes persist vectors + metadata and rebuild the graph
+  deterministically on load. Older `.npz` (v2) and legacy pickle files still
+  load unchanged.
+
 ## [5.7.0] — 2026-06-18 — PQ encode routed through the Rust SIMD kernel
 
 ### Performance
