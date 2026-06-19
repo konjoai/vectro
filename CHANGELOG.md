@@ -5,6 +5,40 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.6.0] — 2026-06-19 — HNSW performance overhaul (Python 5.6.0 / Rust 8.1.0)
+
+Battle-tested on Apple M3 against FAISS, hnswlib, usearch, annoy. Vectro HNSW
+went from *slower than brute force* to **beating hnswlib on build time, QPS, and
+recall** simultaneously.
+
+### Fixed
+- **Quantized HNSW graph construction** — the graph was built using the
+  *quantized* distance, collapsing recall for coarse quantizers (Binary 0.024,
+  NF4 0.66 on GloVe-100). Now built from full-precision distances held
+  transiently (dropped via `finalize()`), storing only the quantized codes:
+  **Binary → 0.595, NF4 → 0.918**, memory-at-rest unchanged. 1-bit codes are
+  also mean-centered (real embeddings share a large mean direction).
+- **INT4 / `ultra` profile** no longer silently degrades to INT8 — added a NumPy
+  nibble-pack fallback (`interface.quantize_int4`) used when the native
+  `squish_quant` extension is absent. `ultra` now delivers **6.9× compression**
+  (was 3.8×) at cosine 0.99.
+- Committed merge-conflict markers in `pyproject.toml` (broke the build/test
+  toolchain).
+
+### Performance
+- **Parallel HNSW build** (`HnswIndex` + `QuantHnswIndex`): parallel
+  search + serial commit, shuffled order + bounded chunk. Build **6.5s → 1.82s**
+  at n=20k (≈parity with hnswlib); quantized builds sub-second on GloVe-8k.
+- HNSW search: `FxHashSet` visited-set (was SipHash), slice-borrow neighbours
+  (no per-candidate clone), SIMD unit-cosine for construction. QPS **5,062 →
+  6,177** (beats hnswlib).
+- NF4 encode: branchless threshold count replaces per-element binary search.
+
+### Changed
+- `benchmark_ann_comparison.py`: fixed usearch API drift, added a degenerate-output
+  guard (annoy is non-functional on Py3.12/arm64 — now reported `broken`, not a
+  flattering `recall=0`), and switched the vectro path to the production Rust index.
+
 ## [V7] — 2026-05-09 — Live vector visualization
 
 ### Added

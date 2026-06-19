@@ -618,20 +618,19 @@ impl PyHnswIndex {
         self.inner.add_batch(&vectors);
     }
 
-    /// Zero-copy batch insert from a numpy array (shape [N, D]).
+    /// Batch insert from a numpy array (shape [N, D]).
+    ///
+    /// Routed through `add_batch` (not per-row `add`) so a large first batch
+    /// uses the parallel graph build.
     fn add_np(&mut self, array: PyReadonlyArray2<f32>) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
-        if let Some(flat) = arr.as_slice() {
-            for i in 0..n {
-                self.inner.add(&flat[i * d..(i + 1) * d]);
-            }
+        let rows: Vec<Vec<f32>> = if let Some(flat) = arr.as_slice() {
+            (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect()
         } else {
-            for row in arr.rows() {
-                let v: Vec<f32> = row.iter().copied().collect();
-                self.inner.add(&v);
-            }
-        }
+            arr.rows().into_iter().map(|row| row.iter().copied().collect()).collect()
+        };
+        self.inner.add_batch(&rows);
         Ok(())
     }
 
@@ -1078,20 +1077,20 @@ macro_rules! quant_hnsw_pyclass {
                 self.inner.add_batch(&vectors);
             }
 
-            /// Zero-copy batch insert from a numpy array (shape [N, D]).
+            /// Batch insert from a numpy array (shape [N, D]).
+            ///
+            /// Routed through `add_batch` (not per-row `add`) so quantizers that
+            /// derive a per-index transform from the batch — e.g. binary
+            /// mean-centering — can establish it before insertion.
             fn add_np(&mut self, array: PyReadonlyArray2<f32>) -> PyResult<()> {
                 let arr = array.as_array();
                 let (n, d) = (arr.nrows(), arr.ncols());
-                if let Some(flat) = arr.as_slice() {
-                    for i in 0..n {
-                        self.inner.add(&flat[i * d..(i + 1) * d]);
-                    }
+                let rows: Vec<Vec<f32>> = if let Some(flat) = arr.as_slice() {
+                    (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect()
                 } else {
-                    for row in arr.rows() {
-                        let v: Vec<f32> = row.iter().copied().collect();
-                        self.inner.add(&v);
-                    }
-                }
+                    arr.rows().into_iter().map(|row| row.iter().copied().collect()).collect()
+                };
+                self.inner.add_batch(&rows);
                 Ok(())
             }
 

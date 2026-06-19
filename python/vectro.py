@@ -48,7 +48,7 @@ from .profiles_api import (
     create_custom_profile
 )
 
-__version__ = "5.5.0"
+__version__ = "5.6.0"
 __author__ = "Wesley Scholl"
 __license__ = "MIT"
 __description__ = "Ultra-High-Performance LLM Embedding Compressor"
@@ -286,14 +286,17 @@ class Vectro:
         requested_precision = requested_precision.lower()
         group_size = 64
 
-        # INT4 currently depends on squish_quant; fallback keeps API usable.
+        # INT4 uses the native squish_quant extension when present, otherwise a
+        # NumPy nibble-pack fallback (see interface.quantize_int4) — so INT4 is
+        # always honoured and delivers real ~2× compression over INT8 rather
+        # than silently degrading. Warn once when running the slower path.
         if requested_precision == "int4" and not get_backend_info().get("squish_quant_rust", False):
             warnings.warn(
-                "INT4 requested but squish_quant backend is unavailable. Falling back to INT8.",
+                "INT4 using NumPy fallback (squish_quant extension not built) — "
+                "correct output at lower throughput. Build squish_quant for full speed.",
                 RuntimeWarning,
             )
-            requested_precision = "int8"
-            
+
         # Convert input to numpy array
         if isinstance(vectors, list):
             vectors = np.array(vectors, dtype=np.float32)

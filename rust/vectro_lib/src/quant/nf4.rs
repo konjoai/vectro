@@ -48,22 +48,23 @@ const NF4_MIDS: [f32; 15] = {
     m
 };
 
-/// Find the NF4 level index nearest to `x` via binary search on midpoints.
+/// Find the NF4 level index nearest to `x` via the midpoint thresholds.
 /// `x` must be in [-1, 1].
+///
+/// `NF4_MIDS` is strictly increasing, so the binary-search result equals the
+/// count of midpoints `x` meets or exceeds: `#{ i : x >= MIDS[i] }`. This
+/// branchless form (compare → `setcc` → add, no data-dependent branches) avoids
+/// the binary search's branch mispredictions and lets the per-element encode
+/// loop auto-vectorize — a real win over the 4-comparison search.
 #[inline]
 fn nearest_nf4(x: f32) -> u8 {
-    // binary search: find first mid where x < mid → index before that
-    let mut lo = 0usize;
-    let mut hi = 15usize;
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if x < NF4_MIDS[mid] {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
+    let mut idx = 0u8;
+    let mut i = 0;
+    while i < NF4_MIDS.len() {
+        idx += u8::from(x >= NF4_MIDS[i]);
+        i += 1;
     }
-    lo as u8
+    idx
 }
 
 /// One NF4-quantized vector.

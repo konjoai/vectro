@@ -129,40 +129,121 @@ def _dequantize_with_vectro_py(result: QuantizationResult) -> np.ndarray:
     return _vectro_py.dequantize_int8_batch(q, s)
 
 
+def _quantize_int4_numpy(
+    embeddings: np.ndarray,
+    group_size: int = 64,
+) -> tuple[np.ndarray, np.ndarray]:
+    """NumPy fallback for grouped INT4 quantization (no native extension).
+
+    Symmetric abs-max signed 4-bit: per group, ``scale = abs_max / 7`` and
+    ``q = clip(round(v / scale), -8, 7)`` stored as 4-bit two's-complement
+    nibbles, two per byte. Matches the (packed (n, ceil(d/2)), scales
+    (n, n_groups)) layout of the native ``squish_quant`` path.
+    """
+    emb = np.ascontiguousarray(embeddings, dtype=np.float32)
+    if emb.ndim == 1:
+        emb = emb.reshape(1, -1)
+    n, d = emb.shape
+    gs = min(group_size, d) if group_size > 0 else d
+    n_groups = int(np.ceil(d / gs))
+
+    scales = np.ones((n, n_groups), dtype=np.float32)
+    q = np.zeros((n, d), dtype=np.int8)
+    for g in range(n_groups):
+        c0 = g * gs
+        c1 = min(c0 + gs, d)
+        block = emb[:, c0:c1]
+        abs_max = np.max(np.abs(block), axis=1, keepdims=True)
+        scale = np.where(abs_max == 0.0, 1.0, abs_max / 7.0).astype(np.float32)
+        q[:, c0:c1] = np.clip(np.round(block / scale), -8, 7).astype(np.int8)
+        scales[:, g] = scale.ravel()
+
+    # Pack two 4-bit two's-complement nibbles per byte → (n, ceil(d/2)).
+    pad = (-d) % 2
+    if pad:
+        q = np.pad(q, ((0, 0), (0, pad)), mode="constant", constant_values=0)
+    nib = (q.astype(np.uint8) & 0x0F).reshape(n, q.shape[1] // 2, 2)
+    packed = (nib[:, :, 0] | (nib[:, :, 1] << 4)).astype(np.uint8)
+    return packed, scales
+
+
+def _dequantize_int4_numpy(
+    packed: np.ndarray,
+    scales: np.ndarray,
+    group_size: int = 64,
+    dim: int | None = None,
+) -> np.ndarray:
+    """NumPy fallback reconstruction for :func:`_quantize_int4_numpy`."""
+    packed = np.ascontiguousarray(packed, dtype=np.uint8)
+    if packed.ndim == 1:
+        packed = packed.reshape(1, -1)
+    scales = np.asarray(scales, dtype=np.float32)
+    if scales.ndim == 1:
+        scales = scales.reshape(1, -1)
+
+    n, n_bytes = packed.shape
+    d_full = n_bytes * 2
+    lo = (packed & 0x0F).astype(np.int16)
+    hi = ((packed >> 4) & 0x0F).astype(np.int16)
+    # 4-bit two's complement: values ≥ 8 are negative.
+    lo = np.where(lo >= 8, lo - 16, lo)
+    hi = np.where(hi >= 8, hi - 16, hi)
+    q = np.empty((n, d_full), dtype=np.float32)
+    q[:, 0::2] = lo
+    q[:, 1::2] = hi
+
+    d = dim if dim is not None else d_full
+    q = q[:, :d]
+    gs = min(group_size, d) if group_size > 0 else d
+    n_groups = scales.shape[1]
+    out = np.empty((n, d), dtype=np.float32)
+    for g in range(n_groups):
+        c0 = g * gs
+        c1 = min(c0 + gs, d)
+        if c0 >= d:
+            break
+        out[:, c0:c1] = q[:, c0:c1] * scales[:, g : g + 1]
+    return out
+
+
 def quantize_int4(
     embeddings: np.ndarray,
     group_size: int = 64,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """INT4 nibble-packed quantization — 50% disk vs INT8, requires squish_quant.
+    """INT4 nibble-packed quantization — 50% disk vs INT8.
 
-    Returns (packed_uint8, scales_float32) — packed has shape (n, d//2).
-    Use dequantize_int4() to reconstruct.
-    Requires squish_quant Rust extension (built with maturin).
+    Uses the native ``squish_quant`` Rust extension when available, otherwise a
+    NumPy fallback (slower, but the same packed layout and ~2× compression over
+    INT8). Returns ``(packed_uint8 (n, ceil(d/2)), scales_float32 (n, n_groups))``.
+    Use :func:`dequantize_int4` to reconstruct.
     """
-    if _squish_quant is None:
-        raise RuntimeError("squish_quant Rust extension required for INT4.  Run: cd squish_quant_rs && python3 -m maturin build --release")
-    emb = np.ascontiguousarray(embeddings, dtype=np.float32)
-    return _squish_quant.quantize_int4_grouped(emb, group_size)
+    if _squish_quant is not None:
+        emb = np.ascontiguousarray(embeddings, dtype=np.float32)
+        return _squish_quant.quantize_int4_grouped(emb, group_size)
+    return _quantize_int4_numpy(embeddings, group_size=group_size)
 
 
 def dequantize_int4(
     packed: np.ndarray,
     scales: np.ndarray,
     group_size: int = 64,
+    dim: int | None = None,
 ) -> np.ndarray:
     """Reconstruct float32 from nibble-packed INT4 weights.
 
-    packed: (n, d//2) uint8  — from quantize_int4()
-    scales: (n, d//group_size) float32
+    packed: (n, ceil(d/2)) uint8  — from :func:`quantize_int4`
+    scales: (n, n_groups) float32
+    dim:    original dimension d (only needed for odd d; the NumPy path trims
+            the padded nibble)
     Returns: (n, d) float32
     """
-    if _squish_quant is None:
-        raise RuntimeError("squish_quant Rust extension required for INT4.")
-    return _squish_quant.dequantize_int4_grouped(
-        np.ascontiguousarray(packed, dtype=np.uint8),
-        np.ascontiguousarray(scales, dtype=np.float32),
-        group_size,
-    )
+    if _squish_quant is not None:
+        return _squish_quant.dequantize_int4_grouped(
+            np.ascontiguousarray(packed, dtype=np.uint8),
+            np.ascontiguousarray(scales, dtype=np.float32),
+            group_size,
+        )
+    return _dequantize_int4_numpy(packed, scales, group_size=group_size, dim=dim)
 
 
 def _quantize_vectorized(embeddings: np.ndarray, group_size: int = 0) -> QuantizationResult:
@@ -304,6 +385,7 @@ def reconstruct_embeddings(result: QuantizationResult, backend: str = "auto") ->
             result.quantized,
             result.scales,
             group_size=getattr(result, "group_size", 64) or 64,
+            dim=getattr(result, "dims", None),
         )
 
     # Backend selection

@@ -68,6 +68,19 @@ pub(crate) fn cosine_dist_f32(a: &[f32], b: &[f32]) -> f32 {
     (1.0 - dot / norm_a).max(0.0)
 }
 
+/// Cosine distance between two vectors that are **both already unit-normalised**.
+///
+/// Uses SimSIMD's SIMD dot dispatch (NEON/SVE/AVX2/AVX-512). This is the hot
+/// distance for graph *construction* in [`crate::index::quant_hnsw`], where the
+/// transient build vectors and the query are unit-norm — skipping the per-call
+/// norm recomputation of [`cosine_dist_f32`].
+#[inline]
+pub(crate) fn cosine_dist_unit(a: &[f32], b: &[f32]) -> f32 {
+    use simsimd::SpatialSimilarity;
+    let dot: f64 = <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0);
+    (1.0 - dot as f32).max(0.0)
+}
+
 // ─────────────────── Quantizer marker types + impls ───────────────────────────
 
 /// BF16 quantizer marker type.

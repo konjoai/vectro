@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "vectro_lib"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2479,6 +2479,7 @@ dependencies = [
  "ndarray",
  "proptest",
  "rayon",
+ "rustc-hash",
  "serde",
  "serde_json",
  "simsimd",
@@ -2489,7 +2490,7 @@ dependencies = [
 
 [[package]]
 name = "vectro_py"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "half",
  "ndarray",

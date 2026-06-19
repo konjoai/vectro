@@ -9,9 +9,17 @@
 //!
 //! Recall@10 parity target (PLAN.md Phase 16): ≥ 0.97.
 
+use rayon::prelude::*;
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use simsimd::SpatialSimilarity;
 use std::collections::{BinaryHeap, HashSet};
+
+use super::shuffled_order;
+
+/// Per-layer candidate neighbour lists for one node: `(layer, [(dist, id), …])`,
+/// the read-only output of the search phase handed to the commit phase.
+type LayerCandidates = Vec<(usize, Vec<(f32, usize)>)>;
 
 /// Newtype wrapping f32 with a total order so we can use a standard
 /// `BinaryHeap` without an external crate.
@@ -108,10 +116,10 @@ impl HnswIndex {
         self.deleted.get(id).copied().unwrap_or(false)
     }
 
-    fn random_level(&self) -> usize {
-        // Deterministic geometric-distribution level via LCG hash of node id.
-        let id = self.vectors.len() as u64;
-        let mut r = id
+    /// Deterministic geometric-distribution level for a given node id, seeded
+    /// purely by `id` so the parallel build matches the serial path's levels.
+    fn level_of(id: usize, ml: f64) -> usize {
+        let mut r = (id as u64)
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         r ^= r >> 33;
@@ -119,7 +127,11 @@ impl HnswIndex {
         r ^= r >> 33;
         let frac = (r >> 11) as f64 / (1u64 << 53) as f64;
         let frac = frac.max(1e-15);
-        ((-frac.ln()) * self.ml) as usize
+        ((-frac.ln()) * ml) as usize
+    }
+
+    fn random_level(&self) -> usize {
+        Self::level_of(self.vectors.len(), self.ml)
     }
 
     /// Core beam search with an optional per-node inclusion filter.
@@ -138,7 +150,10 @@ impl HnswIndex {
         layer: usize,
         filter: F,
     ) -> Vec<(f32, usize)> {
-        let mut visited: HashSet<usize> = HashSet::with_capacity(ef * 4);
+        // FxHashSet: fast integer hasher — the default SipHash dominates the
+        // hot `visited`-set path during HNSW build/search.
+        let mut visited: FxHashSet<usize> =
+            FxHashSet::with_capacity_and_hasher(ef * 4, Default::default());
 
         // cands: min-heap on dist — pop closest first.
         let mut cands: BinaryHeap<(std::cmp::Reverse<OrdF32>, usize)> = BinaryHeap::new();
@@ -160,13 +175,16 @@ impl HnswIndex {
                 break;
             }
 
-            let nbrs: Vec<usize> = if layer < self.neighbors[c].len() {
-                self.neighbors[c][layer].clone()
-            } else {
-                vec![]
-            };
+            // Borrow the neighbour slice instead of cloning — search never
+            // mutates the graph, so this avoids a Vec<usize> allocation per
+            // expanded candidate (hot path).
+            let nbrs: &[usize] = self
+                .neighbors[c]
+                .get(layer)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
 
-            for nb in nbrs {
+            for &nb in nbrs {
                 if !visited.insert(nb) {
                     continue;
                 }
@@ -278,10 +296,123 @@ impl HnswIndex {
         }
     }
 
+    /// Minimum batch size into an empty index that triggers the parallel build.
+    const PARALLEL_BUILD_THRESHOLD: usize = 512;
+    /// Chunk size for the parallel build, bounded to ~n/64 (clamped to
+    /// [64, 1024]) so few true-neighbour pairs land in the same chunk — see
+    /// [`build_parallel`].
+    fn parallel_build_chunk(n: usize) -> usize {
+        (n / 64).clamp(64, 1024)
+    }
+
     /// Insert a batch of vectors.
+    ///
+    /// A large first batch into an empty index is built in parallel
+    /// (see [`build_parallel`]); otherwise vectors are inserted serially.
     pub fn add_batch(&mut self, vectors: &[Vec<f32>]) {
-        for v in vectors {
-            self.add(v);
+        if self.vectors.is_empty() && vectors.len() >= Self::PARALLEL_BUILD_THRESHOLD {
+            self.build_parallel(vectors);
+        } else {
+            for v in vectors {
+                self.add(v);
+            }
+        }
+    }
+
+    /// Parallel graph construction for a fresh index: **parallel search + serial
+    /// commit** in chunks. Each node's candidate search is read-only and runs
+    /// concurrently across a chunk; link stitching/pruning is applied serially,
+    /// so no locks or `unsafe` are needed. Chunk-mates search the graph frozen
+    /// at the chunk boundary (can't link to each other), a negligible recall
+    /// trade for ~Ncores of parallelism on the dominant search phase.
+    fn build_parallel(&mut self, vectors: &[Vec<f32>]) {
+        let n = vectors.len();
+        let normalized: Vec<Vec<f32>> =
+            vectors.par_iter().map(|v| Self::normalize(v)).collect();
+        let levels: Vec<usize> = (0..n).map(|id| Self::level_of(id, self.ml)).collect();
+
+        self.vectors = normalized;
+        self.deleted = vec![false; n];
+        self.neighbors = levels.iter().map(|&lv| vec![Vec::new(); lv + 1]).collect();
+
+        // Shuffled processing order so correlated input rows don't share a chunk.
+        let order = shuffled_order(n);
+        self.entry_point = Some(order[0]);
+        self.max_level = levels[order[0]];
+
+        let chunk = Self::parallel_build_chunk(n);
+        let mut start = 1;
+        while start < n {
+            let end = (start + chunk).min(n);
+            let ids = &order[start..end];
+            let found: Vec<LayerCandidates> = ids
+                .par_iter()
+                .map(|&id| self.find_candidates(id, levels[id]))
+                .collect();
+            for (&id, per_layer) in ids.iter().zip(found.into_iter()) {
+                self.commit_node(id, levels[id], per_layer);
+            }
+            start = end;
+        }
+    }
+
+    /// Read-only neighbour search for `node_id` against the current graph,
+    /// returning per-layer candidate lists. Mirrors the search portion of
+    /// [`add`] but commits nothing — safe to call concurrently.
+    fn find_candidates(&self, node_id: usize, node_level: usize) -> LayerCandidates {
+        let q = &self.vectors[node_id];
+        let ep = match self.entry_point {
+            Some(ep) => ep,
+            None => return Vec::new(),
+        };
+        let max_l = self.max_level;
+        let mut curr_ep = vec![ep];
+
+        for lc in (node_level + 1..=max_l).rev() {
+            let res = self.search_layer(q, &curr_ep, 1, lc);
+            if !res.is_empty() {
+                curr_ep = vec![res[0].1];
+            }
+        }
+
+        let mut per_layer = Vec::new();
+        for lc in (0..=node_level.min(max_l)).rev() {
+            let candidates = self.search_layer(q, &curr_ep, self.ef_construction, lc);
+            curr_ep = candidates.iter().map(|&(_, id)| id).collect();
+            per_layer.push((lc, candidates));
+        }
+        per_layer
+    }
+
+    /// Serially commit a node's links from pre-computed per-layer candidates.
+    fn commit_node(&mut self, node_id: usize, node_level: usize, per_layer: LayerCandidates) {
+        for (lc, candidates) in per_layer {
+            let max_m = if lc == 0 { self.m0 } else { self.m };
+            let nbrs = Self::select_neighbors(&candidates, max_m);
+            self.neighbors[node_id][lc] = nbrs.clone();
+
+            for nb_id in nbrs {
+                if lc < self.neighbors[nb_id].len() {
+                    self.neighbors[nb_id][lc].push(node_id);
+                    if self.neighbors[nb_id][lc].len() > max_m {
+                        let nb_vec = self.vectors[nb_id].clone();
+                        let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
+                            .iter()
+                            .map(|&n| (Self::cosine_dist(&nb_vec, &self.vectors[n]), n))
+                            .collect();
+                        scored.sort_by(|a, b| {
+                            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        self.neighbors[nb_id][lc] =
+                            scored.into_iter().take(max_m).map(|(_, id)| id).collect();
+                    }
+                }
+            }
+        }
+
+        if node_level > self.max_level {
+            self.max_level = node_level;
+            self.entry_point = Some(node_id);
         }
     }
 
@@ -512,6 +643,32 @@ mod tests {
         let gt = brute_force_gt(&vecs, queries, k);
         let recall = idx.recall_at_k(queries, &gt, k, 60);
         assert!(recall >= 0.80, "recall@{k} = {recall:.3} < 0.80");
+    }
+
+    #[test]
+    fn parallel_build_recall_matches_serial() {
+        // n above PARALLEL_BUILD_THRESHOLD (512) exercises build_parallel.
+        let vecs = make_vecs(800, 48);
+        let queries = &vecs[..40];
+        let k = 10;
+        let gt = brute_force_gt(&vecs, queries, k);
+
+        let mut par = HnswIndex::new(8, 64);
+        par.add_batch(&vecs); // parallel path
+        let par_recall = par.recall_at_k(queries, &gt, k, 80);
+
+        let mut ser = HnswIndex::new(8, 64);
+        for v in &vecs {
+            ser.add(v); // serial path
+        }
+        let ser_recall = ser.recall_at_k(queries, &gt, k, 80);
+
+        assert!(par_recall >= 0.90, "parallel recall@{k} = {par_recall:.3} < 0.90");
+        // Parallel quality must stay within noise of serial.
+        assert!(
+            par_recall >= ser_recall - 0.05,
+            "parallel recall {par_recall:.3} regressed vs serial {ser_recall:.3}"
+        );
     }
 
     #[test]

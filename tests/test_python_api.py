@@ -117,13 +117,17 @@ class TestVectroCore(unittest.TestCase):
         self.assertGreater(quality.mean_cosine_similarity, 0.99)
 
     def test_ultra_profile_precision_mode(self):
-        """Ultra profile falls through to INT4 if squish_quant is available, INT8 otherwise."""
-        backend_info = get_backend_info()
+        """Ultra profile always produces INT4.
+
+        INT4 is honoured via the native squish_quant extension when present, or
+        the NumPy nibble-pack fallback otherwise — it no longer silently
+        degrades to INT8.
+        """
         result = self.vectro.compress(self.batch_vectors, profile="ultra")
-        if backend_info.get("squish_quant_rust", False):
-            self.assertEqual(result.precision_mode, "int4")
-        else:
-            self.assertEqual(result.precision_mode, "int8")
+        self.assertEqual(result.precision_mode, "int4")
+        # INT4 must deliver materially better compression than INT8 (~2×).
+        int8_result = self.vectro.compress(self.batch_vectors, precision_mode="int8")
+        self.assertGreater(result.compression_ratio, int8_result.compression_ratio)
 
 
 class TestBatchProcessing(unittest.TestCase):
