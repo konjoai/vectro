@@ -1,0 +1,27 @@
+{
+  "timestamp_utc": "2026-06-20",
+  "dataset": "glove-100-angular",
+  "n": 50000,
+  "M": 25,
+  "K": 256,
+  "dim": 100,
+  "hardware": {
+    "cpu": "Apple M3",
+    "cores": 8,
+    "ram_gb": 16,
+    "machine": "arm64"
+  },
+  "faiss_version": "1.13.2",
+  "encode_vec_per_s": {
+    "vectro": 819202,
+    "faiss": 315389,
+    "speedup": 2.6
+  },
+  "train_seconds_8thr": {
+    "vectro_rust": 2.005,
+    "faiss_blas": 0.533,
+    "ratio_vectro_over_faiss": 3.76
+  },
+  "reconstruction_cosine": 0.9544,
+  "notes": "encode: vectro already faster (roadmap '18x slower' was the NumPy path). training: now native Rust SIMD k-means (sklearn-free, deterministic); faiss BLAS k-means still leads raw train time."
+}

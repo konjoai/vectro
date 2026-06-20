@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Bump this when the JSON schema changes in a breaking way.
-_SCHEMA_VERSION = "5.8.0"
+_SCHEMA_VERSION = "5.10.0"
 _REQUIRED_KEYS = {"version", "created_at", "stage_configs", "metadata"}
 
 
