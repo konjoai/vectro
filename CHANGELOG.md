@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+- **HNSW concurrent-insertion build** (`rust/vectro_lib/src/index/hnsw.rs`) —
+  replaced the chunked, frozen-snapshot parallel build (which capped recall
+  ≈ 0.997 because chunk-mates couldn't link to each other) with insertion
+  against the **live** graph behind per-node `RwLock`s (hnswlib-style: full
+  graph visibility = serial-quality links at parallel speed). A small **serial
+  seed** (`n/20`, clamped [256, 4096]) builds a high-quality core first so the
+  first node of each thread's range never searches a near-empty graph. The build
+  is deadlock-free (no thread holds two node locks at once) and poison-tolerant.
+  On glove-100 (n=20k, single-thread search, recall-matched, best-of-3 QPS):
+  - **vectro now beats faiss-hnsw on QPS at every recall level** — ≈ +9% @R0.90,
+    +18% @R0.95, **+37% @R0.99** — while building **5.3× faster** (0.60s vs
+    3.16s). vs hnswlib: ~2× QPS, ~7× faster build.
+  - max R@10 0.998 = serial-quality (glove's tie-bound ceiling; serial reaches
+    0.9996). Concurrent wiring is schedule-dependent; node *levels* stay seeded.
+    Serial `add()` remains the bit-reproducible path.
+  - Raw sweep: `benchmarks/results/20260620_phase3_concurrent_build_sweep.json`.
+  Tests: `concurrent_build_high_recall`, `concurrent_build_graph_is_valid`.
+
 ### Benchmarks
 - `scripts/benchmark_comprehensive.py` — comprehensive **real-data** head-to-head
   vs FAISS and hnswlib, across two axes: (1) ANN search Recall@10 vs QPS

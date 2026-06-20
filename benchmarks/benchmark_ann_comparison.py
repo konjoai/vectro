@@ -100,6 +100,35 @@ def recall_at_k(
     return float(hits.mean())
 
 
+def detect_degenerate(predictions: np.ndarray, k: int) -> str | None:
+    """Return a reason string if an ANN library's output is degenerate.
+
+    Some library wheels (e.g. annoy on Python 3.12 / arm64) build without error
+    but return a single garbage neighbour for every query. Silently recording
+    that as ``recall=0.0`` falsely flatters the library under test, so we detect
+    it and report ``status="broken"`` instead — honest measurement over a
+    flattering zero.
+
+    Args:
+        predictions: (q, k) predicted indices; ``-1`` marks an unfilled slot.
+        k:           Requested neighbour count.
+    Returns:
+        A human-readable reason if degenerate, else ``None``.
+    """
+    valid = predictions >= 0
+    mean_returned = float(valid.sum(axis=1).mean())
+    if mean_returned < max(2.0, k * 0.5):
+        return (
+            f"library returned only {mean_returned:.1f}/{k} neighbours per query "
+            f"on average — index appears broken on this platform"
+        )
+    # Same single neighbour for (almost) every query → collapsed index.
+    first_col = predictions[:, 0]
+    if len(np.unique(first_col)) <= max(1, len(first_col) // 100):
+        return "library returned a near-constant nearest neighbour — collapsed index"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Per-library wrappers
 # ---------------------------------------------------------------------------
@@ -110,26 +139,45 @@ def _build_vectro(
     m: int,
     ef_construction: int,
 ) -> tuple[Any, int]:
-    """Build a Vectro HNSW index. Returns (index, byte_size)."""
-    from python.hnsw_api import HNSWIndex  # type: ignore[import]
+    """Build a Vectro HNSW index. Returns (index, byte_size).
 
-    idx = HNSWIndex(M=m, ef_construction=ef_construction, space="cosine")
-    idx.add(corpus)
-    # Approximate memory: n * d * 4 bytes for float32 vectors + graph links
-    byte_size = len(corpus) * corpus.shape[1] * 4 + len(corpus) * m * 2 * 8
-    return idx, byte_size
+    Prefers the production Rust extension (``vectro_py.PyHnswIndex``, zero-copy
+    numpy + NEON/AVX2 distance kernels). Falls back to the pure-Python reference
+    (``python.hnsw_api.HNSWIndex``) only when the compiled extension is absent —
+    benchmarking the Python reference against C++ competitors would compare an
+    interpreted correctness baseline against shipping code, which is not a fair
+    or representative measurement.
+    """
+    m = int(m)
+    try:
+        import vectro_py  # type: ignore[import]
+        rust_idx = vectro_py.PyHnswIndex(m, int(ef_construction))
+        rust_idx.add_np(np.ascontiguousarray(corpus, dtype=np.float32))
+        byte_size = len(corpus) * corpus.shape[1] * 4 + len(corpus) * m * 2 * 8
+        return {"backend": "rust", "idx": rust_idx}, byte_size
+    except ImportError:
+        from python.hnsw_api import HNSWIndex  # type: ignore[import]
+        py_idx = HNSWIndex(M=m, ef_construction=ef_construction, space="cosine")
+        py_idx.add(corpus)
+        byte_size = len(corpus) * corpus.shape[1] * 4 + len(corpus) * m * 2 * 8
+        return {"backend": "python", "idx": py_idx}, byte_size
 
 
 def _query_vectro(idx: Any, queries: np.ndarray, k: int, ef_search: int) -> np.ndarray:
     """Query a Vectro HNSW index. Returns (q, k) int64 index array."""
-    results = np.empty((len(queries), k), dtype=np.int64)
+    backend, inner = idx["backend"], idx["idx"]
+    results = np.full((len(queries), k), -1, dtype=np.int64)
+    if backend == "rust":
+        batch = inner.search_batch_np(
+            np.ascontiguousarray(queries, dtype=np.float32), k, int(ef_search)
+        )
+        for i, hits in enumerate(batch):
+            ids = [nid for nid, _ in hits][:k]
+            results[i, : len(ids)] = ids
+        return results
     for i, q in enumerate(queries):
-        indices, _ = idx.search(q, k=k, ef=ef_search)
-        # pad with -1 if fewer than k results returned
-        if len(indices) < k:
-            pad = np.full(k - len(indices), -1, dtype=np.int64)
-            indices = np.concatenate([indices, pad])
-        results[i] = indices[:k]
+        indices, _ = inner.search(q, k=k, ef=ef_search)
+        results[i, : min(len(indices), k)] = np.asarray(indices[:k], dtype=np.int64)
     return results
 
 
@@ -196,11 +244,20 @@ def _build_usearch(
 
 
 def _query_usearch(idx: Any, queries: np.ndarray, k: int, ef_search: int) -> np.ndarray:
-    matches = idx.search(queries, count=k, expansion=ef_search)
+    # usearch >=2.10 dropped the per-call ``expansion`` kwarg in favour of the
+    # ``expansion_search`` index property. Set it once, then batch-search.
+    try:
+        idx.expansion_search = ef_search
+    except AttributeError:
+        pass
+    matches = idx.search(queries, count=k)
+    # Batched search returns a Matches object whose ``.keys`` is already (q, k).
+    keys = np.asarray(matches.keys, dtype=np.int64)
     results = np.full((len(queries), k), -1, dtype=np.int64)
-    for i, m in enumerate(matches):
-        ids = np.array(m.keys, dtype=np.int64)
-        results[i, : len(ids)] = ids
+    if keys.ndim == 2:
+        results[:, : keys.shape[1]] = keys[:, :k]
+    else:  # single-query degenerate shape
+        results[0, : len(keys)] = keys[:k]
     return results
 
 
@@ -311,8 +368,20 @@ def run_benchmark(
             query_sec = time.perf_counter() - t0
             qps = q / query_sec if query_sec > 0 else 0.0
 
-            r1 = recall_at_k(predictions, ground_truth, 1)
-            r5 = recall_at_k(predictions, ground_truth, 5)
+            # Honest-measurement guard: never record a flattering recall=0 for a
+            # library whose index silently built broken on this platform.
+            degenerate = detect_degenerate(predictions, k)
+            if degenerate is not None:
+                print(f"{name:<18} {'BROKEN: ' + degenerate[:47]:>55}")
+                results["libraries"][name] = {
+                    "status": "broken",
+                    "build_sec": round(build_sec, 3),
+                    "message": degenerate,
+                }
+                continue
+
+            r1  = recall_at_k(predictions, ground_truth, 1)
+            r5  = recall_at_k(predictions, ground_truth, 5)
             r10 = recall_at_k(predictions, ground_truth, 10)
 
             print(f"{name:<18} {build_sec:>8.2f} {qps:>8,.0f} {r1:>6.3f} {r5:>6.3f} {r10:>6.3f}")

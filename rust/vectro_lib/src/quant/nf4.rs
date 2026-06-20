@@ -48,22 +48,23 @@ const NF4_MIDS: [f32; 15] = {
     m
 };
 
-/// Find the NF4 level index nearest to `x` via binary search on midpoints.
+/// Find the NF4 level index nearest to `x` via the midpoint thresholds.
 /// `x` must be in [-1, 1].
+///
+/// `NF4_MIDS` is strictly increasing, so the binary-search result equals the
+/// count of midpoints `x` meets or exceeds: `#{ i : x >= MIDS[i] }`. This
+/// branchless form (compare → `setcc` → add, no data-dependent branches) avoids
+/// the binary search's branch mispredictions and lets the per-element encode
+/// loop auto-vectorize — a real win over the 4-comparison search.
 #[inline]
 fn nearest_nf4(x: f32) -> u8 {
-    // binary search: find first mid where x < mid → index before that
-    let mut lo = 0usize;
-    let mut hi = 15usize;
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if x < NF4_MIDS[mid] {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
+    let mut idx = 0u8;
+    let mut i = 0;
+    while i < NF4_MIDS.len() {
+        idx += u8::from(x >= NF4_MIDS[i]);
+        i += 1;
     }
-    lo as u8
+    idx
 }
 
 /// One NF4-quantized vector.
@@ -150,6 +151,35 @@ impl Nf4Vector {
         }
 
         Self { packed, scale, dim }
+    }
+
+    /// Asymmetric cosine distance to a full-precision query, computed directly
+    /// from the packed nibbles via codebook lookup — no `decode()` allocation.
+    /// Equivalent to `cosine_dist_f32(&self.decode(), query)`.
+    #[inline]
+    pub fn cosine_dist_to_query(&self, query: &[f32]) -> f32 {
+        let mut dot = 0.0f32;
+        let mut norm_sq = 0.0f32;
+        let mut i = 0;
+        while i + 1 < self.dim {
+            let byte = self.packed[i / 2];
+            let lo = NF4_LEVELS[(byte & 0x0F) as usize] * self.scale;
+            let hi = NF4_LEVELS[((byte >> 4) & 0x0F) as usize] * self.scale;
+            dot += lo * query[i] + hi * query[i + 1];
+            norm_sq += lo * lo + hi * hi;
+            i += 2;
+        }
+        if self.dim % 2 == 1 {
+            let byte = self.packed[self.packed.len() - 1];
+            let lo = NF4_LEVELS[(byte & 0x0F) as usize] * self.scale;
+            dot += lo * query[self.dim - 1];
+            norm_sq += lo * lo;
+        }
+        let norm = norm_sq.sqrt();
+        if norm < 1e-8 {
+            return 1.0;
+        }
+        (1.0 - dot / norm).max(0.0)
     }
 
     pub fn decode(&self) -> Vec<f32> {

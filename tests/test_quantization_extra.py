@@ -297,5 +297,58 @@ class TestQuantizeAdaptive(unittest.TestCase):
         self.assertGreater(cos_sim, 0.99)
 
 
+# ---------------------------------------------------------------------------
+# INT4 NumPy fallback tests (interface.quantize_int4 / dequantize_int4)
+# ---------------------------------------------------------------------------
+
+
+class TestInt4NumpyFallback(unittest.TestCase):
+    """The NumPy nibble-pack INT4 path must be correct and well-shaped.
+
+    These exercise the fallback directly (squish_quant may be absent); the
+    helpers are also what `quantize_int4` dispatches to when the native
+    extension is unavailable.
+    """
+
+    def test_packed_shape_and_dtype(self):
+        from python.interface import _quantize_int4_numpy
+
+        emb = _make_embeddings(8, 128)
+        packed, scales = _quantize_int4_numpy(emb, group_size=64)
+        self.assertEqual(packed.dtype, np.uint8)
+        self.assertEqual(packed.shape, (8, 64))      # two nibbles per byte
+        self.assertEqual(scales.shape, (8, 2))       # 128 / 64 groups
+
+    def test_round_trip_high_cosine(self):
+        from python.interface import _dequantize_int4_numpy, _quantize_int4_numpy
+
+        emb = _make_embeddings(20, 256)
+        packed, scales = _quantize_int4_numpy(emb, group_size=64)
+        recon = _dequantize_int4_numpy(packed, scales, group_size=64, dim=256)
+        self.assertEqual(recon.shape, emb.shape)
+        # 4-bit symmetric abs-max preserves direction well.
+        self.assertGreater(_cosine_similarity(emb, recon), 0.98)
+
+    def test_odd_dimension_round_trip(self):
+        from python.interface import _dequantize_int4_numpy, _quantize_int4_numpy
+
+        emb = _make_embeddings(5, 127)               # odd → padded nibble
+        packed, scales = _quantize_int4_numpy(emb, group_size=32)
+        recon = _dequantize_int4_numpy(packed, scales, group_size=32, dim=127)
+        self.assertEqual(recon.shape, (5, 127))
+        self.assertGreater(_cosine_similarity(emb, recon), 0.98)
+
+    def test_quantize_int4_dispatches_and_compresses(self):
+        from python.interface import dequantize_int4, quantize_int4
+
+        emb = _make_embeddings(16, 768)
+        packed, scales = quantize_int4(emb, group_size=64)
+        # ~2× over INT8 (which is ~4× over f32): packed is d/2 bytes/vector.
+        ratio = emb.nbytes / (packed.nbytes + scales.nbytes)
+        self.assertGreater(ratio, 6.0)
+        recon = dequantize_int4(packed, scales, group_size=64, dim=768)
+        self.assertGreater(_cosine_similarity(emb, recon), 0.98)
+
+
 if __name__ == "__main__":
     unittest.main()

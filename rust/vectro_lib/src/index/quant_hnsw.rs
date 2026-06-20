@@ -26,14 +26,20 @@
 //! | `Sq2HnswIndex`    | `Sq2Quantizer`   | 2        |
 //! | `BinaryHnswIndex` | `BinaryQuantizer`| 1        |
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashSet};
 
 use super::neighbor_store::{neighbors_serde, NeighborList, NodeId};
+use super::{key_dist, key_id, pack_key, shuffled_order};
 use crate::quant::{
     Bf16Quantizer, BinaryQuantizer, Int8Quantizer, Nf4Quantizer, Quantizer, Sq2Quantizer,
     Sq3Quantizer,
 };
+
+/// Per-layer candidate neighbour lists for one node: `(layer, [(dist, id), …])`,
+/// the read-only output of the parallel search phase handed to the serial commit.
+type LayerCandidates = Vec<(usize, Vec<(f32, usize)>)>;
 
 // ── Convenience type aliases ──────────────────────────────────────────────────
 
@@ -49,25 +55,6 @@ pub type Sq3HnswIndex = QuantHnswIndex<Sq3Quantizer>;
 pub type Sq2HnswIndex = QuantHnswIndex<Sq2Quantizer>;
 /// HNSW backed by 1-bit sign (binary) quantization.
 pub type BinaryHnswIndex = QuantHnswIndex<BinaryQuantizer>;
-
-// ── OrdF32 (private total-order wrapper for BinaryHeap) ───────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct OrdF32(f32);
-
-impl Eq for OrdF32 {}
-
-impl PartialOrd for OrdF32 {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for OrdF32 {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.partial_cmp(&other.0).unwrap_or(std::cmp::Ordering::Equal)
-    }
-}
 
 // ── QuantHnswIndex ────────────────────────────────────────────────────────────
 
@@ -99,6 +86,19 @@ pub struct QuantHnswIndex<Q: Quantizer> {
     /// Soft-deletion tombstones; always aligned to `encoded.len()`.
     #[serde(default)]
     deleted: Vec<bool>,
+    /// Optional centering vector (mean of the first batch's unit vectors).
+    /// Auto-enabled for 1-bit (binary) quantization, where un-centered sign bits
+    /// on real embeddings collapse to near-identical codes and destroy graph
+    /// navigability. `None` for other quantizers / older indexes.
+    #[serde(default)]
+    center: Option<Vec<f32>>,
+    /// Transient full-precision (centered) vectors held *only during graph
+    /// construction*. The graph is built from exact f32 distances (links are
+    /// integers, free at rest), then dropped via `finalize`, leaving only the
+    /// quantized codes. Building a coarse graph from quantized distances
+    /// collapses recall; building from f32 and searching the codes recovers it.
+    #[serde(skip)]
+    build_vectors: Vec<Vec<f32>>,
     #[serde(skip)]
     _phantom: std::marker::PhantomData<Q>,
 }
@@ -122,6 +122,8 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             entry_point: None,
             max_level: 0,
             deleted: Vec::new(),
+            center: None,
+            build_vectors: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -152,10 +154,10 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         self.deleted.get(id).copied().unwrap_or(false)
     }
 
-    /// Deterministic geometric-distribution level via LCG of node count.
-    fn random_level(&self) -> usize {
-        let id = self.encoded.len() as u64;
-        let mut r = id
+    /// Deterministic geometric-distribution level for a given node id, seeded
+    /// purely by `id` so the parallel build matches the serial path's levels.
+    fn level_of(id: usize, ml: f64) -> usize {
+        let mut r = (id as u64)
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         r ^= r >> 33;
@@ -163,7 +165,66 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         r ^= r >> 33;
         let frac = (r >> 11) as f64 / (1u64 << 53) as f64;
         let frac = frac.max(1e-15);
-        ((-frac.ln()) * self.ml) as usize
+        ((-frac.ln()) * ml) as usize
+    }
+
+    fn random_level(&self) -> usize {
+        Self::level_of(self.encoded.len(), self.ml)
+    }
+
+    /// Mean-centering is enabled only for 1-bit (binary) quantization.
+    #[inline]
+    fn centering_enabled() -> bool {
+        Q::bits_per_dim() == 1
+    }
+
+    /// Subtract the stored centering vector from an already-unit-normalised
+    /// vector and re-normalise. No-op when no center is set.
+    fn apply_center(&self, normalized: &[f32]) -> Vec<f32> {
+        match &self.center {
+            Some(c) if c.len() == normalized.len() => {
+                let centered: Vec<f32> =
+                    normalized.iter().zip(c.iter()).map(|(x, m)| x - m).collect();
+                Self::normalize(&centered)
+            }
+            _ => normalized.to_vec(),
+        }
+    }
+
+    /// Mean of the unit-normalised input vectors (the centering vector).
+    fn compute_center(vectors: &[Vec<f32>]) -> Option<Vec<f32>> {
+        let dim = vectors.first().map(|v| v.len())?;
+        if dim == 0 {
+            return None;
+        }
+        let mut mean = vec![0.0f32; dim];
+        for v in vectors {
+            let nv = Self::normalize(v);
+            for (m, x) in mean.iter_mut().zip(nv.iter()) {
+                *m += x;
+            }
+        }
+        let inv = 1.0 / vectors.len() as f32;
+        for m in mean.iter_mut() {
+            *m *= inv;
+        }
+        Some(mean)
+    }
+
+    /// Distance from a stored node to an f32 query. During construction
+    /// (`use_f32 = true`) the transient full-precision `build_vectors` give an
+    /// exact distance (high-quality graph); at query time (`use_f32 = false`,
+    /// or after `finalize`) the asymmetric quantized distance is used.
+    #[inline]
+    fn node_dist(&self, id: usize, query: &[f32], use_f32: bool) -> f32 {
+        if use_f32 {
+            if let Some(v) = self.build_vectors.get(id) {
+                if !v.is_empty() {
+                    return crate::quant::cosine_dist_unit(v, query);
+                }
+            }
+        }
+        Q::dist_to_query(&self.encoded[id], query)
     }
 
     /// Core beam search with an optional per-node inclusion predicate.
@@ -178,30 +239,33 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         entry_points: &[usize],
         ef: usize,
         layer: usize,
+        use_f32: bool,
         filter: F,
     ) -> Vec<(f32, usize)> {
         // Reusable thread-local epoch visited set (see `super::scratch`): O(1)
         // mark/check, allocated once per thread instead of once per layer call.
         super::scratch::with_visited(self.encoded.len(), |visited| {
-            // cands: min-heap on distance (pop closest first)
-            let mut cands: BinaryHeap<(std::cmp::Reverse<OrdF32>, usize)> = BinaryHeap::new();
-            // window W: max-heap on distance (pop worst to enforce size <= ef)
-            let mut window: BinaryHeap<(OrdF32, usize)> = BinaryHeap::new();
+            // Packed-u64 heaps (see super::pack_key): native integer ordering,
+            // no per-comparison f32 branch.
+            let mut cands: BinaryHeap<std::cmp::Reverse<u64>> = BinaryHeap::new();
+            let mut window: BinaryHeap<u64> = BinaryHeap::new();
 
             for &ep in entry_points {
-                let d = Q::dist_to_query(&self.encoded[ep], query);
+                let d = self.node_dist(ep, query, use_f32);
                 visited.visit(ep);
-                cands.push((std::cmp::Reverse(OrdF32(d)), ep));
+                cands.push(std::cmp::Reverse(pack_key(d, ep)));
                 if !self.is_deleted(ep) && filter(ep) {
-                    window.push((OrdF32(d), ep));
+                    window.push(pack_key(d, ep));
                 }
             }
 
-            while let Some((std::cmp::Reverse(OrdF32(d_c)), c)) = cands.pop() {
-                let worst = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
+            while let Some(std::cmp::Reverse(ck)) = cands.pop() {
+                let d_c = key_dist(ck);
+                let worst = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
                 if d_c > worst && window.len() >= ef {
                     break;
                 }
+                let c = key_id(ck);
                 if layer >= self.neighbors[c].len() {
                     continue;
                 }
@@ -212,12 +276,12 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                     if !visited.visit(nb) {
                         continue;
                     }
-                    let d_nb = Q::dist_to_query(&self.encoded[nb], query);
-                    let worst2 = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
+                    let d_nb = self.node_dist(nb, query, use_f32);
+                    let worst2 = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
                     if d_nb < worst2 || window.len() < ef {
-                        cands.push((std::cmp::Reverse(OrdF32(d_nb)), nb));
+                        cands.push(std::cmp::Reverse(pack_key(d_nb, nb)));
                         if !self.is_deleted(nb) && filter(nb) {
-                            window.push((OrdF32(d_nb), nb));
+                            window.push(pack_key(d_nb, nb));
                             if window.len() > ef {
                                 window.pop();
                             }
@@ -226,12 +290,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                 }
             }
 
-            let mut result: Vec<(f32, usize)> =
-                window.into_iter().map(|(d, id)| (d.0, id)).collect();
-            result.sort_by(|a, b| {
-                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            result
+            window
+                .into_sorted_vec()
+                .into_iter()
+                .map(|k| (key_dist(k), key_id(k)))
+                .collect()
         })
     }
 
@@ -241,23 +304,100 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         entry_points: &[usize],
         ef: usize,
         layer: usize,
+        use_f32: bool,
     ) -> Vec<(f32, usize)> {
-        self.search_layer_impl(query, entry_points, ef, layer, |_| true)
+        self.search_layer_impl(query, entry_points, ef, layer, use_f32, |_| true)
     }
 
-    fn select_neighbors(candidates: &[(f32, usize)], m: usize) -> Vec<usize> {
-        candidates.iter().take(m).map(|&(_, id)| id).collect()
+    /// Distance between two stored nodes (for the selection heuristic). Uses the
+    /// exact f32 build vectors during construction (`use_f32`), else the decoded
+    /// codes.
+    #[inline]
+    fn node_to_node_dist(&self, a: usize, b: usize, use_f32: bool) -> f32 {
+        if use_f32 {
+            if let (Some(va), Some(vb)) = (self.build_vectors.get(a), self.build_vectors.get(b)) {
+                if !va.is_empty() && !vb.is_empty() {
+                    return crate::quant::cosine_dist_unit(va, vb);
+                }
+            }
+        }
+        let vb = Q::decode(&self.encoded[b], 0);
+        Q::dist_to_query(&self.encoded[a], &vb)
+    }
+
+    /// Heuristic neighbour selection (HNSW Algorithm 4): keep a candidate only if
+    /// it is closer to the query than to every already-selected neighbour, so the
+    /// links stay diverse. `candidates` sorted ascending by distance to the query.
+    fn select_heuristic(&self, candidates: &[(f32, usize)], m: usize, use_f32: bool) -> Vec<usize> {
+        if candidates.len() <= m {
+            return candidates.iter().map(|&(_, id)| id).collect();
+        }
+        let mut result: Vec<usize> = Vec::with_capacity(m);
+        for &(dist_eq, e) in candidates {
+            if result.len() >= m {
+                break;
+            }
+            let diverse = result
+                .iter()
+                .all(|&r| self.node_to_node_dist(e, r, use_f32) >= dist_eq);
+            if diverse {
+                result.push(e);
+            }
+        }
+        result
+    }
+
+    /// Set `node_id`'s forward links at `lc` (heuristic-selected from
+    /// `candidates`), then add reverse links to each neighbour, re-applying the
+    /// heuristic when a neighbour's list grows past `max_m`.
+    fn connect(
+        &mut self,
+        node_id: usize,
+        lc: usize,
+        max_m: usize,
+        candidates: &[(f32, usize)],
+        use_f32: bool,
+    ) {
+        let nbrs = self.select_heuristic(candidates, max_m, use_f32);
+        self.neighbors[node_id][lc] = nbrs.iter().map(|&id| id as NodeId).collect();
+        for &nb_id in &nbrs {
+            if lc >= self.neighbors[nb_id].len() {
+                continue;
+            }
+            self.neighbors[nb_id][lc].push(node_id as NodeId);
+            if self.neighbors[nb_id][lc].len() > max_m {
+                let nb_query: Vec<f32> = self
+                    .build_vectors
+                    .get(nb_id)
+                    .filter(|v| !v.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| Q::decode(&self.encoded[nb_id], 0));
+                let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
+                    .iter()
+                    .map(|&n| (self.node_dist(n as usize, &nb_query, use_f32), n as usize))
+                    .collect();
+                scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                let kept = self.select_heuristic(&scored, max_m, use_f32);
+                self.neighbors[nb_id][lc] = kept.iter().map(|&id| id as NodeId).collect();
+            }
+        }
     }
 
     // ─────────────────────────── public API ─────────────────────────────────
 
-    /// Insert a single vector (normalised internally; then encoded).
+    /// Insert a single vector (normalised, mean-centered for binary, then encoded).
     pub fn add(&mut self, vector: &[f32]) {
-        let norm_vec = Self::normalize(vector);
+        let norm_vec = self.apply_center(&Self::normalize(vector));
         let node_id = self.encoded.len();
         let node_level = self.random_level();
+        // Retain the f32 vector for graph construction while the buffer is still
+        // aligned (not finalized); post-finalize inserts use the quantized dist.
+        let building = self.build_vectors.len() == node_id;
 
         self.encoded.push(Q::encode(&norm_vec));
+        if building {
+            self.build_vectors.push(norm_vec.clone());
+        }
         self.neighbors.push(vec![NeighborList::new(); node_level + 1]);
         self.deleted.push(false);
 
@@ -270,49 +410,19 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                 let mut curr_ep = vec![ep];
                 let max_l = self.max_level;
 
-                // Greedy descent from top down to node_level + 1 (ef = 1).
                 for lc in (node_level + 1..=max_l).rev() {
-                    let res = self.search_layer(&norm_vec, &curr_ep, 1, lc);
+                    let res = self.search_layer(&norm_vec, &curr_ep, 1, lc, building);
                     if !res.is_empty() {
                         curr_ep = vec![res[0].1];
                     }
                 }
 
-                // ef_construction-width search from min(node_level, max_l) → 0.
                 for lc in (0..=node_level.min(max_l)).rev() {
                     let candidates =
-                        self.search_layer(&norm_vec, &curr_ep, self.ef_construction, lc);
+                        self.search_layer(&norm_vec, &curr_ep, self.ef_construction, lc, building);
                     let max_m = if lc == 0 { self.m0 } else { self.m };
-                    let nbrs = Self::select_neighbors(&candidates, max_m);
-
-                    self.neighbors[node_id][lc] =
-                        nbrs.iter().map(|&id| id as NodeId).collect();
+                    self.connect(node_id, lc, max_m, &candidates, building);
                     curr_ep = candidates.into_iter().map(|(_, id)| id).collect();
-
-                    // Add reverse links and prune if over max_m.
-                    for &nb_id in &nbrs {
-                        if lc < self.neighbors[nb_id].len() {
-                            self.neighbors[nb_id][lc].push(node_id as NodeId);
-                            if self.neighbors[nb_id][lc].len() > max_m {
-                                // Decode nb to use as the query for scoring its neighbors.
-                                let nb_decoded = Q::decode(&self.encoded[nb_id], 0);
-                                let mut scored: Vec<(f32, NodeId)> = self.neighbors[nb_id][lc]
-                                    .iter()
-                                    .map(|&n| {
-                                        (Q::dist_to_query(&self.encoded[n as usize], &nb_decoded), n)
-                                    })
-                                    .collect();
-                                scored.sort_by(|a, b| {
-                                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-                                });
-                                self.neighbors[nb_id][lc] = scored
-                                    .into_iter()
-                                    .take(max_m)
-                                    .map(|(_, id)| id)
-                                    .collect();
-                            }
-                        }
-                    }
                 }
 
                 if node_level > max_l {
@@ -323,11 +433,137 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         }
     }
 
-    /// Insert a batch of vectors.
+    /// Minimum batch size into an empty index that triggers the parallel build.
+    const PARALLEL_BUILD_THRESHOLD: usize = 512;
+    /// Chunk size for the parallel build, bounded to ~n/64 (clamped [64,1024]).
+    fn parallel_build_chunk(n: usize) -> usize {
+        (n / 512).clamp(32, 256)
+    }
+
+    /// Insert a batch of vectors. On the first batch into an empty index the
+    /// centering vector (binary only) is computed, and a large batch is built
+    /// in parallel; the transient f32 buffer is dropped afterward.
     pub fn add_batch(&mut self, vectors: &[Vec<f32>]) {
-        for v in vectors {
-            self.add(v);
+        if Self::centering_enabled()
+            && self.center.is_none()
+            && self.encoded.is_empty()
+            && !vectors.is_empty()
+        {
+            self.center = Self::compute_center(vectors);
         }
+
+        if self.encoded.is_empty() && vectors.len() >= Self::PARALLEL_BUILD_THRESHOLD {
+            self.build_parallel(vectors);
+        } else {
+            for v in vectors {
+                self.add(v);
+            }
+        }
+        self.finalize();
+    }
+
+    /// Drop the transient f32 build buffer, leaving only the quantized codes.
+    pub fn finalize(&mut self) {
+        self.build_vectors = Vec::new();
+        self.build_vectors.shrink_to_fit();
+    }
+
+    /// Parallel graph construction (parallel search + serial commit), building
+    /// from f32 distances and storing quantized codes. Shuffled order + bounded
+    /// chunk keep recall at parity with serial regardless of input ordering.
+    fn build_parallel(&mut self, vectors: &[Vec<f32>]) {
+        let n = vectors.len();
+        let transformed: Vec<Vec<f32>> = vectors
+            .iter()
+            .map(|v| self.apply_center(&Self::normalize(v)))
+            .collect();
+        let encoded: Vec<Q::Encoded> = transformed.par_iter().map(|t| Q::encode(t)).collect();
+        let levels: Vec<usize> = (0..n).map(|id| Self::level_of(id, self.ml)).collect();
+
+        self.encoded = encoded;
+        self.build_vectors = transformed;
+        self.deleted = vec![false; n];
+        self.neighbors = levels
+            .iter()
+            .map(|&lv| vec![NeighborList::new(); lv + 1])
+            .collect();
+
+        let order = shuffled_order(n);
+        self.entry_point = Some(order[0]);
+        self.max_level = levels[order[0]];
+
+        let chunk = Self::parallel_build_chunk(n);
+        let mut start = 1;
+        while start < n {
+            let end = (start + chunk).min(n);
+            let ids = &order[start..end];
+            let found: Vec<LayerCandidates> = ids
+                .par_iter()
+                .map(|&id| self.find_candidates(id, levels[id]))
+                .collect();
+            for (&id, per_layer) in ids.iter().zip(found.into_iter()) {
+                self.commit_node(id, levels[id], per_layer);
+            }
+            start = end;
+        }
+    }
+
+    /// Read-only neighbour search (uses exact f32 build distance). Safe to call
+    /// concurrently; commits nothing.
+    fn find_candidates(&self, node_id: usize, node_level: usize) -> LayerCandidates {
+        let q = &self.build_vectors[node_id];
+        let ep = match self.entry_point {
+            Some(ep) => ep,
+            None => return Vec::new(),
+        };
+        let max_l = self.max_level;
+        let mut curr_ep = vec![ep];
+
+        for lc in (node_level + 1..=max_l).rev() {
+            let res = self.search_layer(q, &curr_ep, 1, lc, true);
+            if !res.is_empty() {
+                curr_ep = vec![res[0].1];
+            }
+        }
+
+        let mut per_layer = Vec::new();
+        for lc in (0..=node_level.min(max_l)).rev() {
+            let candidates = self.search_layer(q, &curr_ep, self.ef_construction, lc, true);
+            curr_ep = candidates.iter().map(|&(_, id)| id).collect();
+            per_layer.push((lc, candidates));
+        }
+        per_layer
+    }
+
+    /// Serially commit a node's links from pre-computed per-layer candidates.
+    fn commit_node(&mut self, node_id: usize, node_level: usize, per_layer: LayerCandidates) {
+        for (lc, candidates) in per_layer {
+            let max_m = if lc == 0 { self.m0 } else { self.m };
+            self.connect(node_id, lc, max_m, &candidates, true);
+        }
+        if node_level > self.max_level {
+            self.max_level = node_level;
+            self.entry_point = Some(node_id);
+        }
+    }
+
+    /// Batch k-NN search over a row-major `[q, d]` flat buffer, parallel over
+    /// queries (rayon). Search is `&self`/read-only.
+    pub fn search_batch_flat(
+        &self,
+        flat: &[f32],
+        d: usize,
+        k: usize,
+        ef: usize,
+    ) -> Vec<Vec<(usize, f32)>> {
+        if d == 0 {
+            return Vec::new();
+        }
+        let q = flat.len() / d;
+        (0..q)
+            .into_par_iter()
+            .map(|i| self.search(&flat[i * d..(i + 1) * d], k, ef))
+            .collect()
     }
 
     /// Approximate k-nearest-neighbour search.
@@ -339,19 +575,19 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             Some(ep) => ep,
         };
         let ef = ef.max(k);
-        let q = Self::normalize(query);
+        let q = self.apply_center(&Self::normalize(query));
         let mut curr_ep = vec![ep];
 
         // Greedy descent to layer 1.
         for lc in (1..=self.max_level).rev() {
-            let res = self.search_layer(&q, &curr_ep, 1, lc);
+            let res = self.search_layer(&q, &curr_ep, 1, lc, false);
             if !res.is_empty() {
                 curr_ep = vec![res[0].1];
             }
         }
 
         // Full beam search at layer 0.
-        let res = self.search_layer(&q, &curr_ep, ef, 0);
+        let res = self.search_layer(&q, &curr_ep, ef, 0, false);
         res.into_iter().take(k).map(|(d, id)| (id, d)).collect()
     }
 
@@ -404,17 +640,17 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             Some(ep) => ep,
         };
         let ef = ef.max(k);
-        let q = Self::normalize(query);
+        let q = self.apply_center(&Self::normalize(query));
         let mut curr_ep = vec![ep];
 
         for lc in (1..=self.max_level).rev() {
-            let res = self.search_layer(&q, &curr_ep, 1, lc);
+            let res = self.search_layer(&q, &curr_ep, 1, lc, false);
             if !res.is_empty() {
                 curr_ep = vec![res[0].1];
             }
         }
 
-        let res = self.search_layer_impl(&q, &curr_ep, ef, 0, predicate);
+        let res = self.search_layer_impl(&q, &curr_ep, ef, 0, false, predicate);
         res.into_iter().take(k).map(|(d, id)| (id, d)).collect()
     }
 

@@ -38,6 +38,25 @@ impl Bf16Vector {
         self.packed.iter().map(|&bits| SimBf16(bits).to_f32()).collect()
     }
 
+    /// Asymmetric cosine distance to a full-precision query, computed directly
+    /// from the bf16 codes — no `decode()` allocation. Equivalent to
+    /// `cosine_dist_f32(&self.decode(), query)`.
+    #[inline]
+    pub fn cosine_dist_to_query(&self, query: &[f32]) -> f32 {
+        let mut dot = 0.0f32;
+        let mut norm_sq = 0.0f32;
+        for (&bits, &q) in self.packed.iter().zip(query.iter()) {
+            let dv = SimBf16(bits).to_f32();
+            dot += dv * q;
+            norm_sq += dv * dv;
+        }
+        let norm = norm_sq.sqrt();
+        if norm < 1e-8 {
+            return 1.0;
+        }
+        (1.0 - dot / norm).max(0.0)
+    }
+
     /// Cosine distance to another `Bf16Vector` using SimSIMD.
     ///
     /// Returns a value in `[0, 2]` where 0 = identical and 2 = opposite.
