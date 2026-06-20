@@ -33,10 +33,12 @@ Raw sweep: `benchmarks/results/20260620_phase3_concurrent_build_sweep.json`.
 |--------|-----------:|------------:|--------------:|---------:|
 | vectro INT8 (Rust SIMD) | **10.9 M vec/s** | 3.9× | 1.0000 | **2.5× faster** |
 | faiss ScalarQuantizer INT8 | 4.4 M vec/s | 4.0× | 0.9999 | — |
-| vectro PQ (M=25) | 47 K vec/s | 16× | 0.9503 | **18× slower** ❌ |
-| faiss IndexPQ (M=25) | 867 K vec/s | 16× | 0.9512 | — |
+| vectro PQ encode (M=25, Rust) | **819 K vec/s** | 16× | 0.9544 | **2.6× faster** ✓ |
+| faiss IndexPQ encode (M=25) | 315 K vec/s | 16× | 0.951 | — |
+| vectro PQ train (M=25, Rust k-means) | 2.0 s | — | — | 3.8× slower |
+| faiss IndexPQ train (BLAS k-means) | 0.53 s | — | — | — |
 
-**Standing:** INT8 encode is a clear win. **PQ encode is the single biggest weakness.**
+**Standing (corrected, Phase 2):** PQ **encode** is *not* a weakness — vectro is **2.6× faster** than faiss. The roadmap's earlier "47 K vec/s, 18× slower" was the pure-**NumPy** fallback, not the Rust `pq_encode_into` path. Phase 2 added a SIMD-across-K nearest-centroid kernel and moved Python PQ **training** onto the native (sklearn-free, deterministic) Rust k-means — reconstruction cosine 0.954 (parity with faiss). The one remaining PQ lag is **raw train time**: faiss's BLAS-GEMM k-means is ~3.8× faster; closing it needs a batched-GEMM assignment (future).
 
 ## 3. Quantized HNSW — recall @ memory (unique to vectro; no competitor ships this)
 
@@ -82,13 +84,24 @@ Goal: match/beat faiss's ~100k QPS@R0.95. faiss wins on memory layout + tight di
 
 **Beats:** faiss-hnsw on QPS@recall → vectro #1 on the search Pareto frontier.
 
-## Phase 2 — Make PQ competitive  *(fix the one clear loss)*
-Goal: PQ encode within 1.5× of faiss (from 18× slower) and better recall.
-1. **Vectorize PQ codebook assignment** — current encode is scalar nearest-centroid per subquantizer; SIMD the L2-argmin (or k-means lookup) like int8. *Est. 10–18×.*
-2. **OPQ rotation** (learned orthogonal pre-rotation) — closes the 32× vs 64× compression-at-quality gap and lifts recall.
-3. **SIMD ADC distance tables** — precompute per-query LUTs and SIMD the table-sum (faiss does this).
+## Phase 2 — Make PQ competitive ✅ DONE (premise corrected)
+**Finding:** the stated gap was wrong. PQ **encode** already beat faiss — vectro **819 K
+vs 315 K vec/s (2.6×)** via the Rust `pq_encode_into` path. The old "47 K, 18× slower"
+number was the pure-NumPy fallback. So there was no encode loss to fix.
 
-**Beats:** faiss IndexPQ on encode speed; matches on compression/quality.
+**Delivered:**
+1. **SIMD-across-K nearest-centroid kernel** (`quant::pq`) — transposed-centroid LUT +
+   the `‖c‖²−2v·c` reformulation, vectorizing the assignment over the wide K (=256)
+   axis instead of the tiny `sub_dim`. Used by both k-means training and encode.
+2. **Native PQ training** — `pq_api.train_pq_codebook` now routes to a Rust binding
+   (`pq_train_batch`) running the SIMD k-means: **sklearn-free, deterministic/seeded**,
+   1.6× faster than the old sklearn path. Reconstruction cosine **0.954** (faiss parity).
+
+**Still open (future):** faiss's **BLAS-GEMM k-means** trains ~3.8× faster than our
+SIMD-per-vector assignment (2.0 s vs 0.53 s). Closing it needs a batched `[n×K]` GEMM
+assignment. **OPQ rotation** (the Python `opq_rotation` scaffold exists) would lift the
+low raw-PQ search recall — a separate quality workstream. Raw sweep:
+`benchmarks/results/20260620_phase2_pq_simd.json`.
 
 ## Phase 3 — Concurrent-insertion build ✅ DONE
 Removed the chunked frozen-snapshot build (which capped recall ≈ 0.997). Every node

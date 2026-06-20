@@ -177,22 +177,12 @@ fn kmeans_lloyd(
     let mut assignments = vec![0usize; n];
 
     for _iter in 0..max_iter {
-        // Assignment step (parallel)
+        // Assignment step (parallel). Build the transposed-centroid LUT once per
+        // iteration, then assign every point via the SIMD-across-K kernel.
+        let lut = build_subspace_lut(&cents, k, sub_dim);
         let new_assignments: Vec<usize> = data
             .par_iter()
-            .map(|v| {
-                let mut best = 0;
-                let mut best_d = f32::INFINITY;
-                for ki in 0..k {
-                    let c = &cents[ki * sub_dim..(ki + 1) * sub_dim];
-                    let d = l2_sq(v, c);
-                    if d < best_d {
-                        best_d = d;
-                        best = ki;
-                    }
-                }
-                best
-            })
+            .map(|v| assign_nearest(v, &lut, k, sub_dim) as usize)
             .collect();
 
         let changed = new_assignments.iter().zip(assignments.iter()).any(|(a, b)| a != b);
@@ -225,6 +215,123 @@ fn kmeans_lloyd(
 #[inline]
 pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| { let d = x - y; d * d }).sum()
+}
+
+// ───────────────── fast nearest-centroid assignment (SIMD across K) ──────────
+//
+// The PQ hot loop — k-means assignment and encode — finds, per sub-vector,
+// `argmin_k ‖v − c_k‖²`. Computing `‖v − c_k‖²` directly (`l2_sq`) only
+// vectorizes over `sub_dim`, which is tiny (e.g. 4 for d=100, M=25). Instead use
+//
+//     argmin_k ‖v − c_k‖²  =  argmin_k (‖c_k‖² − 2·v·c_k)     (‖v‖² is constant)
+//
+// and lay the centroids out **transposed** as `ct[j*K + k]` (coordinate `j` of
+// every centroid contiguous), so the `v·c_k` term vectorizes across the wide
+// `K` (=256) axis: for each `j`, FMA the broadcast scalar `v[j]` across all K
+// centroids at once. This is the layout FAISS uses for its fast assignment.
+
+/// The maximum K a PQ codebook supports (u8 codes). Sizes the assignment buffer.
+const MAX_K: usize = 256;
+
+/// Transposed centroid LUT for one sub-space: `ct[j*k + ki]` is coordinate `j`
+/// of centroid `ki`, and `norms[ki] = ‖c_ki‖²`. Built once per sub-space and
+/// reused across all rows (encode) or all vectors in a k-means iteration.
+struct SubspaceLut {
+    ct: Vec<f32>,
+    norms: Vec<f32>,
+}
+
+/// Build the transposed-centroid LUT from a row-major `[k][sub_dim]` table.
+fn build_subspace_lut(table: &[f32], k: usize, sub_dim: usize) -> SubspaceLut {
+    let mut ct = vec![0.0f32; sub_dim * k];
+    let mut norms = vec![0.0f32; k];
+    for (ki, cen) in table.chunks_exact(sub_dim).enumerate() {
+        let mut nrm = 0.0f32;
+        for (j, &x) in cen.iter().enumerate() {
+            ct[j * k + ki] = x;
+            nrm += x * x;
+        }
+        norms[ki] = nrm;
+    }
+    SubspaceLut { ct, norms }
+}
+
+/// `argmin_k (norms[k] − 2·v·c_k)` over the transposed LUT — the nearest
+/// centroid index for sub-vector `v`. Vectorized across the K axis on aarch64.
+#[inline]
+fn assign_nearest(v: &[f32], lut: &SubspaceLut, k: usize, sub_dim: usize) -> u8 {
+    debug_assert!(k <= MAX_K);
+    let mut dist = [0.0f32; MAX_K];
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is mandated on AArch64-v8; all indices below stay < k ≤ MAX_K.
+    unsafe {
+        assign_dist_neon(v, &lut.ct, &lut.norms, &mut dist, k, sub_dim);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        // Portable reformulation: dist[ki] = ‖c_ki‖² − 2·(v·c_ki).
+        dist[..k].copy_from_slice(&lut.norms[..k]);
+        for j in 0..sub_dim {
+            let vj = v[j];
+            let row = &lut.ct[j * k..j * k + k];
+            for (ki, &cjk) in row.iter().enumerate() {
+                dist[ki] -= 2.0 * vj * cjk;
+            }
+        }
+    }
+    let mut best = 0usize;
+    let mut best_d = dist[0];
+    for (ki, &d) in dist[1..k].iter().enumerate() {
+        if d < best_d {
+            best_d = d;
+            best = ki + 1;
+        }
+    }
+    best as u8
+}
+
+/// NEON inner kernel: fill `dist[ki] = norms[ki] − 2·Σ_j v[j]·ct[j*k+ki]`,
+/// vectorizing the FMA accumulation across 4 centroids at a time.
+///
+/// # Safety
+/// Requires NEON. `ct.len() >= sub_dim*k`, `norms.len() >= k`, `dist.len() >= k`,
+/// `v.len() >= sub_dim`. Reads/writes stay within `k` centroids.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn assign_dist_neon(
+    v: &[f32],
+    ct: &[f32],
+    norms: &[f32],
+    dist: &mut [f32],
+    k: usize,
+    sub_dim: usize,
+) {
+    use std::arch::aarch64::*;
+    let two = vdupq_n_f32(2.0);
+    let kc = k & !3; // largest multiple of 4 ≤ k
+    let mut ki = 0;
+    while ki < kc {
+        let mut acc = vdupq_n_f32(0.0);
+        for j in 0..sub_dim {
+            let vj = vdupq_n_f32(*v.get_unchecked(j));
+            let cj = vld1q_f32(ct.as_ptr().add(j * k + ki));
+            acc = vfmaq_f32(acc, vj, cj);
+        }
+        let nrm = vld1q_f32(norms.as_ptr().add(ki));
+        // dist = norms − 2·acc
+        let d = vfmsq_f32(nrm, two, acc);
+        vst1q_f32(dist.as_mut_ptr().add(ki), d);
+        ki += 4;
+    }
+    // scalar tail (< 4 centroids)
+    while ki < k {
+        let mut dot = 0.0f32;
+        for j in 0..sub_dim {
+            dot += *v.get_unchecked(j) * *ct.get_unchecked(j * k + ki);
+        }
+        *dist.get_unchecked_mut(ki) = *norms.get_unchecked(ki) - 2.0 * dot;
+        ki += 1;
+    }
 }
 
 /// Encode a batch of f32 vectors to PQ codes (u8 per sub-space).
@@ -270,10 +377,16 @@ fn encode_one(v: &[f32], cb: &PQCodebook) -> Vec<u8> {
 pub fn pq_encode_into(vectors: &[f32], cb: &PQCodebook, codes_out: &mut [u8]) {
     let m = cb.n_subspaces;
     let sub_dim = cb.sub_dim;
+    let k = cb.n_centroids;
     let d = m * sub_dim;
-    let cent_stride = cb.n_centroids * sub_dim;
+    let cent_stride = k * sub_dim;
     debug_assert_eq!(vectors.len() % d, 0);
     debug_assert_eq!(codes_out.len(), (vectors.len() / d) * m);
+
+    // Build the transposed-centroid LUTs once (read-only, shared across rows).
+    let luts: Vec<SubspaceLut> = (0..m)
+        .map(|sub| build_subspace_lut(&cb.centroids[sub * cent_stride..(sub + 1) * cent_stride], k, sub_dim))
+        .collect();
 
     codes_out
         .par_chunks_mut(m)
@@ -281,17 +394,7 @@ pub fn pq_encode_into(vectors: &[f32], cb: &PQCodebook, codes_out: &mut [u8]) {
         .for_each(|(code_row, v)| {
             for (sub, code) in code_row.iter_mut().enumerate() {
                 let subv = &v[sub * sub_dim..(sub + 1) * sub_dim];
-                let table = &cb.centroids[sub * cent_stride..(sub + 1) * cent_stride];
-                let mut best = 0u8;
-                let mut best_d = f32::INFINITY;
-                for (ki, cen) in table.chunks_exact(sub_dim).enumerate() {
-                    let dist = l2_sq(subv, cen);
-                    if dist < best_d {
-                        best_d = dist;
-                        best = ki as u8;
-                    }
-                }
-                *code = best;
+                *code = assign_nearest(subv, &luts[sub], k, sub_dim);
             }
         });
 }
@@ -437,6 +540,34 @@ mod tests {
         let cb = train_pq_codebook(&vecs, m, k, 5, 0).unwrap();
         let table = pq_distance_table(&vecs[0], &cb);
         assert_eq!(table.len(), m * k);
+    }
+
+    #[test]
+    fn assign_nearest_matches_bruteforce_l2() {
+        // The SIMD-across-K reformulation must pick the same centroid as a naive
+        // argmin over l2_sq for every sub-vector (ties aside — none in this data).
+        let (k, sub_dim) = (200usize, 8usize);
+        let vecs = make_vecs(260, sub_dim); // reuse as centroids + queries
+        let table: Vec<f32> = vecs[..k].iter().flatten().copied().collect();
+        let lut = build_subspace_lut(&table, k, sub_dim);
+        for q in &vecs {
+            let got = assign_nearest(q, &lut, k, sub_dim) as usize;
+            let mut best = 0usize;
+            let mut best_d = f32::INFINITY;
+            for ki in 0..k {
+                let d = l2_sq(q, &table[ki * sub_dim..(ki + 1) * sub_dim]);
+                if d < best_d {
+                    best_d = d;
+                    best = ki;
+                }
+            }
+            // Equal distance to the chosen and brute-force centroid ⇒ accept tie.
+            let got_d = l2_sq(q, &table[got * sub_dim..(got + 1) * sub_dim]);
+            assert!(
+                (got_d - best_d).abs() <= 1e-4,
+                "assign {got} (d={got_d}) vs brute {best} (d={best_d})"
+            );
+        }
     }
 
     #[test]

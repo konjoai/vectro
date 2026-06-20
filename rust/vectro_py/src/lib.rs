@@ -7,8 +7,11 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3};
-use ndarray::{Array1, Array2};
+use numpy::{
+    IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2,
+    PyReadonlyArray3,
+};
+use ndarray::{Array1, Array2, Array3};
 use vectro_lib::{Embedding, EmbeddingDataset};
 use vectro_lib::search::{SearchIndex, QuantizedIndex};
 use std::collections::HashMap;
@@ -1530,6 +1533,45 @@ fn pq_encode_batch<'py>(
     Ok(codes_arr.into_pyarray(py))
 }
 
+/// Train a PQ codebook with the native (SIMD-accelerated, seeded) Lloyd's
+/// k-means and return the centroids as a `[M, K, sub_dim]` float32 array.
+///
+/// This is the fast, dependency-free path behind `pq_api.train_pq_codebook`
+/// (no scikit-learn required). The nearest-centroid assignment uses the
+/// transposed-LUT kernel that vectorizes across the K axis (see `quant::pq`),
+/// and sub-spaces train in parallel via rayon. Deterministic for a fixed seed.
+#[pyfunction]
+fn pq_train_batch<'py>(
+    py: Python<'py>,
+    vectors: PyReadonlyArray2<f32>,
+    n_subspaces: usize,
+    n_centroids: usize,
+    max_iter: usize,
+    seed: u64,
+) -> PyResult<&'py PyArray3<f32>> {
+    let varr = vectors.as_array();
+    let d = varr.ncols();
+    if n_centroids > 256 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "PQ requires K ≤ 256 (got {n_centroids})"
+        )));
+    }
+    if n_subspaces == 0 || d % n_subspaces != 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "vector dim {d} not divisible by n_subspaces {n_subspaces}"
+        )));
+    }
+    // Own the rows so training can run without holding the GIL.
+    let rows: Vec<Vec<f32>> = varr.rows().into_iter().map(|r| r.to_vec()).collect();
+    let cb = py
+        .allow_threads(|| pq::train_pq_codebook(&rows, n_subspaces, n_centroids, max_iter, seed))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+    let arr = Array3::from_shape_vec((cb.n_subspaces, cb.n_centroids, cb.sub_dim), cb.centroids)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(arr.into_pyarray(py))
+}
+
 // ─────────────────────── BM25 + Hybrid Search (v6.0.0) ─────────────────────
 
 /// Okapi BM25 full-text index (Python binding).
@@ -1661,6 +1703,7 @@ fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(quantize_int8_batch_from_f16, m)?)?;
     m.add_function(wrap_pyfunction!(dequantize_int8_batch, m)?)?;
     m.add_function(wrap_pyfunction!(pq_encode_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(pq_train_batch, m)?)?;
     // BM25 + hybrid search (v6.0.0)
     m.add_class::<PyBM25Index>()?;
     m.add_function(wrap_pyfunction!(hybrid_search_py, m)?)?;
