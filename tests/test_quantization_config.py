@@ -9,6 +9,7 @@ Covers:
 - config fields override loose kwargs
 - model_dir + explicit non-default precision_mode triggers UserWarning
 """
+
 from __future__ import annotations
 
 import warnings
@@ -35,6 +36,7 @@ BATCH = RNG.standard_normal((100, 128)).astype(np.float32)
 # ---------------------------------------------------------------------------
 # Construction & defaults
 # ---------------------------------------------------------------------------
+
 
 class TestQuantizationConfigDefaults(unittest.TestCase):
     def test_default_precision_mode(self):
@@ -70,6 +72,7 @@ class TestQuantizationConfigDefaults(unittest.TestCase):
 # Explicit construction
 # ---------------------------------------------------------------------------
 
+
 class TestQuantizationConfigExplicit(unittest.TestCase):
     def test_nf4_construction(self):
         cfg = QuantizationConfig(precision_mode="nf4")
@@ -99,6 +102,7 @@ class TestQuantizationConfigExplicit(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Validation — invalid inputs raise ValueError
 # ---------------------------------------------------------------------------
+
 
 class TestQuantizationConfigValidation(unittest.TestCase):
     def test_unknown_precision_mode_raises(self):
@@ -146,6 +150,7 @@ class TestQuantizationConfigValidation(unittest.TestCase):
 # from_profile() class-method
 # ---------------------------------------------------------------------------
 
+
 class TestFromProfile(unittest.TestCase):
     def test_fast_maps_to_int8(self):
         cfg = QuantizationConfig.from_profile("fast")
@@ -174,13 +179,19 @@ class TestFromProfile(unittest.TestCase):
 # to_dict() serialisation
 # ---------------------------------------------------------------------------
 
+
 class TestToDict(unittest.TestCase):
     def test_keys_present(self):
         cfg = QuantizationConfig(precision_mode="nf4", seed=7)
         d = cfg.to_dict()
         expected_keys = {
-            "precision_mode", "profile", "group_size",
-            "assume_normalized", "return_quality_metrics", "model_dir", "seed",
+            "precision_mode",
+            "profile",
+            "group_size",
+            "assume_normalized",
+            "return_quality_metrics",
+            "model_dir",
+            "seed",
         }
         self.assertEqual(set(d.keys()), expected_keys)
 
@@ -193,6 +204,7 @@ class TestToDict(unittest.TestCase):
 
     def test_json_serialisable(self):
         import json
+
         cfg = QuantizationConfig(precision_mode="int8", profile="balanced", seed=0)
         d = cfg.to_dict()
         # Must not raise
@@ -202,6 +214,7 @@ class TestToDict(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Vectro.compress(config=...) integration
 # ---------------------------------------------------------------------------
+
 
 class TestCompressWithConfig(unittest.TestCase):
     def setUp(self):

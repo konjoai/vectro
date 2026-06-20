@@ -34,6 +34,7 @@ import numpy as np
 # Device detection
 # ---------------------------------------------------------------------------
 
+
 def gpu_available() -> bool:
     """Return True if a MAX Engine GPU backend is detected.
 
@@ -43,6 +44,7 @@ def gpu_available() -> bool:
     try:
         # MAX Engine GPU detection — import path may change with SDK versions.
         import max.device as _md  # type: ignore[import]
+
         return _md.is_gpu_available()
     except (ImportError, AttributeError):
         return False
@@ -58,6 +60,7 @@ def gpu_device_info() -> dict:
     if gpu_available():
         try:
             import max.device as _md  # type: ignore[import]
+
             info = _md.device_info()
             return {
                 "backend": "max_gpu",
@@ -79,6 +82,7 @@ def gpu_device_info() -> dict:
 # ---------------------------------------------------------------------------
 # INT8 quantize / reconstruct
 # ---------------------------------------------------------------------------
+
 
 def quantize_int8_batch(
     vectors: np.ndarray,
@@ -103,10 +107,10 @@ def quantize_int8_batch(
     if v.ndim == 1:
         v = v[np.newaxis, :]
 
-    abs_max = np.abs(v).max(axis=1)               # (n,)
+    abs_max = np.abs(v).max(axis=1)  # (n,)
     scales = np.where(abs_max > 0, abs_max / 127.0, 1.0).astype(np.float32)
 
-    inv_scales = (1.0 / scales)[:, np.newaxis]    # (n, 1)
+    inv_scales = (1.0 / scales)[:, np.newaxis]  # (n, 1)
     q = np.clip(np.round(v * inv_scales), -127, 127).astype(np.int8)
     return q, scales
 
@@ -132,6 +136,7 @@ def reconstruct_int8_batch(
 # ---------------------------------------------------------------------------
 # Batch INT8 cosine similarity
 # ---------------------------------------------------------------------------
+
 
 def batch_cosine_similarity(
     vectors_a: np.ndarray,
@@ -161,10 +166,10 @@ def batch_cosine_similarity(
     a_norm = np.where(a_norm == 0, 1.0, a_norm)
     b_norm = np.where(b_norm == 0, 1.0, b_norm)
 
-    a_hat = a / a_norm      # (n, d)
-    b_hat = b / b_norm      # (m, d)
+    a_hat = a / a_norm  # (n, d)
+    b_hat = b / b_norm  # (m, d)
 
-    return (a_hat @ b_hat.T).astype(np.float32)   # (n, m)
+    return (a_hat @ b_hat.T).astype(np.float32)  # (n, m)
 
 
 def batch_cosine_int8(
@@ -191,6 +196,7 @@ def batch_cosine_int8(
 # Top-k search
 # ---------------------------------------------------------------------------
 
+
 def batch_cosine_query(
     queries: np.ndarray,
     database: np.ndarray,
@@ -213,11 +219,11 @@ def batch_cosine_query(
     scores  : np.ndarray, shape (q, top_k), float32
         Nearest database entries per query, highest cosine first.
     """
-    sim = batch_cosine_similarity(queries, database)   # (q, n)
+    sim = batch_cosine_similarity(queries, database)  # (q, n)
     # Partial sort descending — argpartition is O(n), then sort top_k only
     k = min(top_k, sim.shape[1])
     # argpartition gives top-k (unordered)
-    part = np.argpartition(-sim, k - 1, axis=1)[:, :k]   # (q, k)
+    part = np.argpartition(-sim, k - 1, axis=1)[:, :k]  # (q, k)
     # Gather scores then sort each row descending
     gather = np.take_along_axis(sim, part, axis=1)
     order = np.argsort(-gather, axis=1)
@@ -254,9 +260,10 @@ def batch_topk_int8(
 # PQ encode (GPU path stub)
 # ---------------------------------------------------------------------------
 
+
 def pq_encode_gpu(
     vectors: np.ndarray,
-    codebook,           # PQCodebook from pq_api
+    codebook,  # PQCodebook from pq_api
     batch_size: int = 4096,
 ) -> np.ndarray:
     """PQ encode vectors with optional GPU acceleration.
@@ -276,12 +283,14 @@ def pq_encode_gpu(
     np.ndarray, shape (n, M), uint8
     """
     from .pq_api import pq_encode  # type: ignore[import]
+
     return pq_encode(vectors, codebook)
 
 
 # ---------------------------------------------------------------------------
 # Throughput benchmark
 # ---------------------------------------------------------------------------
+
 
 def gpu_benchmark(
     n: int = 10_000,

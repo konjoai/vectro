@@ -34,14 +34,6 @@ impl PQCodebook {
         let start = m * stride + k * self.sub_dim;
         &self.centroids[start..start + self.sub_dim]
     }
-
-    /// Mutable centroid slice.
-    #[inline]
-    fn centroid_mut(&mut self, m: usize, k: usize) -> &mut [f32] {
-        let stride = self.n_centroids * self.sub_dim;
-        let start = m * stride + k * self.sub_dim;
-        &mut self.centroids[start..start + self.sub_dim]
-    }
 }
 
 /// Train a PQ codebook with Lloyd's K-means.
@@ -63,7 +55,7 @@ pub fn train_pq_codebook(
         return Err("training_data is empty".into());
     }
     let d = training_data[0].len();
-    if d % n_subspaces != 0 {
+    if !d.is_multiple_of(n_subspaces) {
         return Err(format!("d={d} not divisible by n_subspaces={n_subspaces}"));
     }
     if n_centroids > 256 {
@@ -74,7 +66,7 @@ pub fn train_pq_codebook(
     }
 
     let sub_dim = d / n_subspaces;
-    let n = training_data.len();
+    let _n = training_data.len();
     let total = n_subspaces * n_centroids * sub_dim;
     let mut centroids_flat = vec![0.0f32; total];
 
@@ -263,6 +255,47 @@ fn encode_one(v: &[f32], cb: &PQCodebook) -> Vec<u8> {
     code
 }
 
+/// Zero-copy batch PQ encode against a trained codebook.
+///
+/// Encodes the row-major f32 `vectors` (length `n * d`, `d = M * sub_dim`) into
+/// `n * M` u8 `codes_out`, choosing the nearest centroid (L2) per sub-space.
+/// Rayon-parallel over rows with no per-row heap allocation — the fast path
+/// behind `python/pq_api.pq_encode`.
+///
+/// Numerically equivalent to the NumPy reference in `python/pq_api.py`
+/// (`argmin` keeps the first minimum) modulo floating-point: the NumPy path
+/// expands `‖v-c‖² = ‖v‖²+‖c‖²-2v·c` while this computes `Σ(v-c)²` directly, so
+/// the two may pick different *equidistant* centroids at ties — identical
+/// reconstruction quality.
+pub fn pq_encode_into(vectors: &[f32], cb: &PQCodebook, codes_out: &mut [u8]) {
+    let m = cb.n_subspaces;
+    let sub_dim = cb.sub_dim;
+    let d = m * sub_dim;
+    let cent_stride = cb.n_centroids * sub_dim;
+    debug_assert_eq!(vectors.len() % d, 0);
+    debug_assert_eq!(codes_out.len(), (vectors.len() / d) * m);
+
+    codes_out
+        .par_chunks_mut(m)
+        .zip(vectors.par_chunks(d))
+        .for_each(|(code_row, v)| {
+            for (sub, code) in code_row.iter_mut().enumerate() {
+                let subv = &v[sub * sub_dim..(sub + 1) * sub_dim];
+                let table = &cb.centroids[sub * cent_stride..(sub + 1) * cent_stride];
+                let mut best = 0u8;
+                let mut best_d = f32::INFINITY;
+                for (ki, cen) in table.chunks_exact(sub_dim).enumerate() {
+                    let dist = l2_sq(subv, cen);
+                    if dist < best_d {
+                        best_d = dist;
+                        best = ki as u8;
+                    }
+                }
+                *code = best;
+            }
+        });
+}
+
 /// Decode PQ codes back to approximate f32 vectors.
 pub fn pq_decode(codes: &[Vec<u8>], codebook: &PQCodebook) -> Vec<Vec<f32>> {
     codes
@@ -404,5 +437,24 @@ mod tests {
         let cb = train_pq_codebook(&vecs, m, k, 5, 0).unwrap();
         let table = pq_distance_table(&vecs[0], &cb);
         assert_eq!(table.len(), m * k);
+    }
+
+    #[test]
+    fn pq_encode_into_matches_encode_one() {
+        let (n, d, m, k) = (200usize, 32usize, 8usize, 16usize);
+        let vecs = make_vecs(n, d);
+        let cb = train_pq_codebook(&vecs, m, k, 10, 0).unwrap();
+
+        // Reference: per-row encode_one.
+        let reference = pq_encode(&vecs, &cb);
+
+        // Flat batch encode.
+        let flat: Vec<f32> = vecs.iter().flatten().copied().collect();
+        let mut codes = vec![0u8; n * m];
+        pq_encode_into(&flat, &cb, &mut codes);
+
+        for (i, row) in reference.iter().enumerate() {
+            assert_eq!(&codes[i * m..(i + 1) * m], row.as_slice(), "row {i} mismatch");
+        }
     }
 }

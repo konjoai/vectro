@@ -21,7 +21,8 @@ from typing import List
 import numpy as np
 
 try:
-    from vectro_py import PyBf16Encoder as _PyBf16Encoder    # type: ignore
+    from vectro_py import PyBf16Encoder as _PyBf16Encoder  # type: ignore
+
     _BINDINGS_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _BINDINGS_AVAILABLE = False

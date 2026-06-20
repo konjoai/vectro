@@ -17,6 +17,7 @@ V7 visualization endpoints (``/viz/index/{name}/{add,project,cluster}``)
 live in :mod:`api.viz` and are mounted via :func:`include_router` so
 both feature sets share one ASGI app without path collisions.
 """
+
 from __future__ import annotations
 
 import threading
@@ -79,6 +80,7 @@ def _get(name: str) -> _IndexEntry:
 # Request / response models
 # ---------------------------------------------------------------------------
 
+
 class CreateIndexRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     dim: int = Field(..., gt=0, le=65536)
@@ -138,6 +140,7 @@ class BenchmarkResponse(BaseModel):
     for graph-construction overhead and search throughput accounts for
     the inner-loop cost of beam search at the configured ``ef``.
     """
+
     name: str
     dim: int
     metric: Metric
@@ -209,10 +212,7 @@ def add_vectors(name: str, req: AddRequest) -> AddResponse:
     if arr.ndim != 2 or arr.shape[1] != entry.dim:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"vectors must be 2-D with dim={entry.dim}, "
-                f"got shape={list(arr.shape)}"
-            ),
+            detail=(f"vectors must be 2-D with dim={entry.dim}, got shape={list(arr.shape)}"),
         )
     if not np.isfinite(arr).all():
         raise HTTPException(

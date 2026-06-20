@@ -6,6 +6,7 @@ Covers:
 - Concurrent async operations
 - Empty store safety
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +22,7 @@ import numpy as np
 # Stub Haystack document type (dataclass so _doc_to_dict works)
 # ---------------------------------------------------------------------------
 
+
 @dataclasses.dataclass
 class _Document:
     id: str = ""
@@ -33,6 +35,7 @@ class _Document:
     def __dataclass_fields__(self):  # accessed by haystack helpers
         return {f.name: f for f in dataclasses.fields(self)}
 
+
 _haystack_mod = types.ModuleType("haystack")
 _haystack_dc = types.ModuleType("haystack.dataclasses")
 _haystack_dc.Document = _Document
@@ -44,7 +47,6 @@ for mod_name, mod in [
 ]:
     sys.modules.setdefault(mod_name, mod)
 
-import tests._path_setup as _  # noqa: E402
 from python.integrations.haystack_integration import VectroDocumentStore  # noqa: E402
 
 
@@ -52,18 +54,21 @@ from python.integrations.haystack_integration import VectroDocumentStore  # noqa
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_store(n: int = 6, dim: int = 64) -> VectroDocumentStore:
     rng = np.random.default_rng(11)
     store = VectroDocumentStore(compression_profile="fast")
     docs = []
     for i in range(n):
         emb = rng.standard_normal(dim).astype(np.float32).tolist()
-        docs.append(_Document(
-            id=f"doc-{i}",
-            content=f"content {i}",
-            meta={"cat": f"cat-{i % 3}", "lang": "en" if i < 4 else "fr"},
-            embedding=emb,
-        ))
+        docs.append(
+            _Document(
+                id=f"doc-{i}",
+                content=f"content {i}",
+                meta={"cat": f"cat-{i % 3}", "lang": "en" if i < 4 else "fr"},
+                embedding=emb,
+            )
+        )
     store.write_documents(docs)
     return store
 
@@ -71,6 +76,7 @@ def _make_store(n: int = 6, dim: int = 64) -> VectroDocumentStore:
 # ---------------------------------------------------------------------------
 # async_embedding_retrieval
 # ---------------------------------------------------------------------------
+
 
 class TestHaystackAsyncEmbeddingRetrieval(unittest.TestCase):
     def setUp(self):
@@ -96,9 +102,7 @@ class TestHaystackAsyncEmbeddingRetrieval(unittest.TestCase):
     def test_async_retrieval_with_metadata_filter(self):
         async def _run():
             q = np.ones(64, dtype=np.float32).tolist()
-            return await self.store.async_embedding_retrieval(
-                q, top_k=10, filters={"cat": "cat-0"}
-            )
+            return await self.store.async_embedding_retrieval(q, top_k=10, filters={"cat": "cat-0"})
 
         results = asyncio.run(_run())
         for doc in results:
@@ -107,9 +111,7 @@ class TestHaystackAsyncEmbeddingRetrieval(unittest.TestCase):
     def test_async_retrieval_return_embedding_flag(self):
         async def _run():
             q = np.ones(64, dtype=np.float32).tolist()
-            return await self.store.async_embedding_retrieval(
-                q, top_k=2, return_embedding=True
-            )
+            return await self.store.async_embedding_retrieval(q, top_k=2, return_embedding=True)
 
         results = asyncio.run(_run())
         for doc in results:
@@ -139,6 +141,7 @@ class TestHaystackAsyncEmbeddingRetrieval(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # async_write_documents
 # ---------------------------------------------------------------------------
+
 
 class TestHaystackAsyncWriteDocuments(unittest.TestCase):
     def test_async_write_returns_count(self):
@@ -205,6 +208,7 @@ class TestHaystackAsyncWriteDocuments(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Concurrent operations
 # ---------------------------------------------------------------------------
+
 
 class TestHaystackConcurrentAsync(unittest.TestCase):
     def test_concurrent_retrieval_and_write(self):

@@ -4,7 +4,6 @@ import numpy as np
 
 from .base import BaseEmbeddingProvider
 
-
 class OpenAIEmbeddings(BaseEmbeddingProvider):
     provider_name: str
 
@@ -18,6 +17,5 @@ class OpenAIEmbeddings(BaseEmbeddingProvider):
         normalize: bool = ...,
         dimension: Optional[int] = ...,
     ) -> None: ...
-
     def _ensure_client(self) -> Any: ...
     def _embed_batch(self, texts: List[str]) -> np.ndarray: ...

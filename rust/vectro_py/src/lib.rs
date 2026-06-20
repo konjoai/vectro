@@ -1,6 +1,13 @@
+// PyO3's `#[pymethods]` / `#[pyclass]` macros expand to `impl` blocks inside
+// function bodies, which trips rustc's `non_local_definitions` lint. This is a
+// known macro-expansion false positive (fixed by a future PyO3 bump); suppress
+// it crate-wide so `cargo clippy -- -D warnings` stays clean.
+#![allow(unknown_lints)]
+#![allow(non_local_definitions)]
+
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3};
 use ndarray::{Array1, Array2};
 use vectro_lib::{Embedding, EmbeddingDataset};
 use vectro_lib::search::{SearchIndex, QuantizedIndex};
@@ -182,7 +189,7 @@ impl PySearchIndex {
         let indices_array: &PyArray1<usize> = Array1::from(indices).into_pyarray(py);
         let similarities_array: &PyArray1<f32> = Array1::from(similarities).into_pyarray(py);
         
-        Ok(PyTuple::new(py, &[indices_array.as_ref(), similarities_array.as_ref()]).into())
+        Ok(PyTuple::new(py, [indices_array.as_ref(), similarities_array.as_ref()]).into())
     }
 
     fn batch_search(&self, py: Python<'_>, queries: PyReadonlyArray2<f32>, top_k: usize) -> PyResult<Py<PyList>> {
@@ -205,7 +212,7 @@ impl PySearchIndex {
             
             let indices_array: &PyArray1<usize> = Array1::from(indices).into_pyarray(py);
             let similarities_array: &PyArray1<f32> = Array1::from(similarities).into_pyarray(py);
-            let result_tuple = PyTuple::new(py, &[indices_array.as_ref(), similarities_array.as_ref()]);
+            let result_tuple = PyTuple::new(py, [indices_array.as_ref(), similarities_array.as_ref()]);
             
             all_results.push(result_tuple);
         }
@@ -215,7 +222,7 @@ impl PySearchIndex {
 
     fn __repr__(&self) -> String {
         // We can't access private fields, so use a simpler representation
-        format!("PySearchIndex")
+        "PySearchIndex".to_string()
     }
 }
 
@@ -264,7 +271,7 @@ impl PyQuantizedIndex {
         let indices_array: &PyArray1<usize> = Array1::from(indices).into_pyarray(py);
         let similarities_array: &PyArray1<f32> = Array1::from(similarities).into_pyarray(py);
         
-        Ok(PyTuple::new(py, &[indices_array.as_ref(), similarities_array.as_ref()]).into())
+        Ok(PyTuple::new(py, [indices_array.as_ref(), similarities_array.as_ref()]).into())
     }
 
     fn compression_ratio(&self) -> f32 {
@@ -814,19 +821,26 @@ impl PyIvfIndex {
     fn train(&mut self, vectors: Vec<Vec<f32>>, max_iter: usize, seed: u64) -> PyResult<()> {
         self.inner
             .train(&vectors, max_iter, seed)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Zero-copy train from a numpy array (shape [N, D]).
     fn train_np(&mut self, array: PyReadonlyArray2<f32>, max_iter: usize, seed: u64) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
-        let vecs: Vec<Vec<f32>> = match arr.as_slice() {
-            Some(flat) => (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect(),
-            None => arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect(),
-        };
-        self.inner.train(&vecs, max_iter, seed)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+        // Borrow contiguous rows directly; only copy when the array is strided.
+        match arr.as_slice() {
+            Some(flat) => {
+                let rows: Vec<&[f32]> = (0..n).map(|i| &flat[i * d..(i + 1) * d]).collect();
+                self.inner.train(&rows, max_iter, seed)
+            }
+            None => {
+                let owned: Vec<Vec<f32>> =
+                    arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
+                self.inner.train(&owned, max_iter, seed)
+            }
+        }
+        .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Add a single vector; returns its global id.
@@ -839,12 +853,14 @@ impl PyIvfIndex {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
         if let Some(flat) = arr.as_slice() {
-            self.inner.add_batch(
-                &(0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect::<Vec<_>>(),
-            );
+            for i in 0..n {
+                self.inner.add(&flat[i * d..(i + 1) * d]);
+            }
         } else {
-            let vecs: Vec<Vec<f32>> = arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
-            self.inner.add_batch(&vecs);
+            for row in arr.rows() {
+                let v: Vec<f32> = row.iter().copied().collect();
+                self.inner.add(&v);
+            }
         }
         Ok(())
     }
@@ -952,7 +968,7 @@ impl PyIvfPqIndex {
     ) -> PyResult<()> {
         self.inner
             .train(&vectors, n_subspaces, n_centroids, max_iter, seed)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Zero-copy train from a numpy array (shape [N, D]).
@@ -966,12 +982,19 @@ impl PyIvfPqIndex {
     ) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
-        let vecs: Vec<Vec<f32>> = match arr.as_slice() {
-            Some(flat) => (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect(),
-            None => arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect(),
-        };
-        self.inner.train(&vecs, n_subspaces, n_centroids, max_iter, seed)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+        // Borrow contiguous rows directly; only copy when the array is strided.
+        match arr.as_slice() {
+            Some(flat) => {
+                let rows: Vec<&[f32]> = (0..n).map(|i| &flat[i * d..(i + 1) * d]).collect();
+                self.inner.train(&rows, n_subspaces, n_centroids, max_iter, seed)
+            }
+            None => {
+                let owned: Vec<Vec<f32>> =
+                    arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
+                self.inner.train(&owned, n_subspaces, n_centroids, max_iter, seed)
+            }
+        }
+        .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Add a single vector; returns its global id.
@@ -983,11 +1006,16 @@ impl PyIvfPqIndex {
     fn add_np(&mut self, array: PyReadonlyArray2<f32>) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
-        let vecs: Vec<Vec<f32>> = match arr.as_slice() {
-            Some(flat) => (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect(),
-            None => arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect(),
-        };
-        for v in &vecs { self.inner.add(v); }
+        if let Some(flat) = arr.as_slice() {
+            for i in 0..n {
+                self.inner.add(&flat[i * d..(i + 1) * d]);
+            }
+        } else {
+            for row in arr.rows() {
+                let v: Vec<f32> = row.iter().copied().collect();
+                self.inner.add(&v);
+            }
+        }
         Ok(())
     }
 
@@ -1216,29 +1244,66 @@ fn encode_nf4_fast(vec: Vec<f32>) -> PyResult<(Vec<u8>, f32, usize)> {
     Ok((q.packed, q.scale, q.dim))
 }
 
+/// Reject non-finite (NaN/Inf) input at the encode boundary.
+///
+/// INT8 abs-max quantisation silently corrupts on non-finite input: an `Inf`
+/// poisons a row's scale so every code saturates to 0, and `NaN` casts to 0.
+/// Failing fast with a precise location beats shipping masked overflow.
+fn ensure_finite(flat: &[f32], d: usize) -> PyResult<()> {
+    if let Some(pos) = flat.iter().position(|x| !x.is_finite()) {
+        let (row, col) = if d > 0 { (pos / d, pos % d) } else { (0, pos) };
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "input contains a non-finite value (NaN or Inf) at row {row}, col {col}; \
+             quantization requires finite float32 input"
+        )));
+    }
+    Ok(())
+}
+
 /// Batch encode a 2-D float32 numpy array [N, D] to INT8 using rayon-parallel
 /// abs-max quantisation with zero per-row heap allocation.
 ///
 /// Returns `(codes, scales)` where `codes` is shape [N, D] dtype `int8` and
-/// `scales` is shape [N] dtype `float32` (`abs_max / 127.0` per row).
+/// `scales` is shape [N] dtype `float32` (`abs_max / (127 · range_factor)` per
+/// row).
+///
+/// `range_factor` (rf, in `(0, 1]`, default `1.0`) reproduces the Python
+/// `VectroBatchProcessor` profiles: `1.0` = `fast` (max element → ±127),
+/// `0.95` = `balanced`, `0.90` = `quality` (headroom below ±127).  Codes use
+/// `round(v · 127 · rf / abs_max)`.
 ///
 /// Zero-copy on C-contiguous input; auto-vectorised inner loop (NEON/AVX2).
+/// Rejects non-finite (NaN/Inf) input with a `ValueError`, and a
+/// `range_factor` outside `(0, 1]` with a `ValueError`.
 #[pyfunction]
+#[pyo3(signature = (vectors, range_factor = 1.0))]
 fn quantize_int8_batch<'py>(
     py: Python<'py>,
     vectors: PyReadonlyArray2<f32>,
+    range_factor: f32,
 ) -> PyResult<(&'py PyArray2<i8>, &'py PyArray1<f32>)> {
+    if !(range_factor > 0.0 && range_factor <= 1.0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "range_factor must be in (0, 1], got {range_factor}"
+        )));
+    }
     let arr = vectors.as_array();
     let (n, d) = (arr.nrows(), arr.ncols());
     let mut codes_flat = vec![0i8; n * d];
     let mut scales = vec![0.0f32; n];
     match arr.as_slice() {
         Some(flat) => {
-            vectro_lib::quant::int8::batch_encode_into(flat, n, d, &mut codes_flat, &mut scales);
+            ensure_finite(flat, d)?;
+            vectro_lib::quant::int8::batch_encode_into_with_range(
+                flat, n, d, &mut codes_flat, &mut scales, range_factor,
+            );
         }
         None => {
             let flat: Vec<f32> = arr.iter().copied().collect();
-            vectro_lib::quant::int8::batch_encode_into(&flat, n, d, &mut codes_flat, &mut scales);
+            ensure_finite(&flat, d)?;
+            vectro_lib::quant::int8::batch_encode_into_with_range(
+                &flat, n, d, &mut codes_flat, &mut scales, range_factor,
+            );
         }
     }
     let codes_arr = Array2::from_shape_vec((n, d), codes_flat)
@@ -1267,6 +1332,7 @@ fn quantize_int8_batch_normalized<'py>(
     let mut scales = vec![0.0f32; n];
     match arr.as_slice() {
         Some(flat) => {
+            ensure_finite(flat, d)?;
             vectro_lib::quant::int8::batch_encode_normalized_into(
                 flat, n, d, &mut codes_flat, &mut scales,
             );
@@ -1274,6 +1340,7 @@ fn quantize_int8_batch_normalized<'py>(
         None => {
             // Non-contiguous — collapse to a contiguous copy first.
             let flat: Vec<f32> = arr.iter().copied().collect();
+            ensure_finite(&flat, d)?;
             vectro_lib::quant::int8::batch_encode_normalized_into(
                 &flat, n, d, &mut codes_flat, &mut scales,
             );
@@ -1316,6 +1383,10 @@ fn quantize_int8_batch_from_f16<'py>(
             }
         }
     }
+
+    // Validate after widening so f16 NaN/Inf (which widen to f32 NaN/Inf) are
+    // caught with the same contract as the f32 entry points.
+    ensure_finite(&buf, d)?;
 
     let mut codes_flat = vec![0i8; n * d];
     let mut scales = vec![0.0f32; n];
@@ -1361,6 +1432,47 @@ fn dequantize_int8_batch<'py>(
     let out_arr = Array2::from_shape_vec((n, d), out_flat)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     Ok(out_arr.into_pyarray(py))
+}
+
+/// Batch PQ-encode an [N, D] float32 array against a trained centroid table.
+///
+/// `centroids` has shape `[M, K, sub_dim]` (`K ≤ 256`, `D == M * sub_dim`).
+/// Returns codes of shape `[N, M]` dtype `uint8` — the nearest centroid index
+/// per sub-space.  Rayon-parallel; numerically matches the NumPy reference in
+/// `python/pq_api.py` (modulo equidistant-tie selection).  This is the fast
+/// path that lets `pq_api.pq_encode` skip the per-sub-space NumPy loop.
+#[pyfunction]
+fn pq_encode_batch<'py>(
+    py: Python<'py>,
+    vectors: PyReadonlyArray2<f32>,
+    centroids: PyReadonlyArray3<f32>,
+) -> PyResult<&'py PyArray2<u8>> {
+    let varr = vectors.as_array();
+    let (n, d) = (varr.nrows(), varr.ncols());
+    let cdims = centroids.shape();
+    let (m, k, sub_dim) = (cdims[0], cdims[1], cdims[2]);
+
+    if k > 256 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "PQ requires K ≤ 256 (got {k})"
+        )));
+    }
+    if m * sub_dim != d {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "centroid shape M*sub_dim ({m}*{sub_dim}) != vector dim {d}"
+        )));
+    }
+
+    let vflat: Vec<f32> = varr.iter().copied().collect();
+    let cflat: Vec<f32> = centroids.as_array().iter().copied().collect();
+    let cb = pq::PQCodebook { n_subspaces: m, n_centroids: k, sub_dim, centroids: cflat };
+
+    let mut codes_flat = vec![0u8; n * m];
+    pq::pq_encode_into(&vflat, &cb, &mut codes_flat);
+
+    let codes_arr = Array2::from_shape_vec((n, m), codes_flat)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(codes_arr.into_pyarray(py))
 }
 
 // ─────────────────────── BM25 + Hybrid Search (v6.0.0) ─────────────────────
@@ -1493,6 +1605,7 @@ fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(quantize_int8_batch_normalized, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_int8_batch_from_f16, m)?)?;
     m.add_function(wrap_pyfunction!(dequantize_int8_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(pq_encode_batch, m)?)?;
     // BM25 + hybrid search (v6.0.0)
     m.add_class::<PyBM25Index>()?;
     m.add_function(wrap_pyfunction!(hybrid_search_py, m)?)?;

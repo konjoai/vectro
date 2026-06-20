@@ -70,7 +70,7 @@ t0 = time.perf_counter()
 batch_result = vectro.compress_batch(doc_embeddings)
 compress_ms = (time.perf_counter() - t0) * 1000
 
-print(f"\n--- Compression ---")
+print("\n--- Compression ---")
 print(f"Compression ratio: {batch_result.compression_ratio:.2f}×")
 print(f"Original size    : {batch_result.total_original_bytes:,} bytes")
 print(f"Compressed size  : {batch_result.total_compressed_bytes:,} bytes")
@@ -103,7 +103,7 @@ print(f"Mean cosine similarity (original vs reconstructed): {cos_sim:.4f}")
 # 4. Semantic search
 # ---------------------------------------------------------------------------
 QUERY = "How does vector quantization reduce memory usage?"
-print(f"\n--- Semantic Search ---")
+print("\n--- Semantic Search ---")
 print(f"Query: {QUERY!r}")
 
 # Simulate query encoding (replace with real model in production)

@@ -119,22 +119,15 @@ fn kmeans_lloyd(data: &[&[f32]], k: usize, d: usize, max_iter: usize, seed: u64)
             }
             counts[ki] += 1;
         }
-        for ki in 0..k {
-            if counts[ki] == 0 {
+        for (ki, &count) in counts.iter().enumerate() {
+            if count == 0 {
                 continue;
             }
-            let inv = 1.0 / counts[ki] as f32;
+            let inv = 1.0 / count as f32;
             let start = ki * d;
-            for s in &mut cents[start..start + d] {
-                *s *= 0.0; // reset
-            }
-            for s_add in &sums[start..start + d] {
-                cents[start..start + d]
-                    .iter_mut()
-                    .zip(std::iter::once(s_add))
-                    .for_each(|(c, &a)| *c += a * inv);
-            }
-            // Simpler: just copy
+            // Centroid = mean of assigned points. (Earlier revisions had a
+            // redundant reset+accumulate pass here that this single write
+            // already subsumes.)
             for (c, s) in cents[start..start + d].iter_mut().zip(sums[start..start + d].iter()) {
                 *c = s * inv;
             }
@@ -249,7 +242,9 @@ impl IvfIndex {
                 (ci, Self::cosine_dist(v, c))
             })
             .collect();
-        scores.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        // NaN-safe ordering: a NaN distance (e.g. a non-finite query) sorts as
+        // equal rather than panicking, matching HnswIndex / IvfPqIndex.
+        scores.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         scores.into_iter().take(n_probe).map(|(ci, _)| ci).collect()
     }
 
@@ -266,9 +261,9 @@ impl IvfIndex {
     ///
     /// # Errors
     /// Returns an error string when `training_data.len() < n_lists`.
-    pub fn train(
+    pub fn train<V: AsRef<[f32]>>(
         &mut self,
-        training_data: &[Vec<f32>],
+        training_data: &[V],
         max_iter: usize,
         seed: u64,
     ) -> Result<(), String> {
@@ -279,12 +274,13 @@ impl IvfIndex {
                 self.n_lists
             ));
         }
-        let d = training_data[0].len();
+        let d = training_data[0].as_ref().len();
         if d == 0 {
             return Err("vector dimension must be > 0".into());
         }
 
-        let norms: Vec<Vec<f32>> = training_data.iter().map(|v| Self::normalize(v)).collect();
+        let norms: Vec<Vec<f32>> =
+            training_data.iter().map(|v| Self::normalize(v.as_ref())).collect();
         let refs: Vec<&[f32]> = norms.iter().map(|v| v.as_slice()).collect();
         self.centroids = kmeans_lloyd(&refs, self.n_lists, d, max_iter, seed);
         self.dim = d;
@@ -308,8 +304,11 @@ impl IvfIndex {
     }
 
     /// Insert a batch of vectors; returns their global IDs.
-    pub fn add_batch(&mut self, vectors: &[Vec<f32>]) -> Vec<usize> {
-        vectors.iter().map(|v| self.add(v)).collect()
+    ///
+    /// Generic over `AsRef<[f32]>` so callers can pass borrowed row slices
+    /// (e.g. `&[&[f32]]` over a contiguous buffer) without an owning copy.
+    pub fn add_batch<V: AsRef<[f32]>>(&mut self, vectors: &[V]) -> Vec<usize> {
+        vectors.iter().map(|v| self.add(v.as_ref())).collect()
     }
 
     /// Approximate k-nearest-neighbour search.
@@ -341,7 +340,7 @@ impl IvfIndex {
             })
             .collect();
 
-        candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         candidates.dedup_by_key(|e| e.0);
         candidates.truncate(k);
         candidates
@@ -471,7 +470,7 @@ impl IvfIndex {
             })
             .collect();
 
-        candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         candidates.dedup_by_key(|e| e.0);
         candidates.truncate(k);
         candidates
@@ -559,6 +558,42 @@ mod tests {
     }
 
     #[test]
+    fn train_borrowed_slices_matches_owned() {
+        // Workstream A: the AsRef<[f32]> generic must produce bit-identical
+        // centroids whether fed owned `Vec<f32>` rows or borrowed `&[f32]` rows
+        // (the zero-copy path the PyO3 bindings take on contiguous arrays).
+        let vecs = make_vecs(120, 32);
+
+        let mut owned = IvfIndex::new(8, 4);
+        owned.train(&vecs, 20, 42).expect("owned train failed");
+
+        let refs: Vec<&[f32]> = vecs.iter().map(|v| v.as_slice()).collect();
+        let mut borrowed = IvfIndex::new(8, 4);
+        borrowed.train(&refs, 20, 42).expect("borrowed train failed");
+
+        assert_eq!(owned.centroids, borrowed.centroids);
+        assert_eq!(owned.dim, borrowed.dim);
+    }
+
+    #[test]
+    fn add_batch_borrowed_slices_matches_owned() {
+        let vecs = make_vecs(120, 32);
+        let refs: Vec<&[f32]> = vecs.iter().map(|v| v.as_slice()).collect();
+
+        let mut owned = IvfIndex::new(8, 4);
+        owned.train(&vecs, 20, 42).unwrap();
+        owned.add_batch(&vecs);
+
+        let mut borrowed = IvfIndex::new(8, 4);
+        borrowed.train(&refs, 20, 42).unwrap();
+        borrowed.add_batch(&refs);
+
+        assert_eq!(owned.len(), borrowed.len());
+        assert_eq!(owned.store, borrowed.store);
+        assert_eq!(owned.posting_lists, borrowed.posting_lists);
+    }
+
+    #[test]
     fn search_empty_after_train() {
         let train = make_vecs(10, 8);
         let mut idx = IvfIndex::new(4, 2);
@@ -566,6 +601,25 @@ mod tests {
         let q = vec![0.1f32; 8];
         let res = idx.search(&q, 5);
         assert!(res.is_empty());
+    }
+
+    #[test]
+    fn search_with_nan_query_does_not_panic() {
+        // A non-finite query produces NaN cosine distances; the centroid /
+        // candidate sorts must degrade gracefully (NaN-as-equal) rather than
+        // panicking on `partial_cmp().unwrap()`.
+        let vecs = make_vecs(40, 16);
+        let mut idx = IvfIndex::new(4, 4);
+        idx.train(&vecs, 10, 3).unwrap();
+        idx.add_batch(&vecs);
+
+        let mut q = vec![0.1f32; 16];
+        q[3] = f32::NAN;
+        q[7] = f32::INFINITY;
+        // Must not panic on any search variant that sorts by distance.
+        let _ = idx.search(&q, 5);
+        let _ = idx.search_with_probe(&q, 5, 4);
+        let _ = idx.search_filtered_with_probe(&q, 5, 4, |id| id % 2 == 0);
     }
 
     #[test]
@@ -720,7 +774,7 @@ mod tests {
         }
         let (results, n_probe) = idx.search_for_recall(&vecs[0], 5, 0.8);
         // n_probe must be within [1, n_lists].
-        assert!(n_probe >= 1 && n_probe <= 8);
+        assert!((1..=8).contains(&n_probe));
         // Results must be non-empty.
         assert!(!results.is_empty());
     }

@@ -34,6 +34,7 @@ For LangChain ``BaseDocumentCompressor`` duck-typing::
     reranker = LangChainReranker(store, embedding=embedder, top_k=5)
     docs = reranker.compress_documents(initial_docs, "refined query")
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -45,6 +46,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Core re-scoring helpers
 # ---------------------------------------------------------------------------
+
 
 def _cosine_rerank(
     query_vec: np.ndarray,
@@ -111,6 +113,7 @@ def _rrf_rerank(
 # ---------------------------------------------------------------------------
 # VectroReranker
 # ---------------------------------------------------------------------------
+
 
 class VectroReranker:
     """Re-rank retrieved results using Vectro-compressed embeddings.
@@ -199,6 +202,7 @@ class VectroReranker:
     ) -> List[Tuple[str, Any, float]]:
         """Async variant of :meth:`rerank` — runs in a thread-pool executor."""
         import asyncio
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, lambda: self.rerank(query_embedding, candidates, top_k)
@@ -211,6 +215,7 @@ class VectroReranker:
 # ---------------------------------------------------------------------------
 # LangChainReranker — duck-typed BaseDocumentCompressor
 # ---------------------------------------------------------------------------
+
 
 class LangChainReranker:
     """LangChain ``BaseDocumentCompressor``-compatible re-ranker.
@@ -262,9 +267,7 @@ class LangChainReranker:
         """
         if not documents:
             return []
-        q_vec = np.asarray(
-            self._embedding.embed_query(query), dtype=np.float32
-        )
+        q_vec = np.asarray(self._embedding.embed_query(query), dtype=np.float32)
 
         # Build candidates: (doc_id, document, score=0.0 as placeholder)
         ids = _extract_ids(self._store, documents)
@@ -281,11 +284,10 @@ class LangChainReranker:
     ) -> List[Any]:
         """Async variant of :meth:`compress_documents`."""
         import asyncio
+
         loop = asyncio.get_running_loop()
         q_vec = np.asarray(
-            await loop.run_in_executor(
-                None, lambda: self._embedding.embed_query(query)
-            ),
+            await loop.run_in_executor(None, lambda: self._embedding.embed_query(query)),
             dtype=np.float32,
         )
         ids = _extract_ids(self._store, documents)
@@ -310,15 +312,13 @@ class LangChainReranker:
         return await self.acompress_documents(docs, query)
 
     def __repr__(self) -> str:
-        return (
-            f"LangChainReranker(top_k={self._top_k}, "
-            f"strategy={self._reranker._strategy!r})"
-        )
+        return f"LangChainReranker(top_k={self._top_k}, strategy={self._reranker._strategy!r})"
 
 
 # ---------------------------------------------------------------------------
 # HaystackReranker — duck-typed Haystack 2.x component
 # ---------------------------------------------------------------------------
+
 
 class HaystackReranker:
     """Haystack 2.x component duck-type for re-ranking retrieved Documents.
@@ -380,21 +380,18 @@ class HaystackReranker:
     ) -> Dict[str, List[Any]]:
         """Async variant of :meth:`run`."""
         import asyncio
+
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, lambda: self.run(query_embedding, documents, top_k)
-        )
+        return await loop.run_in_executor(None, lambda: self.run(query_embedding, documents, top_k))
 
     def __repr__(self) -> str:
-        return (
-            f"HaystackReranker(top_k={self._top_k}, "
-            f"strategy={self._reranker._strategy!r})"
-        )
+        return f"HaystackReranker(top_k={self._top_k}, strategy={self._reranker._strategy!r})"
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _extract_ids(store: Any, documents: List[Any]) -> List[str]:
     """Map LangChain *documents* to store-internal ids, falling back to positional."""

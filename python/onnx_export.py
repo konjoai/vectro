@@ -36,7 +36,6 @@ Runtime inference example (requires onnxruntime)::
 
 from __future__ import annotations
 
-import numpy as np
 
 # Lazy import so users without onnx installed can still import vectro.
 try:
@@ -81,15 +80,13 @@ def to_onnx_model(result: object) -> "onnx.ModelProto":  # type: ignore[name-def
     """
     if not _HAVE_ONNX:
         raise RuntimeError(
-            "onnx is required for ONNX export. "
-            "Install with: pip install 'onnx>=1.14'"
+            "onnx is required for ONNX export. Install with: pip install 'onnx>=1.14'"
         )
 
     precision_mode = getattr(result, "precision_mode", "int8")
     if precision_mode == "int4":
         raise ValueError(
-            "INT4 results are not supported by the ONNX exporter. "
-            "Pass an int8 result instead."
+            "INT4 results are not supported by the ONNX exporter. Pass an int8 result instead."
         )
 
     # ------------------------------------------------------------------
@@ -97,12 +94,8 @@ def to_onnx_model(result: object) -> "onnx.ModelProto":  # type: ignore[name-def
     # ------------------------------------------------------------------
     # quantized: INT8   [N, D]
     # scales:    FLOAT  [N]
-    quantized_input = _oh.make_tensor_value_info(
-        "quantized", onnx.TensorProto.INT8, ["N", "D"]
-    )
-    scales_input = _oh.make_tensor_value_info(
-        "scales", onnx.TensorProto.FLOAT, ["N"]
-    )
+    quantized_input = _oh.make_tensor_value_info("quantized", onnx.TensorProto.INT8, ["N", "D"])
+    scales_input = _oh.make_tensor_value_info("scales", onnx.TensorProto.FLOAT, ["N"])
 
     # ------------------------------------------------------------------
     # Graph output

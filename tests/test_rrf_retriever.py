@@ -1,11 +1,12 @@
 """Tests for the RRF hybrid retriever (v4.15.0)."""
+
 from __future__ import annotations
 
 import asyncio
 import sys
 import types
 import unittest
-from typing import Any, List, Tuple
+from typing import List, Tuple
 
 import numpy as np
 
@@ -28,10 +29,13 @@ from python.retrieval.rrf_retriever import (  # noqa: E402
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _ranking_fn(results: List[Tuple[str, str, float]]):
     """Returns a retriever function that always returns the given results."""
+
     def _fn(query: str, fetch_k: int) -> List[Tuple[str, str, float]]:
         return results[:fetch_k]
+
     return _fn
 
 
@@ -39,8 +43,8 @@ def _ranking_fn(results: List[Tuple[str, str, float]]):
 # reciprocal_rank_fusion
 # ---------------------------------------------------------------------------
 
-class TestRRFAlgorithm(unittest.TestCase):
 
+class TestRRFAlgorithm(unittest.TestCase):
     def test_single_ranking_gives_decreasing_scores(self):
         ranking = ["doc-a", "doc-b", "doc-c"]
         scores = reciprocal_rank_fusion([ranking])
@@ -78,7 +82,6 @@ class TestRRFAlgorithm(unittest.TestCase):
 
 
 class TestRRFTopK(unittest.TestCase):
-
     def test_returns_k_results(self):
         r = ["a", "b", "c", "d", "e"]
         top = rrf_top_k([r], k=3)
@@ -100,8 +103,8 @@ class TestRRFTopK(unittest.TestCase):
 # RRFRetriever
 # ---------------------------------------------------------------------------
 
-class TestRRFRetriever(unittest.TestCase):
 
+class TestRRFRetriever(unittest.TestCase):
     def _make_results(self, prefix: str, n: int) -> List[Tuple[str, str, float]]:
         return [(f"{prefix}-{i}", f"text for {prefix}-{i}", 1.0 / (i + 1)) for i in range(n)]
 
@@ -156,9 +159,12 @@ class TestRRFRetriever(unittest.TestCase):
 # LangChainRRFRetriever
 # ---------------------------------------------------------------------------
 
+
 def _inject_langchain_stub():
     lc = sys.modules.get("langchain_core") or types.ModuleType("langchain_core")
-    docs_mod = sys.modules.get("langchain_core.documents") or types.ModuleType("langchain_core.documents")
+    docs_mod = sys.modules.get("langchain_core.documents") or types.ModuleType(
+        "langchain_core.documents"
+    )
 
     class _Document:
         def __init__(self, page_content="", metadata=None):
@@ -175,7 +181,9 @@ def _inject_langchain_stub():
 _LCDoc = _inject_langchain_stub()
 
 # Also inject langchain_core.vectorstores for the LangChainVectorStore import
-vs_mod = sys.modules.get("langchain_core.vectorstores") or types.ModuleType("langchain_core.vectorstores")
+vs_mod = sys.modules.get("langchain_core.vectorstores") or types.ModuleType(
+    "langchain_core.vectorstores"
+)
 vs_mod.VectorStore = object
 sys.modules.setdefault("langchain_core.vectorstores", vs_mod)
 
@@ -201,7 +209,6 @@ def _build_lc_store(n: int = 10, dim: int = 32) -> VectroVectorStore:
 
 
 class TestLangChainRRFRetriever(unittest.TestCase):
-
     def test_empty_stores_raises(self):
         with self.assertRaises(ValueError):
             LangChainRRFRetriever([], k=3)

@@ -45,15 +45,11 @@ class IVFIndex:
         ...
 
     # ── Search ───────────────────────────────────────────────────────────────
-    def search(
-        self, query: List[float], k: int
-    ) -> List[Tuple[str, float]]:
+    def search(self, query: List[float], k: int) -> List[Tuple[str, float]]:
         """Return ``k`` nearest neighbours as ``[(id, score), …]``."""
         ...
 
-    def search_np(
-        self, query: np.ndarray, k: int
-    ) -> List[Tuple[str, float]]:
+    def search_np(self, query: np.ndarray, k: int) -> List[Tuple[str, float]]:
         """Same as ``search`` but accepts a 1-D float32 ndarray."""
         ...
 
@@ -72,9 +68,7 @@ class IVFIndex:
         """Search restricted to ``allowed_ids``; accepts float32 ndarray."""
         ...
 
-    def search_for_recall(
-        self, query: List[float], k: int
-    ) -> List[Tuple[str, float]]:
+    def search_for_recall(self, query: List[float], k: int) -> List[Tuple[str, float]]:
         """Search variant optimised for recall measurement."""
         ...
 
@@ -90,7 +84,6 @@ class IVFIndex:
 
     def __repr__(self) -> str: ...
     def __len__(self) -> int: ...
-
 
 class IVFPQIndex:
     """Inverted-file index with product quantization, backed by ``PyIvfPqIndex``.
@@ -149,27 +142,16 @@ class IVFPQIndex:
     def vacuum(self) -> None: ...
 
     # ── Search ───────────────────────────────────────────────────────────────
-    def search(
-        self, query: List[float], k: int
-    ) -> List[Tuple[str, float]]: ...
-
-    def search_np(
-        self, query: np.ndarray, k: int
-    ) -> List[Tuple[str, float]]: ...
-
+    def search(self, query: List[float], k: int) -> List[Tuple[str, float]]: ...
+    def search_np(self, query: np.ndarray, k: int) -> List[Tuple[str, float]]: ...
     def search_with_probe(
         self, query: List[float], k: int, n_probe: int
     ) -> List[Tuple[str, float]]: ...
-
-    def search_for_recall(
-        self, query: List[float], k: int
-    ) -> List[Tuple[str, float]]: ...
+    def search_for_recall(self, query: List[float], k: int) -> List[Tuple[str, float]]: ...
 
     # ── Persistence ──────────────────────────────────────────────────────────
     def save(self, path: str) -> None: ...
-
     @classmethod
     def load(cls, path: str) -> "IVFPQIndex": ...
-
     def __repr__(self) -> str: ...
     def __len__(self) -> int: ...

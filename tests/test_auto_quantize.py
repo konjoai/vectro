@@ -23,6 +23,7 @@ from python.auto_quantize_api import (  # noqa: E402
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_data(n=100, d=64, seed=42):
     rng = np.random.default_rng(seed)
     return rng.standard_normal((n, d)).astype(np.float32)
@@ -31,6 +32,7 @@ def _make_data(n=100, d=64, seed=42):
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
+
 
 class TestUtilities(unittest.TestCase):
     def test_cosine_sim_mean_identical(self):
@@ -77,6 +79,7 @@ class TestUtilities(unittest.TestCase):
 # auto_quantize — output structure
 # ---------------------------------------------------------------------------
 
+
 class TestAutoQuantizeStructure(unittest.TestCase):
     def setUp(self):
         self.data = _make_data(80, 48)
@@ -122,6 +125,7 @@ class TestAutoQuantizeStructure(unittest.TestCase):
 # auto_quantize — quality
 # ---------------------------------------------------------------------------
 
+
 class TestAutoQuantizeQuality(unittest.TestCase):
     def test_cosine_achieves_fallback(self):
         """Even with tight targets the function returns something with cosine > 0.5."""
@@ -150,6 +154,7 @@ class TestAutoQuantizeQuality(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # auto_quantize — kurtosis routing
 # ---------------------------------------------------------------------------
+
 
 class TestAutoQuantizeKurtosisRouting(unittest.TestCase):
     def test_heavy_tail_routing(self):
@@ -190,6 +195,7 @@ class TestAutoQuantizeKurtosisRouting(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestAutoQuantizeEdgeCases(unittest.TestCase):
     def test_single_vector(self):

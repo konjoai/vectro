@@ -8,7 +8,7 @@ use std::time::Duration;
 fn test_server_command_builds() {
     // Test that we can build the serve command
     let output = Command::new("cargo")
-        .args(&["build", "--bin", "vectro_cli"])
+        .args(["build", "--bin", "vectro_cli"])
         .output()
         .expect("Failed to build binary");
     
@@ -33,7 +33,7 @@ fn test_server_startup_via_cli() {
     // Start server in background on a unique port
     let port = 19080;
     let mut child = Command::new(binary_path)
-        .args(&["serve", "--port", &port.to_string()])
+        .args(["serve", "--port", &port.to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
@@ -63,7 +63,7 @@ fn test_server_startup_via_cli() {
 fn test_server_cli_help() {
     // Test that serve command help works
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "vectro_cli", "--", "serve", "--help"])
+        .args(["run", "--bin", "vectro_cli", "--", "serve", "--help"])
         .output();
     
     if let Ok(out) = output {

@@ -10,11 +10,12 @@ RecallResult       — frozen dataclass for a single Recall@K result.
 QuantizationReport — mutable dataclass aggregating per-vector + recall stats.
 QuantizationAuditor.run() — entry point; validates shapes, runs all metrics.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -133,8 +134,7 @@ class QuantizationReport:
     def summary(self) -> str:
         """Human-readable one-paragraph summary of audit results."""
         recall_line = (
-            f"Recall@1/5/10: {self.recall_at_1:.4f}/{self.recall_at_5:.4f}/"
-            f"{self.recall_at_10:.4f}."
+            f"Recall@1/5/10: {self.recall_at_1:.4f}/{self.recall_at_5:.4f}/{self.recall_at_10:.4f}."
             if self.recall_at_1 is not None
             else "Recall evaluation was skipped."
         )
@@ -210,9 +210,11 @@ class QuantizationAuditor:
         l2_errors = np.array([m.l2_error for m in per_vector], dtype=np.float32)
 
         worst_indices = _worst_k_indices(cos_sims, self._worst_k)
-        recall_map = _run_recall_eval(
-            orig_f32, comp_f32, recall_ks, recall_sample_size, seed
-        ) if run_recall else {}
+        recall_map = (
+            _run_recall_eval(orig_f32, comp_f32, recall_ks, recall_sample_size, seed)
+            if run_recall
+            else {}
+        )
 
         orig_bytes = orig_f32.nbytes
         comp_bytes = compressed.nbytes
@@ -274,9 +276,9 @@ class QuantizationAuditor:
         recalls: list[float] = []
         for qi in query_indices:
             query = original[qi]  # shape (D,)
-            true_scores = original @ query       # (N,)
-            comp_scores = compressed @ query     # (N,)
-            true_scores[qi] = -np.inf            # exclude self
+            true_scores = original @ query  # (N,)
+            comp_scores = compressed @ query  # (N,)
+            true_scores[qi] = -np.inf  # exclude self
             comp_scores[qi] = -np.inf
             effective_k = min(k, true_scores.shape[0] - 1)
             true_top = set(np.argpartition(true_scores, -effective_k)[-effective_k:])
@@ -297,9 +299,7 @@ def _validate_shapes(original: np.ndarray, compressed: np.ndarray) -> None:
             f"Shape mismatch: original {original.shape} ≠ compressed {compressed.shape}"
         )
     if original.ndim != 2:
-        raise ValueError(
-            f"Expected 2-D arrays, got ndim={original.ndim}"
-        )
+        raise ValueError(f"Expected 2-D arrays, got ndim={original.ndim}")
 
 
 def _compute_per_vector(

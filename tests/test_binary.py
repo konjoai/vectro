@@ -1,4 +1,5 @@
 """Tests for Binary Quantization (Phase 4)."""
+
 import unittest
 import numpy as np
 
@@ -130,7 +131,7 @@ class TestMatryoshkaEncode(unittest.TestCase):
     def test_output_shapes(self):
         vecs = np.random.randn(10, 768).astype(np.float32)
         result = matryoshka_encode(vecs, [64, 256, 768])
-        self.assertEqual(result[64].shape, (10, 8))    # ceil(64/8)
+        self.assertEqual(result[64].shape, (10, 8))  # ceil(64/8)
         self.assertEqual(result[256].shape, (10, 32))  # ceil(256/8)
         self.assertEqual(result[768].shape, (10, 96))  # ceil(768/8)
 

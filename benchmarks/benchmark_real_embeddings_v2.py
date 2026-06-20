@@ -42,13 +42,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 CACHE_DIR = Path.home() / ".cache" / "vectro_benchmarks"
-GLOVE_URL  = "https://nlp.stanford.edu/data/glove.6B.zip"
-SIFT_URL   = "ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz"
+GLOVE_URL = "https://nlp.stanford.edu/data/glove.6B.zip"
+SIFT_URL = "ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz"
 
 
 # ---------------------------------------------------------------------------
 # Dataset loaders
 # ---------------------------------------------------------------------------
+
 
 def _show_progress(count: int, block: int, total: int) -> None:
     """urlretrieve progress callback."""
@@ -78,7 +79,7 @@ def load_glove_100(max_vectors: int = 100_000) -> np.ndarray:
     # ── Download ─────────────────────────────────────────────────────────────
     zip_path = CACHE_DIR / "glove.6B.zip"
     if not zip_path.exists():
-        print(f"  Downloading GloVe.6B zip (~862 MB) from Stanford...")
+        print("  Downloading GloVe.6B zip (~862 MB) from Stanford...")
         print(f"  Cache: {zip_path}")
         urlretrieve(GLOVE_URL, str(zip_path), reporthook=_show_progress)
         print()  # newline after progress bar
@@ -92,11 +93,13 @@ def load_glove_100(max_vectors: int = 100_000) -> np.ndarray:
                 parts = line.rstrip().split(" ")
                 if len(parts) < 101:
                     continue
-                vecs.append(np.fromiter(
-                    (float(x) for x in parts[1:101]),
-                    dtype=np.float32,
-                    count=100,
-                ))
+                vecs.append(
+                    np.fromiter(
+                        (float(x) for x in parts[1:101]),
+                        dtype=np.float32,
+                        count=100,
+                    )
+                )
     print(f" {len(vecs):,} vectors parsed")
 
     data = np.stack(vecs, axis=0).astype(np.float32)
@@ -125,12 +128,13 @@ def load_sift1m(max_vectors: int = 100_000) -> np.ndarray:
 
     tar_path = CACHE_DIR / "sift.tar.gz"
     if not tar_path.exists():
-        print(f"  Downloading SIFT1M tarball (~500 MB) from IRISA FTP...")
+        print("  Downloading SIFT1M tarball (~500 MB) from IRISA FTP...")
         print(f"  Cache: {tar_path}")
         urlretrieve(SIFT_URL, str(tar_path), reporthook=_show_progress)
         print()
 
     import tarfile
+
     print("  Extracting sift_base.fvecs...", end="", flush=True)
     with tarfile.open(str(tar_path), "r:gz") as tf:
         member = next(m for m in tf.getmembers() if "sift_base.fvecs" in m.name)
@@ -145,7 +149,9 @@ def load_sift1m(max_vectors: int = 100_000) -> np.ndarray:
     dim = struct.unpack("i", struct.pack("f", dim_as_float))[0]
     stride = dim + 1
     n_vecs = len(arr) // stride
-    data = np.array([arr[i * stride + 1 : i * stride + 1 + dim] for i in range(n_vecs)], dtype=np.float32)
+    data = np.array(
+        [arr[i * stride + 1 : i * stride + 1 + dim] for i in range(n_vecs)], dtype=np.float32
+    )
     print(f" {n_vecs:,} vectors (d={dim})")
 
     np.save(str(npy_path), data)
@@ -156,6 +162,7 @@ def load_sift1m(max_vectors: int = 100_000) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Quantization benchmark helpers
 # ---------------------------------------------------------------------------
+
 
 def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     """Mean per-row cosine similarity between two (n, d) arrays."""
@@ -210,14 +217,15 @@ def benchmark_mode(
     return {
         "throughput_vec_per_sec": int(throughput),
         "mean_cosine_similarity": round(cosine, 6),
-        "compression_ratio":      float(compression_ratio),
-        "best_time_sec":          round(best_sec, 4),
+        "compression_ratio": float(compression_ratio),
+        "best_time_sec": round(best_sec, 4),
     }
 
 
 # ---------------------------------------------------------------------------
 # Main benchmark runner
 # ---------------------------------------------------------------------------
+
 
 def run_benchmark(
     dataset: str = "glove-100",
@@ -256,10 +264,10 @@ def run_benchmark(
 
     results: dict[str, Any] = {
         "benchmark": "real_embeddings_v2",
-        "dataset":   dataset,
+        "dataset": dataset,
         "n_vectors": n,
-        "d":         d,
-        "modes":     {},
+        "d": d,
+        "modes": {},
     }
 
     # ── Benchmark each mode ───────────────────────────────────────────────────
@@ -270,8 +278,8 @@ def run_benchmark(
         print(f"  {mode:<8}", end="", flush=True)
         try:
             stats = benchmark_mode(vectors, mode)
-            tput  = stats["throughput_vec_per_sec"]
-            cos   = stats["mean_cosine_similarity"]
+            tput = stats["throughput_vec_per_sec"]
+            cos = stats["mean_cosine_similarity"]
             ratio = stats["compression_ratio"]
             print(f"  {tput:>12,} vec/s  {cos:>7.4f}  {ratio:>5.1f}x")
             results["modes"][mode] = stats
@@ -282,7 +290,9 @@ def run_benchmark(
 
     print()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    out_file = output_path.parent / (output_path.stem + f"_{dataset.replace('-', '')}" + output_path.suffix)
+    out_file = output_path.parent / (
+        output_path.stem + f"_{dataset.replace('-', '')}" + output_path.suffix
+    )
     with open(out_file, "w") as f:
         json.dump(results, f, indent=2)
     print(f"Results saved to {out_file}")
@@ -293,26 +303,35 @@ def run_benchmark(
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Benchmark Vectro quantization on real embedding datasets"
     )
     parser.add_argument(
-        "--dataset", type=str, default="glove-100",
+        "--dataset",
+        type=str,
+        default="glove-100",
         choices=["glove-100", "sift1m"],
         help="Dataset to use (default: glove-100)",
     )
     parser.add_argument(
-        "--max-vectors", type=int, default=100_000,
+        "--max-vectors",
+        type=int,
+        default=100_000,
         help="Maximum number of vectors to benchmark (default: 100000)",
     )
     parser.add_argument(
-        "--modes", type=str, nargs="+",
+        "--modes",
+        type=str,
+        nargs="+",
         default=["fast", "ultra", "binary"],
         help="Quantization modes (fast=int8 4x, ultra=int4 8x d÷64 only, binary=1-bit 32x)",
     )
     parser.add_argument(
-        "--output", type=str, default="results/real_embeddings_v2.json",
+        "--output",
+        type=str,
+        default="results/real_embeddings_v2.json",
         help="Output JSON path (dataset name appended)",
     )
     args = parser.parse_args()

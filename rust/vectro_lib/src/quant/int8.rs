@@ -196,8 +196,8 @@ unsafe fn encode_avx2(v: &[f32]) -> Int8Vector {
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
     // Scalar tail
-    for i in chunks8 * 8..n {
-        *out_ptr.add(i) = (v[i] * inv).round().clamp(-127.0, 127.0) as i8;
+    for (i, &val) in v.iter().enumerate().skip(chunks8 * 8) {
+        *out_ptr.add(i) = (val * inv).round().clamp(-127.0, 127.0) as i8;
     }
 
     Int8Vector { codes, scale }
@@ -288,7 +288,7 @@ unsafe fn encode_neon(v: &[f32]) -> Int8Vector {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
-unsafe fn encode_neon_into(v: &[f32], out: &mut [i8]) -> f32 {
+unsafe fn encode_neon_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 {
     use std::arch::aarch64::*;
 
     let n = v.len();
@@ -313,7 +313,7 @@ unsafe fn encode_neon_into(v: &[f32], out: &mut [i8]) -> f32 {
         }
     }
 
-    let scale = if abs_max == 0.0 { 1.0_f32 } else { abs_max };
+    let scale = if abs_max == 0.0 { 1.0_f32 } else { abs_max / range_factor };
     let inv = 127.0_f32 / scale;
     let vinv = vdupq_n_f32(inv);
 
@@ -389,7 +389,7 @@ unsafe fn encode_neon_into(v: &[f32], out: &mut [i8]) -> f32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn encode_avx2_into(v: &[f32], out: &mut [i8]) -> f32 {
+unsafe fn encode_avx2_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 {
     use std::arch::x86_64::*;
 
     let n = v.len();
@@ -423,7 +423,7 @@ unsafe fn encode_avx2_into(v: &[f32], out: &mut [i8]) -> f32 {
         }
     }
 
-    let scale = if abs_max == 0.0 { 1.0_f32 } else { abs_max };
+    let scale = if abs_max == 0.0 { 1.0_f32 } else { abs_max / range_factor };
     let inv   = 127.0_f32 / scale;
     let vinv  = _mm256_set1_ps(inv);
 
@@ -439,8 +439,8 @@ unsafe fn encode_avx2_into(v: &[f32], out: &mut [i8]) -> f32 {
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
     // scalar tail
-    for i in chunks8 * 8..n {
-        *out_ptr.add(i) = (v[i] * inv).round().clamp(-127.0, 127.0) as i8;
+    for (i, &val) in v.iter().enumerate().skip(chunks8 * 8) {
+        *out_ptr.add(i) = (val * inv).round().clamp(-127.0, 127.0) as i8;
     }
 
     scale
@@ -449,11 +449,19 @@ unsafe fn encode_avx2_into(v: &[f32], out: &mut [i8]) -> f32 {
 /// Portable scalar in-place INT8 encode — fallback for targets without
 /// NEON or AVX2.  Two-pass abs-max + multiply-round-clamp, identical to the
 /// SIMD paths bit-for-bit.
+///
+/// `range_factor` (rf, in `(0, 1]`) reproduces the Python profile semantics:
+/// the effective scale is `abs_max / rf`, so codes use `127 · rf / abs_max`.
+/// `rf = 1.0` is the canonical abs-max path (max element → ±127); `rf < 1.0`
+/// leaves headroom, matching `VectroBatchProcessor`'s balanced/quality
+/// profiles.  The returned scale is the effective scale (`abs_max / rf`), so
+/// the caller's `scale / 127.0` yields `abs_max / (127 · rf)` — exactly the
+/// NumPy baseline's per-row scale.
 #[inline(always)]
-pub(crate) fn encode_scalar_into(v: &[f32], out: &mut [i8]) -> f32 {
+pub(crate) fn encode_scalar_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 {
     debug_assert_eq!(v.len(), out.len());
     let abs_max = v.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
-    let scale = if abs_max == 0.0 { 1.0 } else { abs_max };
+    let scale = if abs_max == 0.0 { 1.0 } else { abs_max / range_factor };
     let inv = 127.0 / scale;
     for (c, &val) in out.iter_mut().zip(v.iter()) {
         *c = (val * inv).round().clamp(-127.0, 127.0) as i8;
@@ -480,7 +488,7 @@ pub(crate) fn encode_scalar_into(v: &[f32], out: &mut [i8]) -> f32 {
 /// which is not the default on any Rust stable target as of 2026-05.
 #[cfg(all(target_arch = "aarch64", target_feature = "sme"))]
 #[inline(always)]
-unsafe fn encode_sme_into(_v: &[f32], _out: &mut [i8]) -> f32 {
+unsafe fn encode_sme_into(_v: &[f32], _out: &mut [i8], _range_factor: f32) -> f32 {
     // Wave 3 placeholder — the M4-specific SME2 outer-product path is not
     // yet implemented.  Hardware availability gates implementation: when
     // an M4 (or comparable Cortex-X925 platform) is in CI, replace this
@@ -496,12 +504,12 @@ unsafe fn encode_sme_into(_v: &[f32], _out: &mut [i8]) -> f32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
 #[inline]
-unsafe fn encode_avx512_vnni_into(v: &[f32], out: &mut [i8]) -> f32 {
+unsafe fn encode_avx512_vnni_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 {
     // Wave 3 placeholder — re-uses the AVX2 path to keep the dispatch
     // surface live.  Hardware availability gates implementation: with a
     // Sapphire Rapids / Granite Rapids host in CI, replace this body
     // with a VPDPBSSD-driven fused encode.
-    encode_avx2_into(v, out)
+    encode_avx2_into(v, out, range_factor)
 }
 
 /// Dispatch to the best in-place INT8 encode kernel for the current host.
@@ -512,10 +520,16 @@ unsafe fn encode_avx512_vnni_into(v: &[f32], out: &mut [i8]) -> f32 {
 ///   other:    scalar
 ///
 /// Writes quantised codes into `out` without any heap allocation and
-/// returns `abs_max` (the scale **before** dividing by 127).  Used by
-/// `batch_encode_into` so each rayon worker activates the SIMD fast-path.
+/// returns the effective scale (`abs_max / range_factor`, **before** dividing
+/// by 127).  Used by `batch_encode_into` so each rayon worker activates the
+/// SIMD fast-path.
+///
+/// `range_factor` (rf, in `(0, 1]`) sets the effective scale to `abs_max / rf`
+/// so codes use `127 · rf / abs_max` — `rf = 1.0` is the canonical abs-max
+/// path; `rf < 1.0` reproduces the balanced/quality profile headroom.  See
+/// [`encode_scalar_into`] for the numerical contract.
 #[inline(always)]
-pub(crate) fn encode_fast_into(v: &[f32], out: &mut [i8]) -> f32 {
+pub(crate) fn encode_fast_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 {
     debug_assert_eq!(v.len(), out.len());
 
     #[cfg(target_arch = "aarch64")]
@@ -524,13 +538,14 @@ pub(crate) fn encode_fast_into(v: &[f32], out: &mut [i8]) -> f32 {
         #[cfg(target_feature = "sme")]
         // SAFETY: SME is gated by the target_feature attribute above; if
         // this code is reached the host advertised SME at compile time.
-        return unsafe { encode_sme_into(v, out) };
+        return unsafe { encode_sme_into(v, out, range_factor) };
 
         // 2. Apple Accelerate (AMX coprocessor on M1/M2/M3, macOS-only,
         //    feature-gated).  Only profitable for d ≥ 256 — under that the
-        //    AMX setup cost dominates and pure NEON wins.
+        //    AMX setup cost dominates and pure NEON wins.  The AMX kernel is
+        //    abs-max only, so non-unit range factors fall through to NEON.
         #[cfg(all(target_os = "macos", feature = "vectro_lib_accelerate"))]
-        if v.len() >= 256 {
+        if v.len() >= 256 && range_factor == 1.0 {
             return crate::quant::accelerate::encode_accelerate_into(v, out);
         }
 
@@ -541,7 +556,7 @@ pub(crate) fn encode_fast_into(v: &[f32], out: &mut [i8]) -> f32 {
         //    production dims, so two-pass wins. See encode_neon_fused_into.
         // SAFETY: AArch64-v8 mandates NEON; no runtime probe needed.
         #[cfg(not(target_feature = "sme"))]
-        return unsafe { encode_neon_into(v, out) };
+        return unsafe { encode_neon_into(v, out, range_factor) };
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -551,18 +566,17 @@ pub(crate) fn encode_fast_into(v: &[f32], out: &mut [i8]) -> f32 {
             && is_x86_feature_detected!("avx512vnni")
         {
             // SAFETY: guarded by runtime probe of all three features.
-            return unsafe { encode_avx512_vnni_into(v, out) };
+            return unsafe { encode_avx512_vnni_into(v, out, range_factor) };
         }
         if is_x86_feature_detected!("avx2") {
-            // SAFETY: guarded by runtime AVX2 feature detection. (Two-pass; the
-            // fused kernel was measured slower — see the NEON note above.)
-            return unsafe { encode_avx2_into(v, out) };
+            // SAFETY: guarded by runtime AVX2 feature detection.
+            return unsafe { encode_avx2_into(v, out, range_factor) };
         }
     }
 
     // Scalar fallback (non-aarch64 without AVX2/AVX-512).
     #[cfg(not(target_arch = "aarch64"))]
-    return encode_scalar_into(v, out);
+    return encode_scalar_into(v, out, range_factor);
 }
 
 /// In-place INT8 decode: multiplies each code by `scale` and writes f32 to `out`.
@@ -622,18 +636,37 @@ pub fn cosine_int8(query: &[f32], encoded: &Int8Vector) -> f32 {
 /// * `input`      — flat f32 slice, length = `n * d`
 /// * `n`, `d`     — number of vectors and dimension
 /// * `codes_out`  — caller-allocated i8 slice, length = `n * d` (written in-place)
-/// * `scales_out` — caller-allocated f32 slice, length = `n`  
-///                  stores `abs_max / 127.0` per row (direct dequant factor)
+/// * `scales_out` — caller-allocated f32 slice, length = `n`;
+///   stores `abs_max / 127.0` per row (direct dequant factor)
 ///
 /// Uses rayon for row-parallel execution; each worker thread calls
 /// `encode_fast_into` which dispatches to the NEON (AArch64) or AVX2 (x86-64)
 /// in-place SIMD path — no per-row heap allocation.
 pub fn batch_encode_into(
     input: &[f32],
+    n: usize,
+    d: usize,
+    codes_out: &mut [i8],
+    scales_out: &mut [f32],
+) {
+    batch_encode_into_with_range(input, n, d, codes_out, scales_out, 1.0);
+}
+
+/// Batch encode an N×D f32 matrix to INT8 with an explicit `range_factor`.
+///
+/// Identical to [`batch_encode_into`] but threads `range_factor` (rf, in
+/// `(0, 1]`) through to the per-row kernel, so `scales_out[i]` becomes
+/// `abs_max_i / (127 · rf)` and the codes use `127 · rf / abs_max_i`.  This
+/// matches the Python `VectroBatchProcessor` profiles bit-for-bit modulo
+/// round-half-to-even vs round-half-away ties (≤1 level): rf 1.0 = `fast`,
+/// 0.95 = `balanced`, 0.90 = `quality`.
+pub fn batch_encode_into_with_range(
+    input: &[f32],
     _n: usize,
     d: usize,
     codes_out: &mut [i8],
     scales_out: &mut [f32],
+    range_factor: f32,
 ) {
     // Wave 1.1: coarsen the rayon grain to RAYON_BLOCK rows per task.
     // At 64 rows × ~1 KiB / row the per-task working set fits comfortably in
@@ -650,6 +683,7 @@ pub fn batch_encode_into(
                 let scale = encode_fast_into(
                     &rows[i * d..(i + 1) * d],
                     &mut codes[i * d..(i + 1) * d],
+                    range_factor,
                 );
                 scales[i] = scale / 127.0;
             }
@@ -842,8 +876,8 @@ unsafe fn encode_normalized_avx2(v: &[f32], out: &mut [i8]) {
         let i8s  = _mm_packs_epi16(i16s, i16s);
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
-    for i in chunks8 * 8..n {
-        *out_ptr.add(i) = (v[i] * 127.0_f32).round().clamp(-127.0, 127.0) as i8;
+    for (i, &val) in v.iter().enumerate().skip(chunks8 * 8) {
+        *out_ptr.add(i) = (val * 127.0_f32).round().clamp(-127.0, 127.0) as i8;
     }
 }
 
@@ -893,7 +927,7 @@ unsafe fn encode_neon_fused_into(v: &[f32], out: &mut [i8]) -> f32 {
         // Defer to the standard two-pass kernel; for d > 4096 the L1
         // pressure analysis no longer holds, and the fused win
         // disappears.
-        return encode_neon_into(v, out);
+        return encode_neon_into(v, out, 1.0);
     }
 
     let ptr = v.as_ptr();
@@ -956,7 +990,7 @@ unsafe fn encode_avx2_fused_into(v: &[f32], out: &mut [i8]) -> f32 {
 
     const ROW_CAP: usize = 4096;
     if n > ROW_CAP {
-        return encode_avx2_into(v, out);
+        return encode_avx2_into(v, out, 1.0);
     }
 
     let ptr = v.as_ptr();
@@ -1002,8 +1036,10 @@ unsafe fn encode_avx2_fused_into(v: &[f32], out: &mut [i8]) -> f32 {
         let i8s = _mm_packs_epi16(i16s, i16s);
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
-    for i in chunks8 * 8..n {
-        *out_ptr.add(i) = (buf[i] * inv).round().clamp(-127.0, 127.0) as i8;
+    // `buf` is a fixed ROW_CAP-sized scratch array, so iterate only its first
+    // `n` entries — writing past `n` would overflow the `out_ptr` allocation.
+    for (i, &val) in buf[..n].iter().enumerate().skip(chunks8 * 8) {
+        *out_ptr.add(i) = (val * inv).round().clamp(-127.0, 127.0) as i8;
     }
     scale
 }
@@ -1026,7 +1062,7 @@ pub fn encode_fast_fused_into(v: &[f32], out: &mut [i8]) -> f32 {
         }
     }
     #[cfg(not(target_arch = "aarch64"))]
-    return encode_scalar_into(v, out);
+    return encode_scalar_into(v, out, 1.0);
 }
 
 /// Batch decode INT8 codes back to f32 without any per-row heap allocation.
@@ -1168,7 +1204,7 @@ mod tests {
             let v: Vec<f32> = (0..len).map(|i| ((i as f32 * 0.17) - 3.0).sin()).collect();
             let reference = Int8Vector::encode_fast(&v);
             let mut codes_out = vec![0i8; len];
-            let scale = encode_fast_into(&v, &mut codes_out);
+            let scale = encode_fast_into(&v, &mut codes_out, 1.0);
             assert_eq!(reference.scale, scale, "scale mismatch at len={len}");
             assert_eq!(reference.codes, codes_out, "codes mismatch at len={len}");
         }
@@ -1281,8 +1317,8 @@ mod tests {
         let d = 1536usize;
         for seed in 0..50usize {
             let raw: Vec<f32> = (0..d)
-                .map(|j| (((seed * 397 + j) as f32 * 0.0029).sin()
-                          * ((j as f32 * 0.011).cos() + 0.5)))
+                .map(|j| ((seed * 397 + j) as f32 * 0.0029).sin()
+                          * ((j as f32 * 0.011).cos() + 0.5))
                 .collect();
             let n2: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
             let v: Vec<f32> = raw.iter().map(|x| x / n2).collect();
@@ -1316,7 +1352,7 @@ mod tests {
             for row in 0..n {
                 let row_slice = &input[row * d..(row + 1) * d];
                 let mut single_codes = vec![0i8; d];
-                let single_scale = encode_fast_into(row_slice, &mut single_codes);
+                let single_scale = encode_fast_into(row_slice, &mut single_codes, 1.0);
                 assert_eq!(
                     scales_out[row], single_scale / 127.0,
                     "scale mismatch (n={n}, d={d}, row={row})"
@@ -1326,6 +1362,48 @@ mod tests {
                     single_codes.as_slice(),
                     "codes mismatch (n={n}, d={d}, row={row})"
                 );
+            }
+        }
+    }
+
+    /// `batch_encode_into_with_range` must (a) equal `batch_encode_into` at
+    /// `range_factor = 1.0` and (b) reproduce the Python baseline's per-row
+    /// scale `abs_max / (127 · rf)` with codes `round(v · 127 · rf / abs_max)`
+    /// for `rf < 1.0`.
+    #[test]
+    fn batch_encode_with_range_matches_baseline() {
+        let (n, d) = (120usize, 96usize);
+        let input: Vec<f32> = (0..n * d).map(|i| ((i as f32 * 0.031) - 5.0).sin() * 3.0).collect();
+
+        // rf = 1.0 is bit-identical to the canonical batch path.
+        let mut codes_rf1 = vec![0i8; n * d];
+        let mut scales_rf1 = vec![0.0f32; n];
+        batch_encode_into_with_range(&input, n, d, &mut codes_rf1, &mut scales_rf1, 1.0);
+        let mut codes_base = vec![0i8; n * d];
+        let mut scales_base = vec![0.0f32; n];
+        batch_encode_into(&input, n, d, &mut codes_base, &mut scales_base);
+        assert_eq!(codes_rf1, codes_base, "rf=1.0 codes differ from batch_encode_into");
+        assert_eq!(scales_rf1, scales_base, "rf=1.0 scales differ from batch_encode_into");
+
+        // rf < 1.0 matches the scalar baseline exactly (same rounding mode).
+        for rf in [0.95f32, 0.90] {
+            let mut codes = vec![0i8; n * d];
+            let mut scales = vec![0.0f32; n];
+            batch_encode_into_with_range(&input, n, d, &mut codes, &mut scales, rf);
+            for row in 0..n {
+                let v = &input[row * d..(row + 1) * d];
+                let abs_max = v.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+                let expected_scale = abs_max / rf / 127.0;
+                assert!(
+                    (scales[row] - expected_scale).abs() <= expected_scale * 1e-6,
+                    "rf={rf} row={row}: scale {} != {expected_scale}",
+                    scales[row]
+                );
+                let inv = 127.0 * rf / abs_max;
+                for (j, &x) in v.iter().enumerate() {
+                    let want = (x * inv).round().clamp(-127.0, 127.0) as i8;
+                    assert_eq!(codes[row * d + j], want, "rf={rf} row={row} col={j}");
+                }
             }
         }
     }
@@ -1373,7 +1451,7 @@ mod tests {
         for &len in &[0usize, 1, 3, 7, 15, 16, 17, 31, 32, 33, 47, 48, 63, 64, 768, 1024, 1031] {
             let v: Vec<f32> = (0..len).map(|i| ((i as f32 * 0.41) - 1.5).cos()).collect();
             let mut got = vec![0i8; len];
-            let scale = encode_fast_into(&v, &mut got);
+            let scale = encode_fast_into(&v, &mut got, 1.0);
 
             let scalar_ref = Int8Vector::encode(&v);
             assert_eq!(scale, scalar_ref.scale, "scale mismatch at len={len}");
@@ -1390,11 +1468,11 @@ mod tests {
         for &d in &[64usize, 128, 256, 768, 1024, 2048, 4000] {
             // Linear-congruential pseudo-random in [-1e6, 1e6]
             let mut v = vec![0.0_f32; d];
-            for i in 0..d {
+            for slot in v.iter_mut() {
                 rng_state = rng_state.wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
                 let u = ((rng_state >> 33) as u32) as f32 / (1u32 << 31) as f32 - 1.0;
-                v[i] = u * 1.0e6;
+                *slot = u * 1.0e6;
             }
             let mut codes = vec![0i8; d];
             let scale = encode_fast_fused_into(&v, &mut codes);
@@ -1415,7 +1493,7 @@ mod tests {
         for &d in &[64usize, 128, 256, 768, 1024, 2048, 4000] {
             let v: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.07) - 3.0).sin()).collect();
             let mut codes_two = vec![0i8; d];
-            let scale_two = encode_fast_into(&v, &mut codes_two);
+            let scale_two = encode_fast_into(&v, &mut codes_two, 1.0);
             let mut codes_fused = vec![0i8; d];
             let scale_fused = encode_fast_fused_into(&v, &mut codes_fused);
             assert_eq!(scale_two, scale_fused, "scale d={d}");
@@ -1430,7 +1508,7 @@ mod tests {
         for &d in &[1usize, 7, 16, 32, 33, 768] {
             let v: Vec<f32> = (0..d).map(|i| (i as f32).sin()).collect();
             let mut out = vec![0i8; d];
-            let _ = encode_fast_into(&v, &mut out);
+            let _ = encode_fast_into(&v, &mut out, 1.0);
         }
     }
 

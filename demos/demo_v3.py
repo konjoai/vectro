@@ -8,6 +8,7 @@ Usage:
     python demos/demo_v3.py           # full demo with pauses (run from project root)
     python demos/demo_v3.py --fast    # skip sleep() calls
 """
+
 from __future__ import annotations
 
 import sys
@@ -51,8 +52,7 @@ def bar(value: float, width: int = 36, filled: str = "█", empty: str = "░") 
     return filled * filled_n + empty * (width - filled_n)
 
 
-def progress_bar(label: str, value: float, fmt: str = ".4f", width: int = 30,
-                 display=None) -> None:
+def progress_bar(label: str, value: float, fmt: str = ".4f", width: int = 30, display=None) -> None:
     shown = display if display is not None else value
     print(f"  {label:<32} {bar(value, width)}  {shown:{fmt}}")
     pause(0.15)
@@ -69,6 +69,7 @@ def col(v: float, good: float, great: float) -> str:
 # ─────────────────────────────────────────────────────────────
 # Banner
 # ─────────────────────────────────────────────────────────────
+
 
 def show_banner() -> None:
     print()
@@ -96,6 +97,7 @@ def show_banner() -> None:
 # Setup
 # ─────────────────────────────────────────────────────────────
 
+
 def setup_data() -> tuple[np.ndarray, np.ndarray]:
     section("0 · Test Data")
     rng = np.random.default_rng(42)
@@ -117,6 +119,7 @@ def setup_data() -> tuple[np.ndarray, np.ndarray]:
 # 1  INT8
 # ─────────────────────────────────────────────────────────────
 
+
 def demo_int8(vectors: np.ndarray) -> None:
     section("1 · INT8 Symmetric Quantization  (Phase 0 + 1)")
     from python import Vectro, VectroQualityAnalyzer
@@ -136,8 +139,12 @@ def demo_int8(vectors: np.ndarray) -> None:
     print(f"  Wall-clock time  : {elapsed * 1000:.1f} ms")
     print(f"  Throughput       : {throughput:>10,.0f} vec/s")
     print()
-    progress_bar("Compression ratio  (~4×)", result.compression_ratio / 8, fmt=".2f",
-                 display=result.compression_ratio)
+    progress_bar(
+        "Compression ratio  (~4×)",
+        result.compression_ratio / 8,
+        fmt=".2f",
+        display=result.compression_ratio,
+    )
     progress_bar("Cosine similarity  (>=0.9999)", q.mean_cosine_similarity)
     print(f"\n  Grade: {q.quality_grade()} | Passes 0.999: {q.passes_quality_threshold(0.999)}")
     pause(1.5)
@@ -146,6 +153,7 @@ def demo_int8(vectors: np.ndarray) -> None:
 # ─────────────────────────────────────────────────────────────
 # 2  NF4
 # ─────────────────────────────────────────────────────────────
+
 
 def demo_nf4(vectors: np.ndarray) -> None:
     section("2 · NF4 Normal Float 4-bit  (Phase 2)")
@@ -193,6 +201,7 @@ def demo_nf4(vectors: np.ndarray) -> None:
 # 3  Product Quantization
 # ─────────────────────────────────────────────────────────────
 
+
 def demo_pq(vectors: np.ndarray) -> None:
     section("3 · Product Quantization  (Phase 3)")
     from python.v3_api import PQCodebook
@@ -205,7 +214,9 @@ def demo_pq(vectors: np.ndarray) -> None:
     cb = PQCodebook.train(vectors, n_subspaces=n_sub)
     train_time = time.perf_counter() - t0
     print(f"  Codebook trained in {train_time:.2f} s")
-    print(f"  {cb.n_subspaces} sub-spaces × {cb.n_centroids} centroids × {cb.sub_dim} dims/sub-space")
+    print(
+        f"  {cb.n_subspaces} sub-spaces × {cb.n_centroids} centroids × {cb.sub_dim} dims/sub-space"
+    )
     pause(0.8)
 
     subsection("Encode → Decode quality")
@@ -217,7 +228,7 @@ def demo_pq(vectors: np.ndarray) -> None:
     ratio = vectors.nbytes / codes.nbytes
 
     print(f"  codes shape  : {codes.shape}  dtype:uint8")
-    print(f"  Bytes/vector : {codes.shape[1]} vs {vectors.shape[1]*4} (FP32)")
+    print(f"  Bytes/vector : {codes.shape[1]} vs {vectors.shape[1] * 4} (FP32)")
     print(f"  Throughput   : {len(vectors) / encode_time:,.0f} vec/s")
     print()
     progress_bar("Compression ratio  (~32×)", ratio / 40, fmt=".1f", display=ratio)
@@ -238,6 +249,7 @@ def demo_pq(vectors: np.ndarray) -> None:
 # ─────────────────────────────────────────────────────────────
 # 4  Binary
 # ─────────────────────────────────────────────────────────────
+
 
 def demo_binary(normed: np.ndarray) -> None:
     section("4 · Binary / 1-bit Quantization  (Phase 4)")
@@ -267,7 +279,7 @@ def demo_binary(normed: np.ndarray) -> None:
     top_ids, distances = binary_search(query, packed, top_k=5)
     search_time = time.perf_counter() - t0
 
-    print(f"  Query index       : 0")
+    print("  Query index       : 0")
     print(f"  Top-5 result IDs  : {top_ids.tolist()}")
     print(f"  Hamming distances : {distances.tolist()}")
     print(f"  Search time       : {search_time * 1000:.3f} ms")
@@ -277,18 +289,19 @@ def demo_binary(normed: np.ndarray) -> None:
 
     subsection("Matryoshka-compatible encoding")
     from python.binary_api import matryoshka_encode
+
     dims = [64, 128, 256, 512, 768]
     prefixes = matryoshka_encode(normed, dims=dims)
     for d in dims:
         pack = prefixes[d]
-        print(f"  d={d:>4}  packed shape {pack.shape}  "
-              f"{pack.shape[1]} bytes/vec")
+        print(f"  d={d:>4}  packed shape {pack.shape}  {pack.shape[1]} bytes/vec")
     pause(1.5)
 
 
 # ─────────────────────────────────────────────────────────────
 # 5  HNSW Index
 # ─────────────────────────────────────────────────────────────
+
 
 def demo_hnsw(vectors: np.ndarray) -> None:
     section("5 · HNSW Approximate Nearest-Neighbour Index  (Phase 5)")
@@ -303,13 +316,15 @@ def demo_hnsw(vectors: np.ndarray) -> None:
     index.add_batch(vectors)
     build_time = time.perf_counter() - t0
 
-    approx_index_bytes = len(vectors) * vectors.shape[1]   # INT8 storage
-    approx_fp32_bytes  = len(vectors) * vectors.shape[1] * 4
+    approx_index_bytes = len(vectors) * vectors.shape[1]  # INT8 storage
+    approx_fp32_bytes = len(vectors) * vectors.shape[1] * 4
 
     print(f"\n  Build time  : {build_time:.2f} s")
     print(f"  Build rate  : {len(vectors) / build_time:,.0f} vec/s")
-    print(f"  INT8 storage : {approx_index_bytes / 1024:.0f} KB  "
-          f"(vs {approx_fp32_bytes / 1024:.0f} KB FP32 = 4× smaller)")
+    print(
+        f"  INT8 storage : {approx_index_bytes / 1024:.0f} KB  "
+        f"(vs {approx_fp32_bytes / 1024:.0f} KB FP32 = 4× smaller)"
+    )
     pause(1.0)
 
     subsection("Nearest-neighbour search")
@@ -318,7 +333,7 @@ def demo_hnsw(vectors: np.ndarray) -> None:
     indices, distances = index.search(query, top_k=10)
     search_time = time.perf_counter() - t0
 
-    print(f"  Query → top-10 results")
+    print("  Query → top-10 results")
     print(f"  Indices   : {indices[:5]} …")
     print(f"  Distances : {[f'{d:.4f}' for d in distances[:5]]} …")
     print(f"  Latency   : {search_time * 1000:.3f} ms")
@@ -360,6 +375,7 @@ def demo_hnsw(vectors: np.ndarray) -> None:
 # 6  GPU / MAX Engine
 # ─────────────────────────────────────────────────────────────
 
+
 def demo_gpu(vectors: np.ndarray) -> None:
     section("6 · GPU / MAX Engine Quantization  (Phase 6)")
     from python.gpu_api import gpu_available, gpu_device_info, quantize_int8_batch, gpu_benchmark
@@ -398,6 +414,7 @@ def demo_gpu(vectors: np.ndarray) -> None:
 # ─────────────────────────────────────────────────────────────
 # 7  Learned Quantization
 # ─────────────────────────────────────────────────────────────
+
 
 def demo_learned(vectors: np.ndarray) -> None:
     section("7 · Learned Quantization  (Phase 7)")
@@ -445,9 +462,11 @@ def demo_learned(vectors: np.ndarray) -> None:
 
     print(f"  Encoded shape  : {int8_codes.shape}  (int8)")
     print()
-    progress_bar(f"Compression ratio  (~{ratio_cb:.0f}×)", ratio_cb / 60, fmt=".1f", display=ratio_cb)
+    progress_bar(
+        f"Compression ratio  (~{ratio_cb:.0f}×)", ratio_cb / 60, fmt=".1f", display=ratio_cb
+    )
     progress_bar("Cosine similarity", cosine_cb)
-    print(f"\n  At target_dim=64:  ~48× compression,  cosine_sim >= 0.97")
+    print("\n  At target_dim=64:  ~48× compression,  cosine_sim >= 0.97")
     pause(1.0)
 
     # ----- 7c AutoQuantize -----
@@ -463,13 +482,14 @@ def demo_learned(vectors: np.ndarray) -> None:
     print(f"  Compression      : {result['compression_ratio']:.2f}×")
     print(f"  Cosine sim       : {result['cosine_sim']:.4f}")
     print(f"  Decision time    : {elapsed * 1000:.1f} ms")
-    progress_bar("Meets quality target (>=0.97)", result['cosine_sim'])
+    progress_bar("Meets quality target (>=0.97)", result["cosine_sim"])
     pause(1.5)
 
 
 # ─────────────────────────────────────────────────────────────
 # 8  VQZ Storage
 # ─────────────────────────────────────────────────────────────
+
 
 def demo_storage(vectors: np.ndarray) -> None:
     section("8 · VQZ Storage Format  (Phase 8)")
@@ -502,8 +522,8 @@ def demo_storage(vectors: np.ndarray) -> None:
         raw_bytes = quantized.nbytes + result.scales.nbytes
 
         print(f"  Magic bytes       : {MAGIC!r}")
-        print(f"  Raw body (INT8)   : {raw_bytes:,} bytes  ({raw_bytes/1024:.1f} KB)")
-        print(f"  VQZ file (ZSTD)   : {file_size:,} bytes  ({file_size/1024:.1f} KB)")
+        print(f"  Raw body (INT8)   : {raw_bytes:,} bytes  ({raw_bytes / 1024:.1f} KB)")
+        print(f"  VQZ file (ZSTD)   : {file_size:,} bytes  ({file_size / 1024:.1f} KB)")
         print(f"  ZSTD ratio        : {raw_bytes / file_size:.2f}×")
         print(f"  vs original FP32  : {vectors.nbytes / file_size:.2f}×  combined")
         print(f"  Write throughput  : {raw_bytes / write_time / 1024 / 1024:.0f} MB/s")
@@ -518,13 +538,13 @@ def demo_storage(vectors: np.ndarray) -> None:
         print(f"  dims              : {data['dims']}")
         print(f"  version           : {data['version']}")
         print(f"  metadata          : {data['metadata'].decode()}")
-        print(f"  checksum          : verified OK")
+        print("  checksum          : verified OK")
         print(f"  Read throughput   : {raw_bytes / read_time / 1024 / 1024:.0f} MB/s")
         pause(1.0)
 
         subsection("Corruption detection")
         with open(path, "r+b") as fh:
-            fh.seek(30)   # overwrite checksum field
+            fh.seek(30)  # overwrite checksum field
             fh.write(b"\xff\xff\xff\xff\xff\xff\xff\xff")
         try:
             load_vqz(path)
@@ -552,6 +572,7 @@ def demo_storage(vectors: np.ndarray) -> None:
 # 9  Unified v3 API
 # ─────────────────────────────────────────────────────────────
 
+
 def demo_v3_api(vectors: np.ndarray) -> None:
     section("9 · Unified v3 API: VectroV3  (Phase 9)")
     from python.v3_api import VectroV3
@@ -573,7 +594,7 @@ def demo_v3_api(vectors: np.ndarray) -> None:
             rows.append((profile, 0.0, 0.0))
 
     print(f"  {'Profile':<12} {'Compression':>12}  {'Cosine':>8}  Bar")
-    print(f"  {'-'*12} {'-'*12}  {'-'*8}  {'-'*30}")
+    print(f"  {'-' * 12} {'-' * 12}  {'-' * 8}  {'-' * 30}")
     for profile, ratio, cosine in rows:
         b = bar(min(cosine, 1.0), width=26)
         print(f"  {profile:<12} {ratio:>11.1f}×  {cosine:>8.4f}  {b}")
@@ -601,6 +622,7 @@ def demo_v3_api(vectors: np.ndarray) -> None:
 # 10  Benchmark Summary
 # ─────────────────────────────────────────────────────────────
 
+
 def show_benchmark_summary(vectors: np.ndarray) -> None:
     section("10 · Benchmark Summary  (2,000 × 768 float32)")
 
@@ -621,7 +643,7 @@ def show_benchmark_summary(vectors: np.ndarray) -> None:
     elapsed = time.perf_counter() - t0
     restored = vectro.decompress(r)
     cosine = mean_cosine_similarity(vectors, restored)
-    results.append(("INT8",   r.compression_ratio,   cosine,  len(vectors) / elapsed))
+    results.append(("INT8", r.compression_ratio, cosine, len(vectors) / elapsed))
 
     # NF4
     d = vectors.shape[1]
@@ -631,10 +653,11 @@ def show_benchmark_summary(vectors: np.ndarray) -> None:
     elapsed = time.perf_counter() - t0
     cosine_nf4 = mean_cosine_similarity(vectors, rst)
     ratio_nf4 = vectors.nbytes / (pkd.nbytes + scl.nbytes)
-    results.append(("NF4",    ratio_nf4,              cosine_nf4,  len(vectors) / elapsed))
+    results.append(("NF4", ratio_nf4, cosine_nf4, len(vectors) / elapsed))
 
     # PQ-96
     from python.v3_api import PQCodebook
+
     cb96 = PQCodebook.train(vectors, n_subspaces=96)
     t0 = time.perf_counter()
     codes96 = cb96.encode(vectors)
@@ -642,7 +665,7 @@ def show_benchmark_summary(vectors: np.ndarray) -> None:
     dec96 = cb96.decode(codes96)
     cosine_pq = mean_cosine_similarity(vectors, dec96)
     ratio_pq = vectors.nbytes / codes96.nbytes
-    results.append(("PQ-96",  ratio_pq,               cosine_pq,   len(vectors) / elapsed))
+    results.append(("PQ-96", ratio_pq, cosine_pq, len(vectors) / elapsed))
 
     # Binary
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
@@ -653,7 +676,7 @@ def show_benchmark_summary(vectors: np.ndarray) -> None:
     brst = dequantize_binary(bpkd, normed.shape[1])
     cosine_bin = mean_cosine_similarity(normed, brst)
     ratio_bin = normed.nbytes / bpkd.nbytes
-    results.append(("Binary", ratio_bin,              cosine_bin,  len(normed) / elapsed))
+    results.append(("Binary", ratio_bin, cosine_bin, len(normed) / elapsed))
 
     # Table
     header = f"  {'Mode':<10} {'Ratio':>8} {'Cosine':>9}  {'Throughput':>16}  Quality"
@@ -688,22 +711,23 @@ def show_benchmark_summary(vectors: np.ndarray) -> None:
 # 11  Integrations listing
 # ─────────────────────────────────────────────────────────────
 
+
 def show_integrations() -> None:
     section("11 · Vector Database & Ecosystem Integrations")
 
     rows = [
-        ("InMemoryVectorDBConnector", "Zero-dependency testing/prototype",       "✅"),
-        ("QdrantConnector",           "Qdrant REST/gRPC — store & k-NN search",  "✅"),
-        ("WeaviateConnector",         "Weaviate v4 — INT8/INT4 payloads",         "✅"),
-        ("HuggingFaceCompressor",     "PyTorch + HF Transformers bridge",         "✅"),
-        ("ArrowBridge",               "Apache Arrow / Parquet persistence",       "✅"),
-        ("S3Backend  (fsspec)",        "AWS S3 cloud storage",                    "✅"),
-        ("GCSBackend  (fsspec)",       "Google Cloud Storage",                    "✅"),
-        ("AzureBlobBackend (fsspec)",  "Azure Blob Storage",                      "✅"),
+        ("InMemoryVectorDBConnector", "Zero-dependency testing/prototype", "✅"),
+        ("QdrantConnector", "Qdrant REST/gRPC — store & k-NN search", "✅"),
+        ("WeaviateConnector", "Weaviate v4 — INT8/INT4 payloads", "✅"),
+        ("HuggingFaceCompressor", "PyTorch + HF Transformers bridge", "✅"),
+        ("ArrowBridge", "Apache Arrow / Parquet persistence", "✅"),
+        ("S3Backend  (fsspec)", "AWS S3 cloud storage", "✅"),
+        ("GCSBackend  (fsspec)", "Google Cloud Storage", "✅"),
+        ("AzureBlobBackend (fsspec)", "Azure Blob Storage", "✅"),
     ]
 
     print(f"  {'Connector':<30} {'Description':<42} {'Status'}")
-    print(f"  {'-'*30} {'-'*42} {'-'*6}")
+    print(f"  {'-' * 30} {'-' * 42} {'-' * 6}")
     for name, desc, status in rows:
         print(f"  {name:<30} {desc:<42} {status}")
         pause(0.2)
@@ -721,6 +745,7 @@ def show_integrations() -> None:
 # ─────────────────────────────────────────────────────────────
 # Closing
 # ─────────────────────────────────────────────────────────────
+
 
 def show_closing() -> None:
     section("Vectro v3.0.0 — Feature Summary")
@@ -760,6 +785,7 @@ def show_closing() -> None:
 # ─────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     show_banner()

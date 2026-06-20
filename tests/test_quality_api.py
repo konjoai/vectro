@@ -35,8 +35,12 @@ def _make_metrics(cosine_sim: float) -> QualityMetrics:
         min_cosine_similarity=cosine_sim - 0.001,
         max_cosine_similarity=min(cosine_sim + 0.001, 1.0),
         percentile_errors={
-            "error_p25": 0.005, "error_p50": 0.01, "error_p75": 0.02,
-            "error_p95": 0.05, "error_p99": 0.08, "error_p99_9": 0.10,
+            "error_p25": 0.005,
+            "error_p50": 0.01,
+            "error_p75": 0.02,
+            "error_p95": 0.05,
+            "error_p99": 0.08,
+            "error_p99_9": 0.10,
         },
         signal_to_noise_ratio=30.0,
         peak_signal_to_noise_ratio=45.0,
@@ -62,7 +66,6 @@ def _noisy_pair(n: int = 16, d: int = 8, noise_scale: float = 0.01):
 
 
 class TestQualityMetricsGrades(unittest.TestCase):
-
     def test_quality_grade_a_plus(self):
         m = _make_metrics(1.0)
         self.assertIn("A+", m.quality_grade())
@@ -121,7 +124,6 @@ class TestQualityMetricsGrades(unittest.TestCase):
 
 
 class TestVectroQualityAnalyzer(unittest.TestCase):
-
     def test_evaluate_quality_returns_quality_metrics(self):
         orig, recon = _perfect_pair()
         result = VectroQualityAnalyzer.evaluate_quality(orig, recon)
@@ -172,7 +174,6 @@ class TestVectroQualityAnalyzer(unittest.TestCase):
 
 
 class TestQualityBenchmark(unittest.TestCase):
-
     def test_benchmark_dimensions_returns_dict_keyed_by_dim(self):
         dims = [8, 16]
         results = QualityBenchmark.benchmark_dimensions(dimensions=dims, num_vectors=20)
@@ -182,9 +183,7 @@ class TestQualityBenchmark(unittest.TestCase):
 
     def test_benchmark_vector_counts_returns_dict_keyed_by_count(self):
         counts = [10, 50]
-        results = QualityBenchmark.benchmark_vector_counts(
-            vector_counts=counts, dimension=8
-        )
+        results = QualityBenchmark.benchmark_vector_counts(vector_counts=counts, dimension=8)
         self.assertEqual(set(results.keys()), {10, 50})
         for v in results.values():
             self.assertIsInstance(v, QualityMetrics)
@@ -196,7 +195,6 @@ class TestQualityBenchmark(unittest.TestCase):
 
 
 class TestQualityReport(unittest.TestCase):
-
     def test_generate_quality_report_string_nonempty(self):
         m = _make_metrics(0.998)
         report = QualityReport.generate_report(m)
@@ -223,7 +221,6 @@ class TestQualityReport(unittest.TestCase):
 
 
 class TestModuleLevelQualityFunctions(unittest.TestCase):
-
     def test_module_level_evaluate_quantization_quality(self):
         orig, recon = _noisy_pair(noise_scale=0.01)
         result = evaluate_quantization_quality(orig, recon)

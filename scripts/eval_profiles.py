@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import sys
 from pathlib import Path
 
@@ -63,6 +62,7 @@ _FIXTURES_DIR = _REPO_ROOT / "tests" / "fixtures"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _cosine(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two dense vectors."""
     dot = sum(x * y for x, y in zip(a, b))
@@ -76,6 +76,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
 def _random_vectors(n: int, dim: int, seed: int = 42) -> list[list[float]]:
     """Generate reproducible pseudo-random unit vectors."""
     import random
+
     rng = random.Random(seed)
     vecs: list[list[float]] = []
     for _ in range(n):
@@ -114,6 +115,7 @@ def _encode_decode(method: str, vecs: list[list[float]]) -> list[list[float]]:
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
+
 
 def _eval_fixture(
     fixture_path: Path,

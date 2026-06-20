@@ -6,6 +6,7 @@ PytestUnknownMarkWarning when test files use them without importing conftest.
 """
 
 import tests._path_setup as _path_setup  # noqa: F401
+
 _path_setup.ensure_repo_root_on_path()
 
 

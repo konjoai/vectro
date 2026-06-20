@@ -21,8 +21,8 @@ fn make_unit_vectors(n: usize, d: usize) -> Vec<f32> {
         // Simple deterministic L2-normalised pattern: sin(j) + small i drift,
         // then divide by L2 norm.
         let mut row = vec![0.0_f32; d];
-        for j in 0..d {
-            row[j] = ((i + j) as f32 * 0.013_f32).sin();
+        for (j, slot) in row.iter_mut().enumerate() {
+            *slot = ((i + j) as f32 * 0.013_f32).sin();
         }
         let n2: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
         for (j, x) in row.iter().enumerate() {

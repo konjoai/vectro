@@ -1,4 +1,5 @@
 """Tests for VectroDocumentStore.max_marginal_relevance_search (Haystack 2.x)."""
+
 from __future__ import annotations
 
 import sys
@@ -21,6 +22,7 @@ ensure_repo_root_on_path()
 # Minimal haystack stub
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _Document:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -30,7 +32,11 @@ class _Document:
     score: Optional[float] = None
 
     __dataclass_fields__ = {
-        "id": None, "content": None, "embedding": None, "meta": None, "score": None
+        "id": None,
+        "content": None,
+        "embedding": None,
+        "meta": None,
+        "score": None,
     }
 
 
@@ -82,8 +88,8 @@ def _store_with_docs(n: int = 10, d: int = DIM) -> VectroDocumentStore:
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestMMRBasic(unittest.TestCase):
 
+class TestMMRBasic(unittest.TestCase):
     def setUp(self):
         self.store = _store_with_docs(10)
 
@@ -151,7 +157,6 @@ class TestMMRDiversity(unittest.TestCase):
 
 
 class TestMMRFetchK(unittest.TestCase):
-
     def test_fetch_k_clamped_to_store_size(self):
         store = _store_with_docs(4)
         # fetch_k > store size — should not error
@@ -170,30 +175,21 @@ class TestMMRFetchK(unittest.TestCase):
 
 
 class TestMMRFilters(unittest.TestCase):
-
     def setUp(self):
         self.store = VectroDocumentStore()
-        docs = [
-            _doc(content="cat-A", meta={"category": "A"})
-            for _ in range(5)
-        ] + [
-            _doc(content="cat-B", meta={"category": "B"})
-            for _ in range(5)
+        docs = [_doc(content="cat-A", meta={"category": "A"}) for _ in range(5)] + [
+            _doc(content="cat-B", meta={"category": "B"}) for _ in range(5)
         ]
         self.store.write_documents(docs)
 
     def test_filter_reduces_candidate_set(self):
-        results = self.store.max_marginal_relevance_search(
-            _emb(), k=3, filters={"category": "A"}
-        )
+        results = self.store.max_marginal_relevance_search(_emb(), k=3, filters={"category": "A"})
         self.assertEqual(len(results), 3)
         for doc in results:
             self.assertEqual(doc.meta.get("category"), "A")
 
     def test_filter_no_match_returns_empty(self):
-        results = self.store.max_marginal_relevance_search(
-            _emb(), k=3, filters={"category": "Z"}
-        )
+        results = self.store.max_marginal_relevance_search(_emb(), k=3, filters={"category": "Z"})
         self.assertEqual(results, [])
 
     def test_filter_none_returns_from_all(self):
@@ -202,7 +198,6 @@ class TestMMRFilters(unittest.TestCase):
 
 
 class TestMMRAsync(unittest.IsolatedAsyncioTestCase):
-
     async def test_async_mmr_returns_results(self):
         store = _store_with_docs(10)
         results = await store.async_max_marginal_relevance_search(_emb(), k=4)
@@ -215,14 +210,11 @@ class TestMMRAsync(unittest.IsolatedAsyncioTestCase):
 
     async def test_async_mmr_with_filter(self):
         store = VectroDocumentStore()
-        store.write_documents([
-            _doc(meta={"tag": "x"}) for _ in range(4)
-        ] + [
-            _doc(meta={"tag": "y"}) for _ in range(4)
-        ])
-        results = await store.async_max_marginal_relevance_search(
-            _emb(), k=2, filters={"tag": "x"}
+        store.write_documents(
+            [_doc(meta={"tag": "x"}) for _ in range(4)]
+            + [_doc(meta={"tag": "y"}) for _ in range(4)]
         )
+        results = await store.async_max_marginal_relevance_search(_emb(), k=2, filters={"tag": "x"})
         self.assertEqual(len(results), 2)
         for doc in results:
             self.assertEqual(doc.meta.get("tag"), "x")

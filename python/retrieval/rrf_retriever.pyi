@@ -1,4 +1,5 @@
 """Type stubs for rrf_retriever."""
+
 from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -6,7 +7,6 @@ def reciprocal_rank_fusion(
     rankings: Sequence[Sequence[str]],
     k: int = ...,
 ) -> Dict[str, float]: ...
-
 def rrf_top_k(
     rankings: Sequence[Sequence[str]],
     k: int,

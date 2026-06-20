@@ -27,7 +27,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import List, Optional, Union
 
 import numpy as np
 
@@ -48,8 +48,8 @@ class BenchmarkEntry:
     backend: str
 
     # Throughput
-    throughput_vps: float          # vectors / second (median over trials)
-    throughput_mbs: float          # MB / second (float32 input)
+    throughput_vps: float  # vectors / second (median over trials)
+    throughput_mbs: float  # MB / second (float32 input)
 
     # Compression
     compression_ratio: float
@@ -132,8 +132,7 @@ class BenchmarkReport:
     def print_summary(self) -> None:
         """Print a compact table of results to stdout."""
         header = (
-            f"{'Profile':>10}  {'n×d':>10}  {'prec':>6}  "
-            f"{'kVec/s':>8}  {'ratio':>6}  {'cosSim':>8}"
+            f"{'Profile':>10}  {'n×d':>10}  {'prec':>6}  {'kVec/s':>8}  {'ratio':>6}  {'cosSim':>8}"
         )
         print("=" * len(header))
         print(f"Vectro Benchmark  ({self.generated_at})")
@@ -145,7 +144,7 @@ class BenchmarkReport:
                 f"{e.profile:>10}  "
                 f"{e.n_vectors}×{e.vector_dim:>5}  "
                 f"{e.precision_mode:>6}  "
-                f"{e.throughput_vps/1000:>7.1f}k  "
+                f"{e.throughput_vps / 1000:>7.1f}k  "
                 f"{e.compression_ratio:>5.2f}×  "
                 f"{e.mean_cosine_sim:>8.5f}"
             )
@@ -231,8 +230,10 @@ class BenchmarkSuite:
         # Backend detection
         binfo = get_backend_info()
         active_backend = (
-            "squish_quant_rust" if binfo.get("squish_quant_rust")
-            else "cython" if binfo.get("cython")
+            "squish_quant_rust"
+            if binfo.get("squish_quant_rust")
+            else "cython"
+            if binfo.get("cython")
             else "numpy"
         )
 
@@ -277,18 +278,30 @@ def _main(argv: Optional[List[str]] = None) -> None:  # noqa: D401
     import argparse
 
     parser = argparse.ArgumentParser(description="Vectro benchmark harness")
-    parser.add_argument("--n", type=int, default=2000, metavar="N",
-                        help="Number of vectors (default: 2000)")
-    parser.add_argument("--dim", type=int, default=384, metavar="D",
-                        help="Vector dimension (default: 384)")
-    parser.add_argument("--profiles", nargs="+", default=["fast", "balanced", "quality"],
-                        metavar="PROFILE", help="Profiles to benchmark")
-    parser.add_argument("--trials", type=int, default=5, metavar="T",
-                        help="Timing trials per config (default: 5)")
-    parser.add_argument("--output", type=Path, default=None, metavar="FILE",
-                        help="Save report to FILE (.json or .csv)")
-    parser.add_argument("--backend", default="auto", metavar="BACKEND",
-                        help="Quantization backend")
+    parser.add_argument(
+        "--n", type=int, default=2000, metavar="N", help="Number of vectors (default: 2000)"
+    )
+    parser.add_argument(
+        "--dim", type=int, default=384, metavar="D", help="Vector dimension (default: 384)"
+    )
+    parser.add_argument(
+        "--profiles",
+        nargs="+",
+        default=["fast", "balanced", "quality"],
+        metavar="PROFILE",
+        help="Profiles to benchmark",
+    )
+    parser.add_argument(
+        "--trials", type=int, default=5, metavar="T", help="Timing trials per config (default: 5)"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Save report to FILE (.json or .csv)",
+    )
+    parser.add_argument("--backend", default="auto", metavar="BACKEND", help="Quantization backend")
 
     args = parser.parse_args(argv)
     suite = BenchmarkSuite(

@@ -19,7 +19,7 @@ See also:
 from __future__ import annotations
 
 import platform
-from typing import Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 
@@ -41,6 +41,7 @@ def simd_tier() -> str:
         return "neon"
     if "x86_64" in arch or "amd64" in arch:
         import platform as _p
+
         os_type = _p.system()
         if os_type == "Linux":
             try:
@@ -58,9 +59,12 @@ def simd_tier() -> str:
                 pass
         elif os_type == "Darwin":
             import subprocess
+
             for flag, name in [("hw.optional.avx512f", "avx512"), ("hw.optional.avx2_0", "avx2")]:
                 try:
-                    r = subprocess.run(["sysctl", "-n", flag], capture_output=True, text=True, timeout=3)
+                    r = subprocess.run(
+                        ["sysctl", "-n", flag], capture_output=True, text=True, timeout=3
+                    )
                     if r.returncode == 0 and r.stdout.strip() == "1":
                         return name
                 except Exception:
@@ -72,6 +76,7 @@ def simd_tier() -> str:
 def quantize_int8_batch(
     vectors: np.ndarray,
     assume_normalized: bool = False,
+    range_factor: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Quantize [N, D] float32 array to INT8 using Rust SIMD.
 
@@ -86,11 +91,16 @@ def quantize_int8_batch(
         Caller asserts every row has ``||·||_2 ≤ 1``.  ~1.4× faster on
         memory-bandwidth-bound workloads at the cost of ~0.99 cosine
         recall floor instead of 0.9999.
+    range_factor : float, default 1.0
+        Headroom factor in ``(0, 1]`` matching the ``VectroBatchProcessor``
+        profiles (``1.0`` = fast, ``0.95`` = balanced, ``0.90`` = quality).
+        The per-row scale becomes ``abs_max / (127 · range_factor)``.
+        Ignored when ``assume_normalized`` is True (fixed scale ``1/127``).
 
     Returns
     -------
     codes  : np.ndarray, shape [N, D], dtype int8
-    scales : np.ndarray, shape [N],    dtype float32  (abs_max per row)
+    scales : np.ndarray, shape [N],    dtype float32  (abs_max / (127·rf))
 
     Raises
     ------
@@ -107,6 +117,8 @@ def quantize_int8_batch(
         arr = arr.reshape(1, -1)
     if assume_normalized and hasattr(_vectro_py, "quantize_int8_batch_normalized"):
         codes, scales = _vectro_py.quantize_int8_batch_normalized(arr)
+    elif range_factor != 1.0:
+        codes, scales = _vectro_py.quantize_int8_batch(arr, range_factor)
     else:
         codes, scales = _vectro_py.quantize_int8_batch(arr)
     if was_1d:
@@ -200,12 +212,10 @@ def benchmark_int8_throughput(
         raise RuntimeError("vectro_py Rust extension not installed.")
 
     rng = np.random.default_rng(42)
-    vectors = np.ascontiguousarray(
-        rng.standard_normal((n_vectors, dim)).astype(np.float32)
-    )
+    vectors = np.ascontiguousarray(rng.standard_normal((n_vectors, dim)).astype(np.float32))
 
     for _ in range(warmup):
-        _vectro_py.quantize_int8_batch(vectors[:min(1000, n_vectors)])
+        _vectro_py.quantize_int8_batch(vectors[: min(1000, n_vectors)])
 
     throughputs = []
     for _ in range(runs):

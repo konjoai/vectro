@@ -16,6 +16,7 @@ Adapters provided:
 - :class:`RRFRetriever`          — generic, framework-agnostic
 - :class:`LangChainRRFRetriever` — duck-typed LangChain ``BaseRetriever``
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -26,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 # ---------------------------------------------------------------------------
 # Core RRF algorithm
 # ---------------------------------------------------------------------------
+
 
 def reciprocal_rank_fusion(
     rankings: Sequence[Sequence[str]],
@@ -77,6 +79,7 @@ def rrf_top_k(
 # ---------------------------------------------------------------------------
 # Generic RRF retriever
 # ---------------------------------------------------------------------------
+
 
 class RRFRetriever:
     """Framework-agnostic hybrid retriever using Reciprocal Rank Fusion.
@@ -173,6 +176,7 @@ class RRFRetriever:
 # LangChain-compatible RRF retriever
 # ---------------------------------------------------------------------------
 
+
 class LangChainRRFRetriever:
     """LangChain duck-typed ``BaseRetriever`` backed by RRF fusion.
 
@@ -222,6 +226,7 @@ class LangChainRRFRetriever:
                 text = getattr(doc, "page_content", "")
                 out.append((doc_id, text, float(score)))
             return out
+
         return _fn
 
     def _run(self, query: str) -> List[Any]:
@@ -253,10 +258,12 @@ class LangChainRRFRetriever:
         for doc_id, rrf_score in fused:
             text = id_text.get(doc_id, "")
             if _LCDoc is not None:
-                docs.append(_LCDoc(
-                    page_content=text,
-                    metadata={"_vectro_id": doc_id, "_rrf_score": rrf_score},
-                ))
+                docs.append(
+                    _LCDoc(
+                        page_content=text,
+                        metadata={"_vectro_id": doc_id, "_rrf_score": rrf_score},
+                    )
+                )
             else:
                 docs.append({"id": doc_id, "text": text, "score": rrf_score})
         return docs

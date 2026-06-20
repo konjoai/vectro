@@ -1,24 +1,27 @@
 {
-  "timestamp": "2026-05-12T04:55:51.920083Z",
+  "timestamp": "2026-06-14T12:25:39.552717Z",
   "platform": {
-    "os_type": "macOS",
-    "os_version": "22.6.0",
+    "os_type": "Linux",
+    "os_version": "6.18.5",
     "architecture": "x86_64",
-    "cpu_model": "Intel(R) Core(TM) i7-7820HQ CPU @ 2.90GHz",
-    "cpu_cores": 8,
-    "cpu_frequency_ghz": 2.9,
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpu_cores": 4,
+    "cpu_frequency_ghz": 2.1,
     "cpu_generation": null,
-    "memory_gb": 16.0,
+    "memory_gb": 15.698600769042969,
     "simd_capabilities": [
       "AVX",
-      "AVX2"
+      "AVX-512CD",
+      "AVX-512F",
+      "AVX2",
+      "SSE4.2"
     ],
     "mojo_available": false,
     "rust_available": false,
     "faiss_available": false,
-    "numpy_version": "2.4.4",
-    "python_version": "3.13.13",
-    "timestamp": "2026-05-12T08:55:49.988931Z"
+    "numpy_version": "2.4.6",
+    "python_version": "3.11.15",
+    "timestamp": "2026-06-14T12:25:38.774350Z"
   },
   "test_results": {
     "int8_throughput_floor_passed": true,

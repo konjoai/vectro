@@ -101,7 +101,7 @@ class TestQuantizeInt2(unittest.TestCase):
         original_bytes = emb.nbytes
         packed_bytes = packed.nbytes
         ratio = original_bytes / packed_bytes
-        self.assertGreater(ratio, 7.0)   # floor for float32→int2
+        self.assertGreater(ratio, 7.0)  # floor for float32→int2
 
 
 class TestPackUnpackInt2(unittest.TestCase):
@@ -127,7 +127,6 @@ class TestPackUnpackInt2(unittest.TestCase):
         self.assertEqual(packed.shape, (n, math.ceil(d / 4)))
 
     def test_unpack_shape(self):
-        import math
         from python.quantization_extra import _pack_int2, _unpack_int2
 
         n, d = 5, 20
@@ -164,8 +163,7 @@ class TestDequantizeInt2(unittest.TestCase):
         packed, scales, zeroes = quantize_int2(emb, group_size=16)
         out = dequantize_int2(packed, scales, zeroes, group_size=16, vector_dim=dim)
         cos_sim = _cosine_similarity(emb, out)
-        self.assertGreater(cos_sim, 0.75,
-                           msg=f"INT2 cosine similarity {cos_sim:.4f} below 0.75")
+        self.assertGreater(cos_sim, 0.75, msg=f"INT2 cosine similarity {cos_sim:.4f} below 0.75")
 
     def test_vector_dim_inferred_from_packed(self):
         """vector_dim=None should still produce correct output shape."""
@@ -278,8 +276,9 @@ class TestQuantizeAdaptive(unittest.TestCase):
 
         # Compare only non-outlier columns
         cos = _cosine_similarity(emb[:, 1:], recon[:, 1:])
-        self.assertGreater(cos, 0.95,
-                           msg=f"Adaptive cos-sim on non-outlier cols = {cos:.4f}, expected > 0.95")
+        self.assertGreater(
+            cos, 0.95, msg=f"Adaptive cos-sim on non-outlier cols = {cos:.4f}, expected > 0.95"
+        )
 
     def test_cosine_similarity_high_on_normal_data(self):
         """Adaptive should maintain high quality on normal distribution data."""

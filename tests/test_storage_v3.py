@@ -1,11 +1,7 @@
 """tests/test_storage_v3.py — Phase 8: VQZ container and cloud backend stubs."""
 
-import hashlib
 import io
 import os
-import struct
-import tempfile
-import zlib
 
 import numpy as np
 import pytest
@@ -40,12 +36,13 @@ from python.storage_v3 import (  # noqa: E402
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def small_data():
     rng = np.random.default_rng(42)
     n, d = 32, 64
     quantized = rng.integers(-128, 128, size=(n, d), dtype=np.int8)
-    scales    = rng.random(n).astype(np.float32)
+    scales = rng.random(n).astype(np.float32)
     return quantized, scales, d
 
 
@@ -60,6 +57,7 @@ def tmp_vqz(tmp_path, small_data):
 # ---------------------------------------------------------------------------
 # 1. Header construction and parsing
 # ---------------------------------------------------------------------------
+
 
 class TestHeader:
     def test_magic_length(self):
@@ -103,6 +101,7 @@ class TestHeader:
 # 2. Compression helpers
 # ---------------------------------------------------------------------------
 
+
 class TestCompression:
     def test_zlib_round_trip(self):
         data = b"hello world " * 1000
@@ -127,6 +126,7 @@ class TestCompression:
 
     def test_zstd_fallback_to_zlib_when_missing(self, monkeypatch):
         import python.storage_v3 as storage_v3
+
         monkeypatch.setattr(storage_v3, "_HAVE_ZSTD", False)
         data = b"fallback test " * 200
         compressed, flag = storage_v3._compress(data, "zstd", 3)
@@ -147,6 +147,7 @@ class TestCompression:
 # ---------------------------------------------------------------------------
 # 3. save_vqz / load_vqz round-trips
 # ---------------------------------------------------------------------------
+
 
 class TestSaveLoad:
     def test_basic_round_trip_zstd(self, small_data, tmp_path):
@@ -239,10 +240,10 @@ class TestSaveLoad:
         n, d = 512, 256
         # Use non-random (compressible) data
         quantized = np.zeros((n, d), dtype=np.int8)
-        scales    = np.ones(n, dtype=np.float32)
-        raw_path  = str(tmp_path / "raw.vqz")
+        scales = np.ones(n, dtype=np.float32)
+        raw_path = str(tmp_path / "raw.vqz")
         zlib_path = str(tmp_path / "zlib.vqz")
-        save_vqz(quantized, scales, d, raw_path,  compression="none")
+        save_vqz(quantized, scales, d, raw_path, compression="none")
         save_vqz(quantized, scales, d, zlib_path, compression="zlib")
         assert os.path.getsize(zlib_path) < os.path.getsize(raw_path)
 
@@ -268,7 +269,7 @@ class TestSaveLoad:
         rng = np.random.default_rng(99)
         n, d = 4096, 384
         quantized = rng.integers(-128, 128, size=(n, d), dtype=np.int8)
-        scales    = rng.random(n).astype(np.float32)
+        scales = rng.random(n).astype(np.float32)
         path = str(tmp_path / "large.vqz")
         save_vqz(quantized, scales, d, path, compression="zlib")
         result = load_vqz(path)
@@ -280,27 +281,32 @@ class TestSaveLoad:
 # 4. Cloud backend stubs (instantiation-only; no real I/O)
 # ---------------------------------------------------------------------------
 
+
 class TestCloudBackendStubs:
     def test_s3_backend_requires_fsspec(self, monkeypatch):
         import python.storage_v3 as storage_v3
+
         monkeypatch.setattr(storage_v3, "_HAVE_FSSPEC", False)
         with pytest.raises(ImportError, match="fsspec"):
             S3Backend("my-bucket")
 
     def test_gcs_backend_requires_fsspec(self, monkeypatch):
         import python.storage_v3 as storage_v3
+
         monkeypatch.setattr(storage_v3, "_HAVE_FSSPEC", False)
         with pytest.raises(ImportError, match="fsspec"):
             GCSBackend("my-bucket")
 
     def test_azure_backend_requires_fsspec(self, monkeypatch):
         import python.storage_v3 as storage_v3
+
         monkeypatch.setattr(storage_v3, "_HAVE_FSSPEC", False)
         with pytest.raises(ImportError, match="fsspec"):
             AzureBlobBackend("my-container")
 
     def test_backends_have_expected_attributes(self, monkeypatch):
         import python.storage_v3 as storage_v3
+
         # Patch _open_fs so we don't need real cloud credentials.
         monkeypatch.setattr(storage_v3, "_HAVE_FSSPEC", True)
 
@@ -308,9 +314,7 @@ class TestCloudBackendStubs:
             pass
 
         for BackendCls in (S3Backend, GCSBackend, AzureBlobBackend):
-            monkeypatch.setattr(
-                BackendCls, "_open_fs", lambda self: _FakeFS()
-            )
+            monkeypatch.setattr(BackendCls, "_open_fs", lambda self: _FakeFS())
             backend = BackendCls("test-bucket", "prefix/v1")
             assert backend.bucket == "test-bucket"
             assert backend.prefix == "prefix/v1"
@@ -321,6 +325,7 @@ class TestCloudBackendStubs:
 
 
 # ── In-memory filesystem mock ─────────────────────────────────────────────────
+
 
 class _MemFS:
     """Minimal in-memory filesystem mock that satisfies _CloudBackendBase.upload/download."""
@@ -366,6 +371,7 @@ class _MemReadCtx:
 
 # ── Cloud backend round-trip tests ────────────────────────────────────────────
 
+
 class TestCloudBackendRoundTrip:
     """Full save_vqz → upload → download → load_vqz round-trips via mock FS."""
 
@@ -379,6 +385,7 @@ class TestCloudBackendRoundTrip:
     def _make_backend(self, BackendCls, monkeypatch):
         """Return a backend instance wired to a MemFS, no real fsspec needed."""
         import python.storage_v3 as storage_v3
+
         monkeypatch.setattr(storage_v3, "_HAVE_FSSPEC", True)
         mem = _MemFS()
         monkeypatch.setattr(BackendCls, "_open_fs", lambda self: mem)
@@ -422,6 +429,7 @@ class TestCloudBackendRoundTrip:
 
     def test_full_path_without_prefix(self, monkeypatch, small):
         import python.storage_v3 as storage_v3
+
         monkeypatch.setattr(storage_v3, "_HAVE_FSSPEC", True)
         mem = _MemFS()
         monkeypatch.setattr(S3Backend, "_open_fs", lambda self: mem)
@@ -533,7 +541,7 @@ class TestSaveLoadCompressed:
         q = np.zeros((n, d), dtype=np.int8)
         s = np.ones(n, dtype=np.float32)
         result = _QResult(quantized=q, scales=s, dims=d, n=n)
-        raw_path  = str(tmp_path / "raw.vqz")
+        raw_path = str(tmp_path / "raw.vqz")
         zstd_path = str(tmp_path / "zstd.vqz")
         save_compressed(result, raw_path, codec="none")
         save_compressed(result, zstd_path, codec="zstd")

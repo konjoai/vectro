@@ -5,46 +5,186 @@ All notable changes to Vectro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [5.6.0] — 2026-06-19 — HNSW performance overhaul (Python 5.6.0 / Rust 8.1.0)
+## [Unreleased]
 
-Battle-tested on Apple M3 against FAISS, hnswlib, usearch, annoy. Vectro HNSW
-went from *slower than brute force* to **beating hnswlib on build time, QPS, and
-recall** simultaneously.
-
-### Fixed
-- **Quantized HNSW graph construction** — the graph was built using the
-  *quantized* distance, collapsing recall for coarse quantizers (Binary 0.024,
-  NF4 0.66 on GloVe-100). Now built from full-precision distances held
-  transiently (dropped via `finalize()`), storing only the quantized codes:
-  **Binary → 0.595, NF4 → 0.918**, memory-at-rest unchanged. 1-bit codes are
-  also mean-centered (real embeddings share a large mean direction).
-- **INT4 / `ultra` profile** no longer silently degrades to INT8 — added a NumPy
-  nibble-pack fallback (`interface.quantize_int4`) used when the native
-  `squish_quant` extension is absent. `ultra` now delivers **6.9× compression**
-  (was 3.8×) at cosine 0.99.
-- Committed merge-conflict markers in `pyproject.toml` (broke the build/test
-  toolchain).
+### Benchmarks
+- `scripts/benchmark_comprehensive.py` — comprehensive **real-data** head-to-head
+  vs FAISS and hnswlib, across two axes: (1) ANN search Recall@10 vs QPS
+  (single-thread, recall-matched, build time, index size) for vectro-hnsw /
+  faiss-hnsw / faiss-ivf / hnswlib / exact-faiss; (2) quantization encode
+  throughput / compression / reconstruction cosine for vectro INT8 + PQ vs FAISS
+  ScalarQuantizer + IndexPQ. ann-benchmarks methodology (HDF5 datasets,
+  brute-force ground truth, strict Recall@k, Pareto sweeps), single-thread
+  fairness (`faiss.omp_set_num_threads(1)`), JSON + markdown + PNG plots to
+  `benchmarks/results/<ts>_comprehensive/`. Tested by
+  `tests/test_benchmark_comprehensive.py` (synthetic smoke tests, dep-gated).
+  First real run (glove-100-angular, n=20k, single-thread, generic faiss-cpu):
+  - vectro INT8 encode **10.9M vec/s vs FAISS ScalarQuantizer 4.4M** (2.5×,
+    cosine 1.0000) — vectro's core competency confirmed.
+  - vectro PQ encode 47K vs FAISS IndexPQ 867K vec/s (same 16× ratio / 0.95
+    cosine) and vectro's pure-Python HNSW ~248 vs faiss-hnsw ~10.8K QPS@R0.90
+    — honest losses that scope future work.
+- `scripts/benchmark_vs_faiss.py` — added `glove-25-angular` (127 MB) and
+  `nytimes-256-angular` to the dataset registry.
+## [5.8.0] — 2026-06-19 — HNSW build + search routed through the Rust core
 
 ### Performance
-- **Parallel HNSW build** (`HnswIndex` + `QuantHnswIndex`): parallel
-  search + serial commit, shuffled order + bounded chunk. Build **6.5s → 1.82s**
-  at n=20k (≈parity with hnswlib); quantized builds sub-second on GloVe-8k.
-- **Parallel batch search** (`search_batch_np`, rayon over queries, GIL released)
-  on all variants — ~5× throughput (Int8 up to ~45k QPS on 8-core M3).
-- **Alloc-free quantized distance**: NF4/Binary/SQ2/SQ3/Bf16 compute the
-  asymmetric cosine directly from packed codes (no per-comparison `decode()`
-  allocation) — NF4 search 2.6×, Binary 1.9×.
-- **SIMD (NEON) INT8 `dot_query`** — Int8 search 2.0× (now faster than f32).
-- **Binary encode** no longer shells out to the Mojo subprocess (pipe I/O bound):
-  2,091 → 291,978 vec/s (140×) on a 20k×768 batch.
-- HNSW search: reusable thread-local epoch-tagged visited set + heaps, slice-borrow
-  neighbours, SIMD unit-cosine for construction. Per-query QPS 5,062 → 6,177.
-- NF4 encode: branchless threshold count replaces per-element binary search.
+- `python/hnsw_api.py` — `HNSWIndex` now delegates the graph **build and
+  search** hot paths to the native `vectro_py.PyHnswIndex` (Rust + SimSIMD)
+  via a new `backend="auto"` default. A complete, fast HNSW already existed in
+  the Rust crate, but the public Python index ran a pure-Python graph. On
+  glove-100 (10K × 100): build **1.82s vs 37.55s (20× faster)**, search
+  throughput **4,731 vs 268 QPS (17.6× faster)** at **matched recall**
+  (0.966 vs 0.965). Against `hnswlib` (C++) the Rust path is now competitive
+  (same ballpark QPS and recall) rather than ~50× slower.
+- The native core is **cosine-only and deterministic** (LCG level assignment
+  is a pure function of node ID), so rebuild-on-load and rebuild-after-update
+  reproduce an identical graph.
+
+### Added
+- `python/hnsw_rust.py` — `RustHnswBackend`, a thin cosine-only wrapper over
+  `vectro_py.PyHnswIndex`, plus `rust_available()` / `normalize_rows()` helpers.
+- `HNSWIndex(..., backend=...)` — `"auto"` (default; Rust for `space="cosine"`
+  when the extension is present, else pure Python), `"rust"` (force native;
+  raises if unavailable or for non-cosine spaces), `"python"` (force baseline).
+- `tests/test_hnsw_rust_backend.py` — 15 parity/behaviour tests covering
+  build/search recall parity, metadata filtering, soft-delete, upsert,
+  trace/stats/compact, `estimate_recall`, and save/load round-trip.
 
 ### Changed
-- `benchmark_ann_comparison.py`: fixed usearch API drift, added a degenerate-output
-  guard (annoy is non-functional on Py3.12/arm64 — now reported `broken`, not a
-  flattering `recall=0`), and switched the vectro path to the production Rust index.
+- Pure-Python remains the correctness baseline and is used transparently for
+  `space="l2"`, when the extension is absent, and for the introspection paths
+  (`trace=True`, `stats()`, `compact()`), which lazily materialise the Python
+  graph on demand. `compact()` on a rust-backed index continues in pure-Python
+  mode afterwards (its tombstone-clearing semantics differ from native
+  soft-delete).
+- HNSW save format bumped to `format_version=3` with a `backend` field;
+  rust-backed indexes persist vectors + metadata and rebuild the graph
+  deterministically on load. Older `.npz` (v2) and legacy pickle files still
+  load unchanged.
+
+## [5.7.0] — 2026-06-18 — PQ encode routed through the Rust SIMD kernel
+
+### Performance
+- `python/pq_api.py` — `pq_encode` now dispatches to a new zero-copy,
+  rayon-parallel Rust kernel (`vectro_py.pq_encode_batch`) when the extension is
+  installed, falling back to Mojo / NumPy otherwise. Like the v5.6.0 INT8 work,
+  a fast Rust PQ path already existed but the Python API only used the
+  per-sub-space NumPy loop. **~6.4× faster** (glove-100-style d=100, M=25,
+  K=256: ~30K → ~192K vec/s) with **perfect code parity** to the NumPy baseline
+  (identical reconstruction; only rare equidistant ties may differ by the
+  distance formula). Still trails FAISS `IndexPQ` (~870K vec/s) — an explicit
+  SIMD distance-table encoder is the next step.
+
+### Added
+- `rust/vectro_lib/src/quant/pq.rs` — `pq_encode_into(vectors, &PQCodebook,
+  codes_out)`: flat-slice, rayon-parallel batch PQ encode with no per-row heap
+  allocation.
+- `rust/vectro_py/src/lib.rs` — `pq_encode_batch(vectors, centroids)` PyO3
+  function: encodes an `[N, D]` f32 array against an `[M, K, sub_dim]` centroid
+  table, returns `[N, M]` uint8 codes (`K ≤ 256`, validated).
+
+### Tests
+- `rust/vectro_lib` — `pq_encode_into_matches_encode_one` (bit-identical to the
+  per-row reference).
+- `tests/test_pq.py` — `TestPQRustPath`: Rust-vs-NumPy code agreement ≥ 0.999
+  and identical reconstruction cosine; dep-gated skip when `vectro_py` absent.
+
+## [5.6.0] — 2026-06-18 — INT8 batch path routed through the Rust SIMD kernel
+
+### Performance
+- `python/batch_api.py` — `VectroBatchProcessor.quantize_batch` (INT8 profiles)
+  now dispatches to the `vectro_py` Rust SIMD kernel
+  (`quantize_int8_batch`) when the extension is installed, falling back to the
+  NumPy path otherwise. The processor previously **always** used the NumPy
+  abs-max path even though the compiled kernel was available — leaving a
+  ~15-20× speedup on the table. End-to-end `VectroBatchProcessor` throughput at
+  d=1536 rises from ~42K to ~110K vec/s (the Python `list`/`np.stack` wrapper,
+  not the kernel at ~730K vec/s, is now the ceiling). This fixes the
+  `test_int8_throughput_minimum_floor[1536]` failure on x86 hosts, where the
+  NumPy path fell just below the 45K floor.
+
+### Added
+- `rust/vectro_lib/src/quant/int8.rs` — `batch_encode_into_with_range(input, n,
+  d, codes, scales, range_factor)`: threads a `range_factor` (rf, `(0, 1]`)
+  through the per-row SIMD encode so the effective scale is `abs_max / rf`
+  (codes use `127·rf/abs_max`). `batch_encode_into` is now a `rf = 1.0` wrapper.
+  This lets the Rust path reproduce the `balanced` (0.95) and `quality` (0.90)
+  profiles bit-for-bit modulo round-half-to-even vs round-half-away ties (≤1
+  level), with identical per-row scales — preserving Python-only mode as the
+  correctness baseline.
+- `rust/vectro_py/src/lib.rs` — `quantize_int8_batch(vectors, range_factor=1.0)`
+  gains an optional `range_factor` keyword (validated to `(0, 1]`,
+  `ValueError` otherwise). Backward compatible: existing one-arg calls are
+  unchanged (`rf = 1.0`).
+- `python/_rust_bridge.py` — `quantize_int8_batch(..., range_factor=1.0)`
+  passthrough.
+
+### Tests
+- `rust/vectro_lib` — `batch_encode_with_range_matches_baseline`: rf=1.0 is
+  bit-identical to `batch_encode_into`; rf∈{0.95, 0.90} matches the scalar
+  baseline codes/scales exactly.
+- `tests/test_python_api.py` — `test_rust_path_matches_numpy_baseline` (codes
+  ≤1 level, scales identical, cosine ≥ 0.9999 for all profiles) and
+  `test_numpy_fallback_when_rust_absent`.
+- `tests/test_cross_platform_benchmarks.py` — `test_rust_quantize_int8_batch_range_factor`
+  and `..._validation`; corrected the `test_int8_throughput_minimum_floor`
+  docstring to describe the end-to-end wrapper path it actually measures.
+- `tests/test_cross_platform_benchmarks.py` — `test_rust_int8_throughput_1m_floor`
+  and `test_rust_int8_throughput_cross_dimension` switched from a
+  jitter-sensitive mean-of-3 to best-of-5 with warm-up (peak throughput),
+  matching the de-jitter statistic already used by
+  `test_int8_throughput_minimum_floor`. Floors are unchanged (1M / 500K vec/s);
+  this only stops OS scheduler noise from flapping the gate on shared runners
+  whose peak (~1.5-2M vec/s) clears the floor comfortably. Bench data
+  (`int8_fused_bench`, n=100k×d=768) confirmed the two-pass kernel (7.7 Gelem/s)
+  beats a rayon-fused single-pass (5.2 Gelem/s) at this dimension, so the
+  fused path was *not* promoted — the flake was a measurement statistic, not
+  kernel speed.
+
+## [Unreleased] — 2026-06-15
+
+### CI
+- `.github/workflows/ci.yml` — new **`api-tests`** job: installs FastAPI /
+  httpx and runs `pytest api/` on Python 3.12. Closes a coverage gap — the
+  `api/` suite (44 tests, including the V8 hybrid-search tests) previously
+  ran only locally; no workflow collected it. The Rust, Python-package, JS
+  addon, and Mojo lanes are unchanged.
+
+## [V8 — Hybrid search] — 2026-06-14
+
+### Added
+- `api/store.py` — pure-numpy hybrid retrieval helpers, dependency-free and
+  matching the self-contained design of the existing `pca_2d` / `kmeans`:
+  - `cosine_scores(M, q)` — full (N,) cosine vector (factored out of the old
+    `cosine_topk`, which is removed as the dense leg now flows through the
+    hybrid path).
+  - `tokenize(text)` — lowercase alphanumeric word tokenizer.
+  - `bm25_scores(docs, query, k1=1.5, b=0.75)` — Okapi BM25 relevance of each
+    document to the query; all-zero (never NaN) on empty corpus / empty query /
+    unmatched terms.
+  - `hybrid_topk(M, docs, query=, text=, k=, alpha=)` — fuses dense cosine and
+    BM25 via `alpha * minmax(dense) + (1 - alpha) * minmax(bm25)`; `alpha=1.0`
+    is dense-only, `alpha=0.0` is BM25-only. Each hit carries the fused `score`
+    plus raw `dense_score` and `bm25_score`.
+- `api/app.py` — `POST /index/{name}/search` now accepts an optional `text`
+  param alongside `query` (a vector) and an `alpha` weight (`[0, 1]`, default
+  `0.5`). `query` only → dense (backward compatible), `text` only → BM25 over
+  each vector's `metadata["text"]`, both → hybrid. The response gains `mode`
+  (`dense` / `bm25` / `hybrid`), `alpha`, and per-hit `dense_score` /
+  `bm25_score`. Missing both `query` and `text` → 400; out-of-range `alpha` →
+  422. FastAPI app version `0.7.0 → 0.8.0`.
+- `api/test_hybrid.py` — 14 tests: dense backward-compat, BM25-only ranking,
+  `alpha=1.0`≡dense and `alpha=0.0`≡BM25 equivalence, blended fusion never
+  elevating an unrelated doc, 400/422 guards, empty index, plus unit tests for
+  `tokenize`, `bm25_scores` (zero/empty/unmatched), and `hybrid_topk`.
+
+### Notes
+- Pure-Python BM25 keeps the API service deployable and testable without the
+  compiled `vectro_py` extension (the rust `BM25Index` remains the high-volume
+  path for `python/retriever.py`). Fusion uses the repo's existing
+  alpha-weighted convention rather than rank-based RRF.
+- 1307 Python tests pass (1263 + 44 API, incl. 14 new); Rust crates unchanged.
 
 ## [V7] — 2026-05-09 — Live vector visualization
 
@@ -221,6 +361,47 @@ recall** simultaneously.
   `python/vectro.py`.
 - 1019 Python tests pass (1009 prior + 10 new).
 - Rust crate versions unchanged at 8.0.0.
+
+## [5.2.0] — 2026-05-13
+
+### Added
+- **Persistent index serialisation (`.npz` format)** — `HNSWIndex.save(path)`
+  now writes a `numpy.savez_compressed` archive instead of pickle. The format
+  is a standard ZIP container: vectors stored as a float32 matrix, graph
+  topology / metadata / deleted set / string-ID map stored as JSON byte arrays
+  inside the same file. `load(path)` detects the format by magic bytes
+  (`PK\x03\x04` for `.npz`, `\x80\x04/05` for pickle); the legacy pickle path
+  still loads but emits a `DeprecationWarning` with guidance to re-save.
+  Loading uses `allow_pickle=False` — safe to open untrusted index files.
+  `SearchTrace` and `_id_map` are serialised in the new format.
+- **`HNSWIndex.add_batch(vectors, ids, metadata)`** — batch upsert with
+  deduplication by caller-supplied string IDs. Existing IDs trigger an O(1)
+  in-place update of the stored vector and metadata (no graph surgery); new IDs
+  are inserted via the standard HNSW algorithm. Soft-deleted nodes are
+  resurrected on upsert. Returns `{"inserted": n, "updated": m, "node_ids": [...]}`.
+  `HNSWIndex._id_map: Dict[str, int]` persists across `save` / `load`.
+- **`HNSWIndex.get_by_id(str_id)`** — O(1) metadata lookup by string ID;
+  returns `None` for unknown or deleted IDs.
+- **`HNSWIndex.search(..., trace=False)`** — optional third return value when
+  `trace=True`. Returns `SearchTrace` alongside `(indices, distances)`, a
+  dataclass with: `entry_point` (int), `layer_descents` (per-layer visited
+  nodes during greedy descent), `l0_visited` (all nodes examined at layer 0),
+  `l0_candidates_final` (sorted ascending result heap). Useful for recall
+  debugging and the demo viz search-beam animation.
+- **`SearchTrace` dataclass** — module-level, importable as
+  `from python.hnsw_api import SearchTrace`.
+- **`tests/test_hnsw_v2.py`** — 39 tests: 12 persistence (empty/full/hyperparams/
+  recall/metadata/deleted/id_map/magic/legacy-pickle/L2-cosine),
+  15 add_batch (insert/upsert/partial/resurrection/metadata/node_ids/errors/
+  get_by_id/search-after-upsert), 12 trace (type/contents/filter/empty/
+  layer-count/candidate-match/deleted-exclusion/save-load).
+
+### Notes
+- **Backward compat**: existing indexes saved with the old pickle `save()` can
+  still be loaded with `load()`. Upgrade path: `idx = HNSWIndex.load("old.hnsw"); idx.save("new.vindex")`.
+- Python `5.1.0 → 5.2.0`. Rust crates unchanged at `8.0.0`.
+- `pyproject.toml` merge conflict resolved (kept HEAD/main version 5.5.0 in
+  main repo; worktree at 5.2.0).
 
 ## [5.1.0] — 2026-05-12
 

@@ -76,7 +76,19 @@ impl Bf16Vector {
                 other.packed.len(),
             )
         };
-        <SimBf16 as SpatialSimilarity>::cosine(a, b).unwrap_or(1.0) as f32
+        match <SimBf16 as SpatialSimilarity>::cosine(a, b) {
+            Some(d) => d as f32,
+            None => {
+                // SimSIMD returns None only on a length mismatch or an
+                // unsupported target — never silently swallow it.
+                tracing::warn!(
+                    a_len = a.len(),
+                    b_len = b.len(),
+                    "bf16 cosine distance unavailable (SimSIMD returned None); falling back to 1.0"
+                );
+                1.0
+            }
+        }
     }
 }
 
@@ -85,7 +97,7 @@ mod tests {
     use super::*;
 
     fn unit_vec(d: usize, seed: f32) -> Vec<f32> {
-        let v: Vec<f32> = (0..d).map(|i| ((i as f32 * seed + 0.1).sin())).collect();
+        let v: Vec<f32> = (0..d).map(|i| (i as f32 * seed + 0.1).sin()).collect();
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         v.into_iter().map(|x| x / norm).collect()
     }
@@ -98,6 +110,15 @@ mod tests {
         assert_eq!(enc.packed.len(), 768);
         let dec = enc.decode();
         assert_eq!(dec.len(), 768);
+    }
+
+    #[test]
+    fn mismatched_length_falls_back_to_max_distance() {
+        // SimSIMD returns None on a length mismatch; cosine_dist must not panic
+        // and must return the documented fallback (1.0), logging a warning.
+        let a = Bf16Vector::encode(&unit_vec(64, 0.01));
+        let b = Bf16Vector::encode(&unit_vec(32, 0.02));
+        assert_eq!(a.cosine_dist(&b), 1.0);
     }
 
     #[test]

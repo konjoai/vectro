@@ -70,21 +70,28 @@ def _cmd_compress(args: argparse.Namespace) -> int:
     # Cloud URI dispatch: s3://, gs://, abfs://
     if output.startswith("s3://"):
         from .storage_v3 import S3Backend
+
         bucket, _, remote = output[5:].partition("/")
-        S3Backend(bucket).save_vqz(result.quantized, result.scales, d, remote,
-                                   compression=lossless_pass)
+        S3Backend(bucket).save_vqz(
+            result.quantized, result.scales, d, remote, compression=lossless_pass
+        )
     elif output.startswith("gs://"):
         from .storage_v3 import GCSBackend
+
         bucket, _, remote = output[5:].partition("/")
-        GCSBackend(bucket).save_vqz(result.quantized, result.scales, d, remote,
-                                    compression=lossless_pass)
+        GCSBackend(bucket).save_vqz(
+            result.quantized, result.scales, d, remote, compression=lossless_pass
+        )
     elif output.startswith("abfs://"):
         from .storage_v3 import AzureBlobBackend
+
         container, _, remote = output[7:].partition("/")
-        AzureBlobBackend(container).save_vqz(result.quantized, result.scales, d, remote,
-                                             compression=lossless_pass)
+        AzureBlobBackend(container).save_vqz(
+            result.quantized, result.scales, d, remote, compression=lossless_pass
+        )
     elif output.endswith(".vqz"):
         from .storage_v3 import save_compressed
+
         save_compressed(result, output, codec=lossless_pass)
     else:
         vectro.save_compressed(result, output)
@@ -107,6 +114,7 @@ def _cmd_decompress(args: argparse.Namespace) -> int:
         return 1
 
     from . import decompress_vectors
+
     restored = decompress_vectors(result)
     np.save(args.output, restored)
 
@@ -151,7 +159,11 @@ def _cmd_upgrade(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    tag = " (dry run)" if result["dry_run"] else (" (already current)" if not result["upgraded"] else "")
+    tag = (
+        " (dry run)"
+        if result["dry_run"]
+        else (" (already current)" if not result["upgraded"] else "")
+    )
     verb = "Upgraded" if result["upgraded"] else "Copied"
     print(f"{verb} v{result['src_version']} → v{result['dst_version']}{tag}: {result['dst']}")
     return 0
@@ -213,8 +225,10 @@ def _load_result_for_export(path: str):
     """
     if path.endswith(".vqz"):
         from .storage_v3 import load_compressed
+
         return load_compressed(path)
     from .vectro import Vectro
+
     return Vectro().load_compressed(path)
 
 
@@ -267,37 +281,36 @@ def _run_inline_benchmark() -> None:
     from . import quantize_embeddings, reconstruct_embeddings
     from .nf4_api import quantize_nf4, dequantize_nf4
 
-    _DIM   = 768
+    _DIM = 768
     _BATCH = 256
 
-    rng  = np.random.default_rng(0)
+    rng = np.random.default_rng(0)
     vecs = rng.standard_normal((_BATCH, _DIM)).astype(np.float32)
 
     print()
     print("── Benchmark (5 s) ────────────────────────────────────────")
 
     # ── INT8 throughput ───────────────────────────────────────────────────────────────────────────────────
-    deadline  = time.monotonic() + 5.0
+    deadline = time.monotonic() + 5.0
     n_batches = 0
     while time.monotonic() < deadline:
         quantize_embeddings(vecs)
         n_batches += 1
 
     total_vecs = n_batches * _BATCH
-    print(f"INT8 throughput : {total_vecs / 5:,.0f} vec/s  "
-          f"({n_batches} × {_BATCH}-batch in 5 s)")
+    print(f"INT8 throughput : {total_vecs / 5:,.0f} vec/s  ({n_batches} × {_BATCH}-batch in 5 s)")
 
     # ── INT8 MAE ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
     result_int8 = quantize_embeddings(vecs)
-    recon_int8  = reconstruct_embeddings(result_int8)
-    mae_int8    = float(np.mean(np.abs(vecs - recon_int8)))
+    recon_int8 = reconstruct_embeddings(result_int8)
+    mae_int8 = float(np.mean(np.abs(vecs - recon_int8)))
     print(f"INT8 MAE        : {mae_int8:.6f}")
 
     # ── NF4 MAE (best-effort; skipped when unavailable) ──────────────────────────────────────────────────────────────────────────────
     try:
         packed, scales = quantize_nf4(vecs)
         recon_nf4 = dequantize_nf4(packed, scales, _DIM)
-        mae_nf4   = float(np.mean(np.abs(vecs - recon_nf4)))
+        mae_nf4 = float(np.mean(np.abs(vecs - recon_nf4)))
         print(f"NF4  MAE        : {mae_nf4:.6f}")
     except Exception:  # noqa: BLE001 — NF4 backend may not be built
         print("NF4  MAE        : unavailable (NF4 backend not found)")
@@ -322,12 +335,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("compress", help="Compress float32 embeddings to a .npz artifact")
     p.add_argument("input", help="Input .npy file (float32 embeddings)")
     p.add_argument("output", help="Output .npz artifact path")
-    p.add_argument("--profile", default=None,
-                   choices=["speed", "balanced", "quality", "extreme", "adaptive"],
-                   help="Compression profile (default: balanced)")
-    p.add_argument("--lossless-pass", dest="lossless_pass",
-                   choices=["zstd", "zlib", "none"], default="zstd",
-                   help="Lossless compression codec for .vqz output (default: zstd)")
+    p.add_argument(
+        "--profile",
+        default=None,
+        choices=["speed", "balanced", "quality", "extreme", "adaptive"],
+        help="Compression profile (default: balanced)",
+    )
+    p.add_argument(
+        "--lossless-pass",
+        dest="lossless_pass",
+        choices=["zstd", "zlib", "none"],
+        default="zstd",
+        help="Lossless compression codec for .vqz output (default: zstd)",
+    )
 
     # decompress
     p = sub.add_parser("decompress", help="Reconstruct float32 vectors from a .npz artifact")
@@ -360,7 +380,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # info
     p = sub.add_parser("info", help="Show backend and environment information")
     p.add_argument(
-        "--benchmark", action="store_true", default=False,
+        "--benchmark",
+        action="store_true",
+        default=False,
         help="Run a 5-second throughput benchmark and print MAE figures",
     )
 
@@ -385,12 +407,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Precision mode for compression (default: int8)",
     )
     p.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="Output full JSON report instead of summary",
     )
     p.add_argument("--seed", type=int, default=42, help="RNG seed (default: 42)")
     p.add_argument(
-        "--no-recall", action="store_true",
+        "--no-recall",
+        action="store_true",
         help="Skip Recall@K evaluation (faster for large batches)",
     )
 

@@ -1,7 +1,6 @@
 """Tests for python.migration — inspect, validate, and upgrade artifact versions."""
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -352,4 +351,3 @@ class TestUpgradeArtifact(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

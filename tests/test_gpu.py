@@ -27,6 +27,7 @@ from python.gpu_api import (  # noqa: E402
 # Device detection
 # ---------------------------------------------------------------------------
 
+
 class TestDeviceDetection(unittest.TestCase):
     def test_gpu_available_returns_bool(self):
         result = gpu_available()
@@ -46,6 +47,7 @@ class TestDeviceDetection(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # INT8 quantize / reconstruct
 # ---------------------------------------------------------------------------
+
 
 class TestQuantizeInt8(unittest.TestCase):
     def setUp(self):
@@ -72,7 +74,7 @@ class TestQuantizeInt8(unittest.TestCase):
         self.assertTrue((s > 0).all())
 
     def test_single_vector_input(self):
-        v = self.vecs[0]   # 1-D
+        v = self.vecs[0]  # 1-D
         q, s = quantize_int8_batch(v)
         self.assertEqual(q.shape, (1, 64))
         self.assertEqual(s.shape, (1,))
@@ -96,10 +98,7 @@ class TestQuantizeInt8(unittest.TestCase):
         r = reconstruct_int8_batch(q, s)
         # Cosine sim per vector
         dots = (self.vecs * r).sum(axis=1)
-        norms = (
-            np.linalg.norm(self.vecs, axis=1)
-            * np.linalg.norm(r, axis=1)
-        )
+        norms = np.linalg.norm(self.vecs, axis=1) * np.linalg.norm(r, axis=1)
         norms = np.where(norms == 0, 1.0, norms)
         cosines = dots / norms
         self.assertGreater(cosines.mean(), 0.99)
@@ -108,6 +107,7 @@ class TestQuantizeInt8(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Batch cosine similarity
 # ---------------------------------------------------------------------------
+
 
 class TestBatchCosineSimilarity(unittest.TestCase):
     def setUp(self):
@@ -150,6 +150,7 @@ class TestBatchCosineSimilarity(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Top-k search
 # ---------------------------------------------------------------------------
+
 
 class TestBatchCosineQuery(unittest.TestCase):
     def setUp(self):
@@ -206,6 +207,7 @@ class TestBatchCosineQuery(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Benchmark
 # ---------------------------------------------------------------------------
+
 
 class TestBenchmark(unittest.TestCase):
     def test_benchmark_runs(self):

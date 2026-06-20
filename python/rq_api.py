@@ -22,7 +22,7 @@ comparable to 3–4× as many sub-spaces.
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List
 
 import numpy as np
 
@@ -36,11 +36,11 @@ except ImportError:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _check_sklearn() -> None:
     if MiniBatchKMeans is None:
         raise ImportError(
-            "scikit-learn is required for ResidualQuantizer. "
-            "Install with: pip install scikit-learn"
+            "scikit-learn is required for ResidualQuantizer. Install with: pip install scikit-learn"
         )
 
 
@@ -100,7 +100,7 @@ def _pq_encode_one(
     for m in range(n_subspaces):
         sub = data[:, m * sub_d : (m + 1) * sub_d]
         diffs = sub[:, np.newaxis, :] - codebooks[m][np.newaxis, :, :]  # (n, K, sub_d)
-        codes[:, m] = np.argmin((diffs ** 2).sum(axis=2), axis=1).astype(np.uint8)
+        codes[:, m] = np.argmin((diffs**2).sum(axis=2), axis=1).astype(np.uint8)
     return codes
 
 
@@ -122,6 +122,7 @@ def _pq_decode_one(
 # ---------------------------------------------------------------------------
 # Public class
 # ---------------------------------------------------------------------------
+
 
 class ResidualQuantizer:
     """Multi-pass Residual Quantizer.
@@ -231,9 +232,7 @@ class ResidualQuantizer:
         n = codes_list[0].shape[0]
         result = np.zeros((n, self._d_orig), dtype=np.float32)
         for p, codes in enumerate(codes_list):
-            recon = _pq_decode_one(
-                codes, self._codebooks[p], self.n_subspaces, self._d_orig
-            )
+            recon = _pq_decode_one(codes, self._codebooks[p], self.n_subspaces, self._d_orig)
             result += recon
         return result
 
@@ -250,9 +249,7 @@ class ResidualQuantizer:
         original = np.ascontiguousarray(original, dtype=np.float32)
         reconstructed = np.ascontiguousarray(reconstructed, dtype=np.float32)
         dots = (original * reconstructed).sum(axis=1)
-        norms = (
-            np.linalg.norm(original, axis=1) * np.linalg.norm(reconstructed, axis=1)
-        )
+        norms = np.linalg.norm(original, axis=1) * np.linalg.norm(reconstructed, axis=1)
         norms = np.where(norms == 0, 1.0, norms)
         return float((dots / norms).mean())
 
@@ -262,6 +259,6 @@ class ResidualQuantizer:
         Each vector is stored as n_passes × n_subspaces uint8 codes.
         Float32 storage is d × 4 bytes.  Code storage is n_passes × M bytes.
         """
-        code_bytes = self.n_passes * self.n_subspaces          # uint8
+        code_bytes = self.n_passes * self.n_subspaces  # uint8
         float_bytes = self._d_orig * 4 if self._d_orig > 0 else 1
         return float_bytes / max(code_bytes, 1)

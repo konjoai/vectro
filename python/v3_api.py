@@ -24,20 +24,24 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from .pq_api import PQCodebook as _PQCodebook, train_pq_codebook, pq_encode, pq_decode
 from .hnsw_api import HNSWIndex as _HNSWBase
-from .nf4_api import quantize_nf4, dequantize_nf4, quantize_mixed, dequantize_mixed, select_outlier_dims
+from .nf4_api import (
+    quantize_nf4,
+    dequantize_nf4,
+    quantize_mixed,
+    dequantize_mixed,
+    select_outlier_dims,
+)
 from .binary_api import quantize_binary, dequantize_binary
 from .rq_api import ResidualQuantizer
 from .auto_quantize_api import auto_quantize
-from .interface import quantize_embeddings, reconstruct_embeddings
+from .interface import quantize_embeddings
 from .storage_v3 import save_vqz, load_vqz
-from .lora_api import compress_lora, decompress_lora, compress_lora_adapter, LoRAResult
 
 _SAVE_VERSION = 3
 
@@ -45,6 +49,7 @@ _SAVE_VERSION = 3
 # ---------------------------------------------------------------------------
 # Result container
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class V3Result:
@@ -64,6 +69,7 @@ class V3Result:
         binary     → {"packed": uint8[n,ceil(d/8)]}
         rq-3pass   → {"codes": List[uint8[n,M]], "n_passes": 3}
     """
+
     profile: str
     n_vectors: int
     dims: int
@@ -73,6 +79,7 @@ class V3Result:
 # ---------------------------------------------------------------------------
 # PQCodebook wrapper
 # ---------------------------------------------------------------------------
+
 
 class PQCodebook:
     """Product-Quantisation codebook with train / encode / decode / save / load.
@@ -186,6 +193,7 @@ class PQCodebook:
 # HNSWIndex wrapper
 # ---------------------------------------------------------------------------
 
+
 class HNSWIndex:
     """HNSW approximate nearest-neighbour index with batch insert / search.
 
@@ -246,9 +254,7 @@ class HNSWIndex:
         else:
             ids = list(ids)
             if len(ids) != n:
-                raise ValueError(
-                    f"ids length ({len(ids)}) must match vectors length ({n})."
-                )
+                raise ValueError(f"ids length ({len(ids)}) must match vectors length ({n}).")
 
         self._user_ids.extend(ids)
         self._index.add(vectors)
@@ -274,12 +280,8 @@ class HNSWIndex:
         (user_ids, distances) — user_ids is a list of user-supplied IDs;
         distances is a float32 array of corresponding cosine distances.
         """
-        indices, distances = self._index.search(
-            query, k=top_k, ef=max(ef, top_k)
-        )
-        result_ids = [
-            self._user_ids[i] for i in indices if i < len(self._user_ids)
-        ]
+        indices, distances = self._index.search(query, k=top_k, ef=max(ef, top_k))
+        result_ids = [self._user_ids[i] for i in indices if i < len(self._user_ids)]
         return result_ids, distances[: len(result_ids)]
 
     # -- persistence --
@@ -347,8 +349,18 @@ class HNSWIndex:
 # ---------------------------------------------------------------------------
 
 _VALID_PROFILES = frozenset(
-    {"int8", "nf4", "nf4-mixed", "pq-96", "pq-48", "binary", "rq-3pass",
-     "lora-nf4", "lora-int8", "lora-rq"}
+    {
+        "int8",
+        "nf4",
+        "nf4-mixed",
+        "pq-96",
+        "pq-48",
+        "binary",
+        "rq-3pass",
+        "lora-nf4",
+        "lora-int8",
+        "lora-rq",
+    }
 )
 
 
@@ -395,8 +407,7 @@ class VectroV3:
     ) -> None:
         if profile not in _VALID_PROFILES:
             raise ValueError(
-                f"Unknown profile {profile!r}. "
-                f"Valid profiles: {sorted(_VALID_PROFILES)}"
+                f"Unknown profile {profile!r}. Valid profiles: {sorted(_VALID_PROFILES)}"
             )
         self._profile = profile
         self._codebook = codebook
@@ -460,9 +471,7 @@ class VectroV3:
 
         if profile == "nf4-mixed":
             out_dims = select_outlier_dims(vectors)
-            fp16_vals, nf4_packed, nf4_scales, out_dims = quantize_mixed(
-                vectors, out_dims
-            )
+            fp16_vals, nf4_packed, nf4_scales, out_dims = quantize_mixed(vectors, out_dims)
             return V3Result(
                 profile=profile,
                 n_vectors=n,
@@ -540,6 +549,7 @@ class VectroV3:
 
         if profile == "int8":
             from .interface import QuantizationResult, reconstruct_embeddings
+
             qr = QuantizationResult(
                 quantized=data["quantized"],
                 scales=data["scales"],
@@ -652,8 +662,12 @@ class VectroV3:
 
         profile = result.profile
         meta = json.dumps(
-            {"profile": profile, "dims": result.dims, "n_vectors": result.n_vectors,
-             "vectro_save_version": _SAVE_VERSION}
+            {
+                "profile": profile,
+                "dims": result.dims,
+                "n_vectors": result.n_vectors,
+                "vectro_save_version": _SAVE_VERSION,
+            }
         ).encode()
 
         if profile == "int8":
@@ -684,8 +698,7 @@ class VectroV3:
 
         else:
             # Profiles PQ / binary / rq-3pass / nf4-mixed — use npz
-            arrs = {k: np.asarray(v) for k, v in result.data.items()
-                    if not isinstance(v, list)}
+            arrs = {k: np.asarray(v) for k, v in result.data.items() if not isinstance(v, list)}
             # RQ codes_list is a Python list of arrays — expand per pass
             if "codes" in result.data and isinstance(result.data["codes"], list):
                 for i, c in enumerate(result.data["codes"]):
@@ -719,7 +732,9 @@ class VectroV3:
 
             if profile == "int8":
                 return V3Result(
-                    profile=profile, n_vectors=n, dims=dims,
+                    profile=profile,
+                    n_vectors=n,
+                    dims=dims,
                     data={
                         "quantized": raw["quantized"],
                         "scales": raw["scales"],
@@ -727,15 +742,15 @@ class VectroV3:
                 )
             if profile == "nf4":
                 return V3Result(
-                    profile=profile, n_vectors=n, dims=dims,
+                    profile=profile,
+                    n_vectors=n,
+                    dims=dims,
                     data={
                         "packed": raw["quantized"].view(np.uint8),
                         "scales": raw["scales"],
                     },
                 )
-            raise ValueError(
-                f"Unexpected VQZ profile {profile!r} — cannot load."
-            )
+            raise ValueError(f"Unexpected VQZ profile {profile!r} — cannot load.")
 
         # npz format (pq / binary / rq-3pass / nf4-mixed)
         meta_path = path + ".meta"
@@ -748,9 +763,7 @@ class VectroV3:
 
         arc = np.load(path, allow_pickle=False)
         if not meta:
-            raise ValueError(
-                f"Cannot load {path!r}: missing .meta sidecar file."
-            )
+            raise ValueError(f"Cannot load {path!r}: missing .meta sidecar file.")
 
         profile = meta["profile"]
         dims = meta["dims"]
@@ -803,8 +816,15 @@ class VectroV3:
         with tempfile.NamedTemporaryFile(suffix=".vqz", delete=False) as tmp:
             tmp_path = tmp.name
         try:
-            save_vqz(q, result.data.get("scales", np.zeros(result.n_vectors, dtype=np.float32)),
-                     result.dims, tmp_path, compression=compression, metadata=meta, level=level)
+            save_vqz(
+                q,
+                result.data.get("scales", np.zeros(result.n_vectors, dtype=np.float32)),
+                result.dims,
+                tmp_path,
+                compression=compression,
+                metadata=meta,
+                level=level,
+            )
             backend.upload(tmp_path, _uri_key(uri))
         finally:
             os.unlink(tmp_path)
@@ -835,6 +855,7 @@ class VectroV3:
 # ---------------------------------------------------------------------------
 # Module-level convenience functions
 # ---------------------------------------------------------------------------
+
 
 def auto_compress(
     vectors: np.ndarray,
@@ -877,6 +898,7 @@ def auto_compress(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_cloud_uri(path: str) -> bool:
     return path.startswith(("s3://", "gs://", "gcs://", "abfs://", "az://"))
 
@@ -906,13 +928,13 @@ def _make_cloud_backend(uri: str, S3Backend, GCSBackend, AzureBlobBackend):
         return S3Backend(bucket, prefix)
     if uri.startswith(("gs://", "gcs://")):
         scheme = "gcs://" if uri.startswith("gcs://") else "gs://"
-        rest = uri[len(scheme):]
+        rest = uri[len(scheme) :]
         bucket = rest.split("/")[0]
         prefix = "/".join(rest.split("/")[1:-1])
         return GCSBackend(bucket, prefix)
     if uri.startswith(("abfs://", "az://")):
         scheme = "abfs://" if uri.startswith("abfs://") else "az://"
-        rest = uri[len(scheme):]
+        rest = uri[len(scheme) :]
         bucket = rest.split("/")[0]
         prefix = "/".join(rest.split("/")[1:-1])
         return AzureBlobBackend(bucket, prefix)

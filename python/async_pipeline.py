@@ -3,11 +3,12 @@
 compress_async(): runs Vectro.compress() in asyncio thread pool.
 CompressionPipeline: chains multiple quantization stages in sequence.
 """
+
 from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Any
 import numpy as np
 
@@ -65,6 +66,7 @@ class PipelineStage:
 @dataclass
 class PipelineResult:
     """Result of a full pipeline run."""
+
     stages: List[str]
     input_shape: tuple
     output_shape: tuple
@@ -104,6 +106,7 @@ class CompressionPipeline:
         if self._vectro is not None:
             return self._vectro
         from .vectro import Vectro
+
         return Vectro()
 
     def run(self, vectors: np.ndarray) -> tuple:
@@ -133,20 +136,20 @@ class CompressionPipeline:
                 current = result[0]
             else:
                 current = result
-            if hasattr(current, 'astype') and current.dtype != np.float32:
+            if hasattr(current, "astype") and current.dtype != np.float32:
                 try:
                     current = current.astype(np.float32)
                 except (ValueError, TypeError):
                     pass
             logger.info("Pipeline stage '%s': %.1f ms", stage.mode, elapsed_ms)
 
-        output_bytes = current.nbytes if hasattr(current, 'nbytes') else input_bytes
+        output_bytes = current.nbytes if hasattr(current, "nbytes") else input_bytes
         pr = PipelineResult(
             stages=stage_names,
             input_shape=input_shape,
-            output_shape=current.shape if hasattr(current, 'shape') else (0,),
+            output_shape=current.shape if hasattr(current, "shape") else (0,),
             input_dtype=str(vectors.dtype),
-            output_dtype=str(current.dtype) if hasattr(current, 'dtype') else "unknown",
+            output_dtype=str(current.dtype) if hasattr(current, "dtype") else "unknown",
             total_latency_ms=sum(stage_latencies),
             stage_latencies_ms=stage_latencies,
             compression_ratio=input_bytes / max(output_bytes, 1),

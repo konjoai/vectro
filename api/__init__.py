@@ -13,6 +13,7 @@ The demo at ``demo/viz.html`` talks to the matching routes mounted in
 ``demo/server.py``.  Both servers share the helpers in :mod:`api.store`,
 so behaviour is identical regardless of which entrypoint is running.
 """
+
 from .app import STORE, app
 from .store import Index, IndexStore, kmeans, pca_2d
 

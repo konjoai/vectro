@@ -1,4 +1,5 @@
 """Parametrized tests for python.profiles.get_profile() model-family detection."""
+
 from pathlib import Path
 
 import pytest
@@ -15,15 +16,18 @@ from python.profiles import get_profile, QuantProfile  # noqa: E402
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
-@pytest.mark.parametrize("fixture,expected_family,expected_method", [
-    ("gte",     "gte",     "int8"),
-    ("e5",      "e5",      "int8"),
-    ("bert",    "bert",    "nf4"),
-    ("bge",     "bge",     "nf4"),
-    ("qwen2",   "qwen2",   "int8"),
-    ("deberta", "deberta", "nf4"),
-    ("unknown", "generic", "auto"),
-])
+@pytest.mark.parametrize(
+    "fixture,expected_family,expected_method",
+    [
+        ("gte", "gte", "int8"),
+        ("e5", "e5", "int8"),
+        ("bert", "bert", "nf4"),
+        ("bge", "bge", "nf4"),
+        ("qwen2", "qwen2", "int8"),
+        ("deberta", "deberta", "nf4"),
+        ("unknown", "generic", "auto"),
+    ],
+)
 def test_get_profile(fixture, expected_family, expected_method):
     profile = get_profile(FIXTURE_DIR / fixture)
     assert profile.family == expected_family

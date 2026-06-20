@@ -30,7 +30,6 @@ quantized.  Total body bytes = n_vectors * dims + n_vectors * 4.
 """
 
 import hashlib
-import io
 import struct
 import zlib
 from collections import namedtuple
@@ -40,6 +39,7 @@ import numpy as np
 # Try zstandard (preferred); fall back to zlib which is stdlib.
 try:
     import zstandard as zstd
+
     _HAVE_ZSTD = True
 except ImportError:  # pragma: no cover
     _HAVE_ZSTD = False
@@ -47,6 +47,7 @@ except ImportError:  # pragma: no cover
 # Optional fsspec for cloud backends.
 try:
     import fsspec
+
     _HAVE_FSSPEC = True
 except ImportError:  # pragma: no cover
     _HAVE_FSSPEC = False
@@ -73,6 +74,7 @@ VQZResult = namedtuple(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _compress(data: bytes, compression: str, level: int) -> tuple[bytes, int]:
     """Return (compressed_bytes, comp_flag)."""
@@ -111,7 +113,7 @@ def _build_header(
     checksum: bytes,
 ) -> bytes:
     header = bytearray(HEADER_SIZE)
-    header[0:8]   = MAGIC
+    header[0:8] = MAGIC
     struct.pack_into("<H", header, 8, _VERSION)
     struct.pack_into("<H", header, 10, comp_flag)
     struct.pack_into("<Q", header, 12, n_vectors)
@@ -126,16 +128,14 @@ def _build_header(
 
 def _parse_header(raw: bytes) -> dict:
     if raw[:8] != MAGIC:
-        raise ValueError(
-            f"Not a valid VQZ file (magic mismatch: {raw[:8]!r})"
-        )
-    version    = struct.unpack_from("<H", raw, 8)[0]
-    comp_flag  = struct.unpack_from("<H", raw, 10)[0]
-    n_vectors  = struct.unpack_from("<Q", raw, 12)[0]
-    dims       = struct.unpack_from("<I", raw, 20)[0]
+        raise ValueError(f"Not a valid VQZ file (magic mismatch: {raw[:8]!r})")
+    version = struct.unpack_from("<H", raw, 8)[0]
+    comp_flag = struct.unpack_from("<H", raw, 10)[0]
+    n_vectors = struct.unpack_from("<Q", raw, 12)[0]
+    dims = struct.unpack_from("<I", raw, 20)[0]
     n_subspaces = struct.unpack_from("<H", raw, 24)[0]
     metadata_len = struct.unpack_from("<I", raw, 26)[0]
-    checksum   = raw[30:38]
+    checksum = raw[30:38]
     return dict(
         version=version,
         comp_flag=comp_flag,
@@ -154,6 +154,7 @@ def _body_checksum(compressed_body: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def save_vqz(
     quantized: np.ndarray,
@@ -179,7 +180,7 @@ def save_vqz(
     n_subspaces : PQ sub-space count, 0 for non-PQ data
     """
     quantized = np.ascontiguousarray(quantized, dtype=np.int8)
-    scales    = np.ascontiguousarray(scales, dtype=np.float32)
+    scales = np.ascontiguousarray(scales, dtype=np.float32)
     n_vectors = quantized.shape[0]
 
     # Flat body: int8 quantized || float32 scales
@@ -189,9 +190,7 @@ def save_vqz(
     checksum = _body_checksum(body_compressed)
     if isinstance(metadata, str):
         metadata = metadata.encode("utf-8")
-    header = _build_header(
-        comp_flag, n_vectors, dims, n_subspaces, len(metadata), checksum
-    )
+    header = _build_header(comp_flag, n_vectors, dims, n_subspaces, len(metadata), checksum)
 
     with open(path, "wb") as fh:
         fh.write(header)
@@ -225,26 +224,21 @@ def load_vqz(path: str) -> dict:
     # Verify checksum
     computed = _body_checksum(body_compressed)
     if computed != hdr["checksum"]:
-        raise ValueError(
-            "VQZ checksum mismatch — file may be corrupt or truncated."
-        )
+        raise ValueError("VQZ checksum mismatch — file may be corrupt or truncated.")
 
     body_raw = _decompress(body_compressed, hdr["comp_flag"])
     n_vectors = hdr["n_vectors"]
-    dims      = hdr["dims"]
+    dims = hdr["dims"]
 
-    q_bytes = n_vectors * dims           # int8 = 1 byte each
-    s_bytes = n_vectors * 4              # float32 = 4 bytes each
+    q_bytes = n_vectors * dims  # int8 = 1 byte each
+    s_bytes = n_vectors * 4  # float32 = 4 bytes each
 
     if len(body_raw) < q_bytes + s_bytes:
         raise ValueError(
-            f"VQZ body too short: expected {q_bytes + s_bytes} bytes, "
-            f"got {len(body_raw)}."
+            f"VQZ body too short: expected {q_bytes + s_bytes} bytes, got {len(body_raw)}."
         )
 
-    quantized = np.frombuffer(body_raw[:q_bytes], dtype=np.int8).reshape(
-        n_vectors, dims
-    ).copy()
+    quantized = np.frombuffer(body_raw[:q_bytes], dtype=np.int8).reshape(n_vectors, dims).copy()
     scales = np.frombuffer(body_raw[q_bytes : q_bytes + s_bytes], dtype=np.float32).copy()
 
     return dict(
@@ -262,14 +256,14 @@ def load_vqz(path: str) -> dict:
 # Cloud backend stubs
 # ---------------------------------------------------------------------------
 
+
 class _CloudBackendBase:
     """Abstract cloud storage backend (requires fsspec)."""
 
     def __init__(self, bucket: str, prefix: str = ""):
         if not _HAVE_FSSPEC:
             raise ImportError(
-                "Cloud backends require the 'fsspec' package.  "
-                "Install it with: pip install fsspec"
+                "Cloud backends require the 'fsspec' package.  Install it with: pip install fsspec"
             )
         self.bucket = bucket
         self.prefix = prefix.rstrip("/")
@@ -301,9 +295,10 @@ class _CloudBackendBase:
         remote_name: str,
         **kwargs,
     ) -> None:
-        buf = io.BytesIO()
-        # Write to buffer then upload
-        import tempfile, os
+        # Write to a temp file then upload.
+        import tempfile
+        import os
+
         with tempfile.NamedTemporaryFile(suffix=".vqz", delete=False) as tmp:
             tmp_path = tmp.name
         try:
@@ -313,7 +308,9 @@ class _CloudBackendBase:
             os.unlink(tmp_path)
 
     def load_vqz(self, remote_name: str) -> dict:
-        import tempfile, os
+        import tempfile
+        import os
+
         with tempfile.NamedTemporaryFile(suffix=".vqz", delete=False) as tmp:
             tmp_path = tmp.name
         try:
@@ -347,6 +344,7 @@ class AzureBlobBackend(_CloudBackendBase):
 # ---------------------------------------------------------------------------
 # QuantizationResult convenience wrappers
 # ---------------------------------------------------------------------------
+
 
 def save_compressed(
     result: object,

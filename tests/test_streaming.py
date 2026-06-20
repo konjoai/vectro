@@ -1,7 +1,6 @@
 """Tests for python/streaming.py — StreamingDecompressor."""
 
 import unittest
-from pathlib import Path
 
 import numpy as np
 
@@ -112,7 +111,7 @@ class TestStreamingDecompressorChunks(unittest.TestCase):
         """Last chunk contains the remainder (n % chunk_size)."""
         from python.streaming import StreamingDecompressor
 
-        n, dim, chunk_size = 25, 16, 7   # remainder = 4
+        n, dim, chunk_size = 25, 16, 7  # remainder = 4
         result = _make_int8_batch(n=n, dim=dim)
         chunks = list(StreamingDecompressor(result, chunk_size=chunk_size))
         self.assertEqual(len(chunks[-1]), n % chunk_size)
@@ -202,18 +201,21 @@ class TestStreamingDecompressorQuantResult(unittest.TestCase):
 # AsyncStreamingDecompressor tests
 # ---------------------------------------------------------------------------
 
+
 class TestAsyncStreamingDecompressor(unittest.TestCase):
     """Tests for AsyncStreamingDecompressor using asyncio.run()."""
 
     def _run(self, coro):
         """Helper: run a coroutine synchronously."""
         import asyncio
+
         return asyncio.run(coro)
 
     # ── BatchQuantizationResult path ──────────────────────────────────────
 
     def test_total_vectors_int8_batch(self):
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_batch(n=64, dim=16)
 
         async def go():
@@ -226,6 +228,7 @@ class TestAsyncStreamingDecompressor(unittest.TestCase):
 
     def test_chunk_dtype_batch(self):
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_batch(n=20, dim=8)
 
         async def go():
@@ -239,6 +242,7 @@ class TestAsyncStreamingDecompressor(unittest.TestCase):
 
     def test_no_nan_batch(self):
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_batch(n=32, dim=8)
 
         async def go():
@@ -254,6 +258,7 @@ class TestAsyncStreamingDecompressor(unittest.TestCase):
 
     def test_total_vectors_quant_result(self):
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_quant_result(n=50, dim=16)
 
         async def go():
@@ -266,6 +271,7 @@ class TestAsyncStreamingDecompressor(unittest.TestCase):
 
     def test_chunk_dtype_quant_result(self):
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_quant_result(n=10, dim=4)
 
         async def go():
@@ -279,6 +285,7 @@ class TestAsyncStreamingDecompressor(unittest.TestCase):
 
     def test_no_nan_quant_result(self):
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_quant_result(n=20, dim=8)
 
         async def go():
@@ -293,6 +300,7 @@ class TestAsyncStreamingDecompressor(unittest.TestCase):
     def test_single_chunk_when_n_lt_chunk_size(self):
         """When n < chunk_size the entire result arrives in one chunk."""
         from python.streaming import AsyncStreamingDecompressor
+
         n, dim = 5, 8
         result = _make_int8_quant_result(n=n, dim=dim)
 
@@ -309,6 +317,7 @@ class TestAsyncStreamingDecompressor(unittest.TestCase):
     def test_single_vector(self):
         """n=1 should yield exactly one chunk of length 1."""
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_quant_result(n=1, dim=4)
 
         async def go():
@@ -323,18 +332,21 @@ class TestAsyncStreamingDecompressor(unittest.TestCase):
 
     def test_len_matches_n(self):
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_quant_result(n=37, dim=8)
         asd = AsyncStreamingDecompressor(result, chunk_size=10)
         self.assertEqual(len(asd), 37)
 
     def test_invalid_chunk_size_raises(self):
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_quant_result(n=10, dim=4)
         with self.assertRaises(ValueError):
             AsyncStreamingDecompressor(result, chunk_size=0)
 
     def test_invalid_queue_size_raises(self):
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_quant_result(n=10, dim=4)
         with self.assertRaises(ValueError):
             AsyncStreamingDecompressor(result, queue_size=0)
@@ -342,6 +354,7 @@ class TestAsyncStreamingDecompressor(unittest.TestCase):
     def test_sequential_runs_independent(self):
         """An AsyncStreamingDecompressor can be re-iterated without state leak."""
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_quant_result(n=16, dim=4)
 
         async def go():
@@ -360,6 +373,7 @@ class TestAsyncStreamingDecompressor(unittest.TestCase):
     def test_reconstruction_values_plausible(self):
         """Reconstructed vectors should be within float32 range and finite."""
         from python.streaming import AsyncStreamingDecompressor
+
         result = _make_int8_quant_result(n=30, dim=16)
 
         async def go():

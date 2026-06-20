@@ -12,10 +12,10 @@ InMemoryTelemetryCollector — subclass that stores every event in a list.
 attach_telemetry()    — convenience helper: wraps a CompressionPipeline to
                         emit events automatically on every run().
 """
+
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -24,6 +24,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # TelemetryEvent
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class TelemetryEvent:
@@ -181,6 +182,7 @@ class InMemoryTelemetryCollector(TelemetryCollector):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _cosine_fidelity(original: np.ndarray, reconstructed: np.ndarray) -> Optional[float]:
     """Return mean cosine similarity between *original* and *reconstructed*.
 
@@ -196,8 +198,8 @@ def _cosine_fidelity(original: np.ndarray, reconstructed: np.ndarray) -> Optiona
     if orig_f32.shape != recon_f32.shape:
         return None
     # Per-row L2 norms — accumulate in FP32
-    orig_norms = np.linalg.norm(orig_f32, axis=1)          # (n,)
-    recon_norms = np.linalg.norm(recon_f32, axis=1)        # (n,)
+    orig_norms = np.linalg.norm(orig_f32, axis=1)  # (n,)
+    recon_norms = np.linalg.norm(recon_f32, axis=1)  # (n,)
     valid = (orig_norms > 0) & (recon_norms > 0)
     if not valid.any():
         return None
@@ -215,7 +217,7 @@ def _decode_stage_output(stage_output: Any, vectro: Any) -> np.ndarray:
     to the next pipeline stage.
     """
     # BatchQuantizationResult — has reconstruct_batch()
-    if hasattr(stage_output, 'reconstruct_batch') and callable(stage_output.reconstruct_batch):
+    if hasattr(stage_output, "reconstruct_batch") and callable(stage_output.reconstruct_batch):
         try:
             decoded = stage_output.reconstruct_batch()
             return np.asarray(decoded, dtype=np.float32)
@@ -223,7 +225,11 @@ def _decode_stage_output(stage_output: Any, vectro: Any) -> np.ndarray:
             pass
 
     # QuantizationResult — use vectro.decompress()
-    if hasattr(stage_output, 'quantized') and hasattr(stage_output, 'scales') and hasattr(vectro, 'decompress'):
+    if (
+        hasattr(stage_output, "quantized")
+        and hasattr(stage_output, "scales")
+        and hasattr(vectro, "decompress")
+    ):
         try:
             decoded = vectro.decompress(stage_output)
             arr = np.asarray(decoded, dtype=np.float32)
@@ -234,7 +240,7 @@ def _decode_stage_output(stage_output: Any, vectro: Any) -> np.ndarray:
             pass
 
     # Plain numpy array — just ensure float32
-    if hasattr(stage_output, 'astype'):
+    if hasattr(stage_output, "astype"):
         try:
             return stage_output.astype(np.float32)
         except (ValueError, TypeError):
@@ -246,6 +252,7 @@ def _decode_stage_output(stage_output: Any, vectro: Any) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # attach_telemetry()
 # ---------------------------------------------------------------------------
+
 
 def attach_telemetry(
     pipeline: Any,  # CompressionPipeline — avoid circular import
@@ -326,15 +333,15 @@ def attach_telemetry(
             # can compute cosine fidelity and feed the next stage correctly.
             decoded = _decode_stage_output(stage_output, vectro)
 
-            output_shape = decoded.shape if hasattr(decoded, 'shape') else (0,)
-            output_bytes = decoded.nbytes if hasattr(decoded, 'nbytes') else input_bytes
-            output_dtype = str(decoded.dtype) if hasattr(decoded, 'dtype') else "unknown"
+            output_shape = decoded.shape if hasattr(decoded, "shape") else (0,)
+            output_bytes = decoded.nbytes if hasattr(decoded, "nbytes") else input_bytes
+            output_dtype = str(decoded.dtype) if hasattr(decoded, "dtype") else "unknown"
 
             # Cosine fidelity
             fidelity: Optional[float] = None
             if (
                 measure_cosine_fidelity
-                and hasattr(decoded, 'shape')
+                and hasattr(decoded, "shape")
                 and decoded.shape == stage_input.shape
             ):
                 fidelity = _cosine_fidelity(stage_input, decoded)
@@ -361,13 +368,14 @@ def attach_telemetry(
 
         # Build PipelineResult to stay compatible with the original return type
         from .async_pipeline import PipelineResult
-        total_output_bytes = current.nbytes if hasattr(current, 'nbytes') else input_bytes_total
+
+        total_output_bytes = current.nbytes if hasattr(current, "nbytes") else input_bytes_total
         pr = PipelineResult(
             stages=stage_names,
             input_shape=vectors.shape,
-            output_shape=current.shape if hasattr(current, 'shape') else (0,),
+            output_shape=current.shape if hasattr(current, "shape") else (0,),
             input_dtype=str(vectors.dtype),
-            output_dtype=str(current.dtype) if hasattr(current, 'dtype') else "unknown",
+            output_dtype=str(current.dtype) if hasattr(current, "dtype") else "unknown",
             total_latency_ms=sum(stage_latencies),
             stage_latencies_ms=stage_latencies,
             compression_ratio=float(input_bytes_total) / float(max(total_output_bytes, 1)),

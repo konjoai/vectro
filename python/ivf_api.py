@@ -42,20 +42,20 @@ from typing import List, Tuple
 import numpy as np
 
 try:
-    from vectro_py import PyIvfIndex as _PyIvfIndex          # type: ignore
-    from vectro_py import PyIvfPqIndex as _PyIvfPqIndex      # type: ignore
+    from vectro_py import PyIvfIndex as _PyIvfIndex  # type: ignore
+    from vectro_py import PyIvfPqIndex as _PyIvfPqIndex  # type: ignore
+
     _BINDINGS_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _BINDINGS_AVAILABLE = False
-    _PyIvfIndex = None    # type: ignore[assignment,misc]
+    _PyIvfIndex = None  # type: ignore[assignment,misc]
     _PyIvfPqIndex = None  # type: ignore[assignment,misc]
 
 
 def _require_bindings() -> None:
     if not _BINDINGS_AVAILABLE:
         raise ImportError(
-            "vectro_py is required.  Build it with `maturin develop` or "
-            "`pip install vectro` first."
+            "vectro_py is required.  Build it with `maturin develop` or `pip install vectro` first."
         )
 
 

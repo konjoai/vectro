@@ -1,4 +1,5 @@
 """Tests for LlamaIndex VectorStore persistence (save / load)."""
+
 from __future__ import annotations
 
 import sys
@@ -20,6 +21,7 @@ ensure_repo_root_on_path()
 # ---------------------------------------------------------------------------
 # Minimal llama-index stubs
 # ---------------------------------------------------------------------------
+
 
 def _inject_llamaindex_stub():
     li = types.ModuleType("llama_index")
@@ -89,14 +91,15 @@ def _nodes(n: int, dim: int = 64) -> List[_TextNode]:
 
 
 class TestLlamaIndexPersistence(unittest.TestCase):
-
     def _build_store(self, n: int = 8, dim: int = 64) -> VectroVectorStore:
         store = VectroVectorStore(compression_profile="balanced")
         store.add(_nodes(n, dim))
         return store
 
     def test_save_creates_files(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = self._build_store()
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "li_store")
@@ -105,7 +108,9 @@ class TestLlamaIndexPersistence(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(path, "vectors.npy")))
 
     def test_load_restores_node_count(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = self._build_store(n=10)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "li_store")
@@ -114,7 +119,9 @@ class TestLlamaIndexPersistence(unittest.TestCase):
             self.assertEqual(len(loaded), 10)
 
     def test_load_restores_node_ids(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = self._build_store(n=5)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "li_store")
@@ -123,7 +130,10 @@ class TestLlamaIndexPersistence(unittest.TestCase):
             self.assertEqual(sorted(loaded._node_ids), sorted(store._node_ids))
 
     def test_load_wrong_store_type_raises(self):
-        import tempfile, os, json
+        import tempfile
+        import os
+        import json
+
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "bad")
             os.makedirs(path)
@@ -133,7 +143,9 @@ class TestLlamaIndexPersistence(unittest.TestCase):
                 VectroVectorStore.load(path)
 
     def test_get_nodes_after_load(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         original_nodes = _nodes(4, dim=64)
         store = VectroVectorStore()
         store.add(original_nodes)
@@ -148,7 +160,9 @@ class TestLlamaIndexPersistence(unittest.TestCase):
         self.assertEqual(len(retrieved), 4)
 
     def test_query_after_load(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         dim = 64
         original_nodes = _nodes(8, dim=dim)
         store = VectroVectorStore()
@@ -165,14 +179,18 @@ class TestLlamaIndexPersistence(unittest.TestCase):
         self.assertEqual(len(result.nodes), 3)
 
     def test_save_empty_store(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = VectroVectorStore()
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "empty")
             store.save(path)  # must not raise
 
     def test_text_preserved_after_load(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         nodes = [_node(text=f"content-{i}", dim=32) for i in range(4)]
         store = VectroVectorStore()
         store.add(nodes)
@@ -187,11 +205,10 @@ class TestLlamaIndexPersistence(unittest.TestCase):
         self.assertEqual(orig_texts, loaded_texts)
 
     def test_metadata_preserved_after_load(self):
-        import tempfile, os
-        nodes = [
-            _node(text=f"n-{i}", dim=32, meta={"idx": i})
-            for i in range(4)
-        ]
+        import tempfile
+        import os
+
+        nodes = [_node(text=f"n-{i}", dim=32, meta={"idx": i}) for i in range(4)]
         store = VectroVectorStore()
         store.add(nodes)
 
@@ -200,16 +217,14 @@ class TestLlamaIndexPersistence(unittest.TestCase):
             store.save(path)
             loaded = VectroVectorStore.load(path)
 
-        orig_metas = sorted(
-            m["idx"] for _, m in store._node_store.values()
-        )
-        loaded_metas = sorted(
-            m["idx"] for _, m in loaded._node_store.values()
-        )
+        orig_metas = sorted(m["idx"] for _, m in store._node_store.values())
+        loaded_metas = sorted(m["idx"] for _, m in loaded._node_store.values())
         self.assertEqual(orig_metas, loaded_metas)
 
     def test_compression_profile_preserved(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         store = VectroVectorStore(compression_profile="quality")
         store.add(_nodes(4))
         with tempfile.TemporaryDirectory() as tmp:

@@ -42,7 +42,15 @@ class BenchmarkSuite:
     trials: Incomplete
     seed: Incomplete
     backend: Incomplete
-    def __init__(self, n: int = 2000, dim: int = 384, profiles: list[str] | None = None, trials: int = 5, seed: int = 42, backend: str = 'auto') -> None: ...
+    def __init__(
+        self,
+        n: int = 2000,
+        dim: int = 384,
+        profiles: list[str] | None = None,
+        trials: int = 5,
+        seed: int = 42,
+        backend: str = "auto",
+    ) -> None: ...
     def _make_data(self) -> np.ndarray: ...
     def _run_one(self, vectors: np.ndarray, profile: str) -> BenchmarkEntry: ...
     def run(self) -> BenchmarkReport: ...

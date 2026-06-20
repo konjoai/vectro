@@ -43,8 +43,10 @@ class _MockArray:
         class _Scalar:
             def __init__(self, v):
                 self._v = v
+
             def as_py(self):
                 return self._v
+
         return _Scalar(self._data[idx])
 
 
@@ -88,10 +90,7 @@ class _MockStreamWriter:
 
     def close(self):
         # Serialise each table as (data_dict, schema) tuples for portability
-        payload = [
-            (t._data, t.schema)
-            for t in self._tables
-        ]
+        payload = [(t._data, t.schema) for t in self._tables]
         self._sink._buf.write(pickle.dumps(payload))
 
 
@@ -195,9 +194,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 def _run_python_snippet(snippet: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        str(_REPO_ROOT) if not existing else f"{_REPO_ROOT}{os.pathsep}{existing}"
-    )
+    env["PYTHONPATH"] = str(_REPO_ROOT) if not existing else f"{_REPO_ROOT}{os.pathsep}{existing}"
     return subprocess.run(
         [sys.executable, "-c", snippet],
         capture_output=True,

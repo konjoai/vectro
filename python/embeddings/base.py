@@ -15,13 +15,14 @@ Cohere, SentenceTransformers, etc.  The base class handles:
   ``BaseEmbedding`` (``_get_query_embedding`` / ``_get_text_embedding`` /
   ``_get_text_embeddings``).
 """
+
 from __future__ import annotations
 
 import hashlib
 import os
 import sqlite3
 import threading
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -94,9 +95,7 @@ class BaseEmbeddingProvider:
         of strings of length ``≤ batch_size``.  Caching and normalisation are
         applied by the base class.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement _embed_batch"
-        )
+        raise NotImplementedError(f"{type(self).__name__} must implement _embed_batch")
 
     # ------------------------------------------------------------------
     # Cache helpers
@@ -134,8 +133,7 @@ class BaseEmbeddingProvider:
         """Bulk insert of ``key → vector`` pairs."""
         if self._conn is None or not items:
             return
-        rows = [(k, v.astype(np.float32).tobytes(), int(v.size))
-                for k, v in items.items()]
+        rows = [(k, v.astype(np.float32).tobytes(), int(v.size)) for k, v in items.items()]
         with self._cache_lock:
             self._conn.executemany(
                 "INSERT OR REPLACE INTO cache (k, v, dim) VALUES (?, ?, ?)",
@@ -147,9 +145,7 @@ class BaseEmbeddingProvider:
         size = 0
         if self._conn is not None:
             with self._cache_lock:
-                row = self._conn.execute(
-                    "SELECT COUNT(*) FROM cache"
-                ).fetchone()
+                row = self._conn.execute("SELECT COUNT(*) FROM cache").fetchone()
                 size = int(row[0]) if row else 0
         return {
             "hits": self._cache_hits,
@@ -199,12 +195,11 @@ class BaseEmbeddingProvider:
 
         chunks: List[np.ndarray] = []
         for start in range(0, len(texts), self.batch_size):
-            chunk = list(texts[start:start + self.batch_size])
+            chunk = list(texts[start : start + self.batch_size])
             arr = np.asarray(self._embed_batch(chunk), dtype=np.float32)
             if arr.ndim != 2 or arr.shape[0] != len(chunk):
                 raise ValueError(
-                    f"_embed_batch returned shape {arr.shape}; "
-                    f"expected ({len(chunk)}, dim)"
+                    f"_embed_batch returned shape {arr.shape}; expected ({len(chunk)}, dim)"
                 )
             chunks.append(arr)
 
@@ -215,8 +210,7 @@ class BaseEmbeddingProvider:
             self.dimension = int(mat.shape[1])
         elif mat.shape[1] != self.dimension:
             raise ValueError(
-                f"_embed_batch returned dim {mat.shape[1]}, "
-                f"expected dim {self.dimension}"
+                f"_embed_batch returned dim {mat.shape[1]}, expected dim {self.dimension}"
             )
         return mat
 
@@ -238,8 +232,7 @@ class BaseEmbeddingProvider:
         if miss_indices:
             miss_texts = [text_list[i] for i in miss_indices]
             new_mat = self._embed_uncached(miss_texts)
-            new_items = {keys[i]: new_mat[j]
-                         for j, i in enumerate(miss_indices)}
+            new_items = {keys[i]: new_mat[j] for j, i in enumerate(miss_indices)}
             self._cache_put(new_items)
             cached.update(new_items)
 
@@ -270,11 +263,13 @@ class BaseEmbeddingProvider:
 
     async def aembed_query(self, text: str) -> List[float]:
         import asyncio
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.embed_query, text)
 
     async def aembed_documents(self, texts: List[str]) -> List[List[float]]:
         import asyncio
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.embed_documents, texts)
 

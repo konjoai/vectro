@@ -73,8 +73,18 @@ _FAMILY_TABLE: list[tuple[frozenset[str], str, str]] = [
     # Qwen2 embedding models (L2-normalized output → INT8 is lossless)
     (frozenset({"Qwen2Model", "Qwen2_5Model", "Qwen2ForSequenceClassification"}), "qwen2", "int8"),
     # DeBERTa family (unnormalized contextual embeddings → NF4 preserves outliers)
-    (frozenset({"DebertaModel", "DebertaV2Model", "DebertaForSequenceClassification",
-                "DebertaV2ForSequenceClassification"}), "deberta", "nf4"),
+    (
+        frozenset(
+            {
+                "DebertaModel",
+                "DebertaV2Model",
+                "DebertaForSequenceClassification",
+                "DebertaV2ForSequenceClassification",
+            }
+        ),
+        "deberta",
+        "nf4",
+    ),
     # Classic BERT (bert-base/large, all-MiniLM-*, etc.)
     (frozenset({"BertModel"}), "bert", "nf4"),
 ]

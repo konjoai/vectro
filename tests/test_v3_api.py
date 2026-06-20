@@ -1,10 +1,5 @@
 """tests/test_v3_api.py — Phase 9: Unified v3 API (PQCodebook, HNSWIndex, VectroV3)."""
 
-import json
-import os
-import pickle
-import tempfile
-
 import numpy as np
 import pytest
 
@@ -30,14 +25,14 @@ from python.v3_api import (  # noqa: E402
 # Fixtures
 # ---------------------------------------------------------------------------
 
-D = 96   # small dim so tests run quickly; divisible by sub-spaces 1..96
+D = 96  # small dim so tests run quickly; divisible by sub-spaces 1..96
 N_TRAIN = 128
 N_DB = 32
 
 rng = np.random.default_rng(42)
 TRAIN_VECS = rng.standard_normal((N_TRAIN, D)).astype(np.float32)
-DB_VECS    = rng.standard_normal((N_DB, D)).astype(np.float32)
-QUERY_VEC  = rng.standard_normal(D).astype(np.float32)
+DB_VECS = rng.standard_normal((N_DB, D)).astype(np.float32)
+QUERY_VEC = rng.standard_normal(D).astype(np.float32)
 
 
 @pytest.fixture(scope="module")
@@ -48,6 +43,7 @@ def pq_codebook():
 @pytest.fixture(scope="module")
 def trained_rq():
     from python.rq_api import ResidualQuantizer
+
     rq = ResidualQuantizer(n_subspaces=8, n_passes=2)
     rq.train(TRAIN_VECS)
     return rq
@@ -56,6 +52,7 @@ def trained_rq():
 # ---------------------------------------------------------------------------
 # 1. PQCodebook
 # ---------------------------------------------------------------------------
+
 
 class TestPQCodebook:
     def test_train_returns_instance(self):
@@ -84,8 +81,7 @@ class TestPQCodebook:
         norms_orig = np.linalg.norm(TRAIN_VECS, axis=1, keepdims=True)
         norms_recon = np.linalg.norm(recon, axis=1, keepdims=True)
         cos = np.sum(
-            TRAIN_VECS / np.maximum(norms_orig, 1e-8) *
-            recon / np.maximum(norms_recon, 1e-8),
+            TRAIN_VECS / np.maximum(norms_orig, 1e-8) * recon / np.maximum(norms_recon, 1e-8),
             axis=1,
         ).mean()
         assert cos > 0.5  # coarse codebook (32 centroids), still reasonable
@@ -105,6 +101,7 @@ class TestPQCodebook:
 # ---------------------------------------------------------------------------
 # 2. HNSWIndex
 # ---------------------------------------------------------------------------
+
 
 class TestHNSWIndex:
     def test_add_batch_auto_ids(self):
@@ -165,6 +162,7 @@ class TestHNSWIndex:
 # 3. V3Result
 # ---------------------------------------------------------------------------
 
+
 class TestV3Result:
     def test_default_data_empty(self):
         r = V3Result(profile="int8", n_vectors=10, dims=D)
@@ -180,6 +178,7 @@ class TestV3Result:
 # ---------------------------------------------------------------------------
 # 4. VectroV3 — individual profiles
 # ---------------------------------------------------------------------------
+
 
 class TestVectroV3Int8:
     def test_compress_shape(self):
@@ -201,7 +200,7 @@ class TestVectroV3Int8:
 
     def test_single_vector(self):
         v = VectroV3(profile="int8")
-        result = v.compress(DB_VECS[0])    # 1-D input
+        result = v.compress(DB_VECS[0])  # 1-D input
         assert result.n_vectors == 1
 
 
@@ -249,6 +248,7 @@ class TestVectroV3Binary:
         v = VectroV3(profile="binary")
         result = v.compress(DB_VECS)
         import math
+
         expected_packed_d = math.ceil(D / 8)
         assert result.data["packed"].shape == (N_DB, expected_packed_d)
 
@@ -297,6 +297,7 @@ class TestVectroV3InvalidProfile:
 # 5. auto_compress
 # ---------------------------------------------------------------------------
 
+
 class TestAutoCompress:
     def test_returns_dict(self):
         result = VectroV3.auto_compress(DB_VECS, target_cosine=0.70, target_compression=2.0)
@@ -315,6 +316,7 @@ class TestAutoCompress:
 # ---------------------------------------------------------------------------
 # 6. save_compressed / load_compressed — INT8
 # ---------------------------------------------------------------------------
+
 
 class TestSaveLoadInt8:
     def test_int8_local_round_trip(self, tmp_path):
@@ -341,6 +343,7 @@ class TestSaveLoadInt8:
 # 7. save_compressed / load_compressed — NF4
 # ---------------------------------------------------------------------------
 
+
 class TestSaveLoadNF4:
     def test_nf4_local_round_trip(self, tmp_path):
         v = VectroV3(profile="nf4")
@@ -357,6 +360,7 @@ class TestSaveLoadNF4:
 # 8. save_compressed / load_compressed — Binary
 # ---------------------------------------------------------------------------
 
+
 class TestSaveLoadBinary:
     def test_binary_local_round_trip(self, tmp_path):
         v = VectroV3(profile="binary")
@@ -371,6 +375,7 @@ class TestSaveLoadBinary:
 # ---------------------------------------------------------------------------
 # 9. save_compressed / load_compressed — PQ
 # ---------------------------------------------------------------------------
+
 
 class TestSaveLoadPQ:
     def test_pq_local_round_trip(self, pq_codebook, tmp_path):
@@ -387,6 +392,7 @@ class TestSaveLoadPQ:
 # 10. save_compressed / load_compressed — RQ
 # ---------------------------------------------------------------------------
 
+
 class TestSaveLoadRQ:
     def test_rq_local_round_trip(self, trained_rq, tmp_path):
         v = VectroV3(profile="rq-3pass", rq=trained_rq)
@@ -402,6 +408,7 @@ class TestSaveLoadRQ:
 # ---------------------------------------------------------------------------
 # 11. Cloud URI helpers (unit tests; no real I/O)
 # ---------------------------------------------------------------------------
+
 
 class TestCloudHelpers:
     def test_is_cloud_uri_s3(self):

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectro"
-version = "5.6.0"
-description = "Mojo + Rust ultra-high-performance LLM embedding compressor with vector DB integrations, IVF/PQ/RQ/NF4/Binary quantization, JS bindings, cloud I/O, and a CLI — v5.6.0: parallel HNSW build, f32-built quantized graphs (binary/NF4 recall fix), NumPy INT4 fallback, FxHashSet/SIMD search speedups"
+version = "5.8.0"
+description = "Mojo + Rust ultra-high-performance LLM embedding compressor with vector DB integrations, IVF/PQ/RQ/NF4/Binary quantization, JS bindings, cloud I/O, and a CLI — v5.5.0: quantization audit, QuantizationAuditor, QuantizationReport, VectorPairMetrics, RecallResult"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -88,6 +88,8 @@ bench-ann = [
     "hnswlib>=0.8.0",
     "annoy>=1.17.3",
     "usearch>=2.9.0",
+    "faiss-cpu>=1.7.4",
+    "h5py>=3.9",
     "requests>=2.31",
     "tqdm>=4.0",
 ]
@@ -123,6 +125,8 @@ all = [
     "hnswlib>=0.8.0",
     "annoy>=1.17.3",
     "usearch>=2.9.0",
+    "faiss-cpu>=1.7.4",
+    "h5py>=3.9",
     "requests>=2.31",
 ]
 
@@ -168,3 +172,31 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
 [tool.cibuildwheel.windows]
 archs = ["AMD64"]
 before-build = "rustup target add x86_64-pc-windows-msvc"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+# Exploratory notebooks/experiments are not held to library lint standards.
+extend-exclude = ["notebooks", "experiments", "*.ipynb"]
+
+[tool.ruff.lint]
+# Default rule set (pyflakes F + pycodestyle E/W). Library code in python/ and
+# api/ is held to the full set; auxiliary trees get scoped, conventional
+# exemptions below.
+
+[tool.ruff.lint.per-file-ignores]
+# Package __init__ files aggregate re-exports; unused-import is the contract.
+"__init__.py" = ["F401"]
+# Type-stub re-exports are unused by definition.
+"*.pyi" = ["F401"]
+# Test/tooling/demo trees: sys.path bootstrap before imports (E402),
+# single-char numerical names (E741), throwaway `_` reuse (F811/F402),
+# inline lambdas (E731), and compact one-line guards (E701/E702) are
+# idiomatic here and not worth restructuring.
+"tests/**" = ["E402", "F811", "F402", "F841", "E731", "E741"]
+".konjo/**" = ["E701", "E702", "E741"]
+"demos/**" = ["E402", "F841", "E701", "E702", "E741"]
+"demo/**" = ["E402"]
+"examples/**" = ["E402"]
+"scripts/**" = ["E402", "E741"]
+"benchmarks/**" = ["E402", "F401", "F841"]

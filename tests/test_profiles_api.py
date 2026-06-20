@@ -39,7 +39,6 @@ _BUILTIN_NAMES = {"fast", "balanced", "quality", "ultra", "binary"}
 
 
 class TestProfileManagerBuiltins(unittest.TestCase):
-
     def test_list_profiles_contains_five_builtins(self):
         profiles = ProfileManager.list_profiles()
         for name in _BUILTIN_NAMES:
@@ -142,7 +141,6 @@ class TestProfileManagerCustom(unittest.TestCase):
 
 
 class TestCompressionProfileValidation(unittest.TestCase):
-
     def _make(self, **overrides) -> CompressionProfile:
         defaults = dict(
             name="test",
@@ -219,7 +217,6 @@ class TestModuleLevelProfileFunctions(unittest.TestCase):
 
 
 class TestCompressionOptimizer(unittest.TestCase):
-
     def test_auto_optimize_returns_compression_profile(self):
         vecs = _RNG.standard_normal((30, 16)).astype(np.float32)
         result = CompressionOptimizer.auto_optimize_profile(
@@ -234,7 +231,6 @@ class TestCompressionOptimizer(unittest.TestCase):
 
 
 class TestProfileComparison(unittest.TestCase):
-
     def test_profile_comparison_compare_profiles_keys(self):
         results = ProfileComparison.compare_profiles(_VECS, profile_names=["fast", "balanced"])
         self.assertIn("fast", results)

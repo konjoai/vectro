@@ -17,6 +17,7 @@ Originally `api/main.py` in V7 (commit 3e5d4d6).  Relocated to its own
 router during the V6 rebase so the V6 HNSW REST endpoints could occupy
 ``/index/{name}/*`` without colliding with V7's flat-numpy ``INDICES``.
 """
+
 from __future__ import annotations
 
 from typing import List

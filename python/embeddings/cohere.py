@@ -3,6 +3,7 @@
 Wraps the ``cohere`` Python SDK.  Uses ``client.embed(texts=..., model=...,
 input_type=...)`` and reads ``response.embeddings``.
 """
+
 from __future__ import annotations
 
 from typing import Any, List, Optional
@@ -12,10 +13,7 @@ import numpy as np
 from .base import BaseEmbeddingProvider
 
 
-_COHERE_HINT = (
-    "cohere is required for CohereEmbeddings.  "
-    "Install with: pip install cohere"
-)
+_COHERE_HINT = "cohere is required for CohereEmbeddings.  Install with: pip install cohere"
 
 
 class CohereEmbeddings(BaseEmbeddingProvider):
@@ -75,13 +73,9 @@ class CohereEmbeddings(BaseEmbeddingProvider):
     def _embed_batch(self, texts: List[str]) -> np.ndarray:
         return self._embed_batch_with_type(texts, self.input_type)
 
-    def _embed_batch_with_type(
-        self, texts: List[str], input_type: str
-    ) -> np.ndarray:
+    def _embed_batch_with_type(self, texts: List[str], input_type: str) -> np.ndarray:
         client = self._ensure_client()
-        resp = client.embed(
-            texts=list(texts), model=self.model, input_type=input_type
-        )
+        resp = client.embed(texts=list(texts), model=self.model, input_type=input_type)
         embs = getattr(resp, "embeddings", None)
         if embs is None and isinstance(resp, dict):
             embs = resp["embeddings"]

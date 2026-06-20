@@ -14,7 +14,13 @@ class StoredVectorBatch:
 
 class VectorDBConnector(ABC, metaclass=abc.ABCMeta):
     @abstractmethod
-    def upsert_compressed(self, ids: Sequence[str], quantized: np.ndarray, scales: np.ndarray, metadata: dict[str, Any] | None = None) -> None: ...
+    def upsert_compressed(
+        self,
+        ids: Sequence[str],
+        quantized: np.ndarray,
+        scales: np.ndarray,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
     @abstractmethod
     def fetch_compressed(self, ids: Sequence[str]) -> StoredVectorBatch: ...
     @abstractmethod
@@ -23,6 +29,12 @@ class VectorDBConnector(ABC, metaclass=abc.ABCMeta):
 class InMemoryVectorDBConnector(VectorDBConnector):
     _store: dict[str, dict[str, Any]]
     def __init__(self) -> None: ...
-    def upsert_compressed(self, ids: Sequence[str], quantized: np.ndarray, scales: np.ndarray, metadata: dict[str, Any] | None = None) -> None: ...
+    def upsert_compressed(
+        self,
+        ids: Sequence[str],
+        quantized: np.ndarray,
+        scales: np.ndarray,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
     def fetch_compressed(self, ids: Sequence[str]) -> StoredVectorBatch: ...
     def delete(self, ids: Sequence[str]) -> int: ...

@@ -14,6 +14,7 @@ load_pipeline()      — deserialises JSON and reconstructs a
 checkpoint_info()    — reads checkpoint metadata without constructing
                        any pipeline object.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,8 +27,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Must track the package __version__ (enforced by test_checkpoint_info_version).
-_SCHEMA_VERSION = "5.6.0"
+# Bump this when the JSON schema changes in a breaking way.
+_SCHEMA_VERSION = "5.8.0"
 _REQUIRED_KEYS = {"version", "created_at", "stage_configs", "metadata"}
 
 

@@ -11,9 +11,11 @@ import time as _time_module
 
 _orig_sleep = _time_module.sleep
 
+
 # Cap every sleep to 0.08 s — keeps lines readable on screen but stays brief
 def _fast_sleep(seconds: float) -> None:
     _orig_sleep(min(float(seconds), 0.08))
+
 
 _time_module.sleep = _fast_sleep
 
@@ -21,7 +23,6 @@ _time_module.sleep = _fast_sleep
 # Use importlib so this works whether invoked as a script or via -m.
 import importlib.util as _ilu
 import os as _os
-import sys as _sys
 
 _here = _os.path.dirname(_os.path.abspath(__file__))
 _spec = _ilu.spec_from_file_location("video_demo_v3", _os.path.join(_here, "video_demo_v3.py"))

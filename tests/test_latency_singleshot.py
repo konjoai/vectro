@@ -18,21 +18,24 @@ import statistics
 import numpy as np
 import pytest
 
-vectro_py = pytest.importorskip("vectro_py", reason="vectro_py not installed — run `maturin develop` first")
+vectro_py = pytest.importorskip(
+    "vectro_py", reason="vectro_py not installed — run `maturin develop` first"
+)
 
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
 
-_DIM = 768          # standard embedding dimension
-_WARMUP = 1_000     # calls discarded before measurement
-_SAMPLES = 10_000   # calls used for statistics
+_DIM = 768  # standard embedding dimension
+_WARMUP = 1_000  # calls discarded before measurement
+_SAMPLES = 10_000  # calls used for statistics
 _P99_LIMIT_S = 1e-3  # 1 ms hard ceiling
 
 
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
 
 def _random_vec() -> np.ndarray:
     return np.random.default_rng(42).standard_normal(_DIM).astype(np.float32)
@@ -66,6 +69,7 @@ def _p99(times: list[float]) -> float:
 # Tests
 # --------------------------------------------------------------------------- #
 
+
 class TestEncodeInt8FastLatency:
     """INT8 encode_fast single-shot latency — contract: p99 < 1 ms at d=768."""
 
@@ -81,7 +85,7 @@ class TestEncodeInt8FastLatency:
         mean = statistics.mean(times)
         print(
             f"\nINT8 encode_fast d={_DIM}: "
-            f"mean={mean*1e3:.3f} ms  p50={p50*1e3:.3f} ms  p99={p99*1e3:.3f} ms"
+            f"mean={mean * 1e3:.3f} ms  p50={p50 * 1e3:.3f} ms  p99={p99 * 1e3:.3f} ms"
         )
         assert p99 < _P99_LIMIT_S, (
             f"INT8 encode_fast p99 = {p99 * 1000:.3f} ms exceeds {_P99_LIMIT_S * 1000:.0f} ms limit"
@@ -112,6 +116,7 @@ class TestEncodeInt8FastLatency:
     def test_roundtrip_cosine_similarity(self):
         """Decoded INT8 vector must have cosine similarity ≥ 0.9999 vs original."""
         import math
+
         vec = _random_vec().tolist()
         codes, scale = vectro_py.encode_int8_fast(vec)
         reconstructed = [c / 127.0 * scale for c in codes]
@@ -137,7 +142,7 @@ class TestEncodeNf4FastLatency:
         mean = statistics.mean(times)
         print(
             f"\nNF4 encode_fast d={_DIM}: "
-            f"mean={mean*1e3:.3f} ms  p50={p50*1e3:.3f} ms  p99={p99*1e3:.3f} ms"
+            f"mean={mean * 1e3:.3f} ms  p50={p50 * 1e3:.3f} ms  p99={p99 * 1e3:.3f} ms"
         )
         assert p99 < _P99_LIMIT_S, (
             f"NF4 encode_fast p99 = {p99 * 1000:.3f} ms exceeds {_P99_LIMIT_S * 1000:.0f} ms limit"
@@ -146,6 +151,7 @@ class TestEncodeNf4FastLatency:
     def test_output_shape(self):
         """packed must be ceil(dim/2) bytes; scale > 0; dim == _DIM."""
         import math
+
         vec = _random_vec().tolist()
         packed, scale, dim = vectro_py.encode_nf4_fast(vec)
         assert dim == _DIM

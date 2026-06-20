@@ -42,6 +42,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Ground truth (brute-force exact search)
 # ---------------------------------------------------------------------------
 
+
 def brute_force_knn(
     corpus: np.ndarray,
     queries: np.ndarray,
@@ -60,9 +61,9 @@ def brute_force_knn(
         (q, k) int64 array of corpus indices, nearest first.
     """
     # Normalise both matrices so dot-product == cosine similarity.
-    corpus_norms  = np.linalg.norm(corpus,  axis=1, keepdims=True).clip(min=1e-8)
+    corpus_norms = np.linalg.norm(corpus, axis=1, keepdims=True).clip(min=1e-8)
     queries_norms = np.linalg.norm(queries, axis=1, keepdims=True).clip(min=1e-8)
-    corpus_n  = corpus  / corpus_norms
+    corpus_n = corpus / corpus_norms
     queries_n = queries / queries_norms
 
     # Compute similarity in batches to avoid OOM on large datasets.
@@ -70,7 +71,7 @@ def brute_force_knn(
     all_ids = np.empty((len(queries), k), dtype=np.int64)
     for start in range(0, len(queries), batch):
         end = min(start + batch, len(queries))
-        sims = queries_n[start:end] @ corpus_n.T   # (batch, n)
+        sims = queries_n[start:end] @ corpus_n.T  # (batch, n)
         partitioned = np.argpartition(sims, -k, axis=1)[:, -k:]
         for i, row_ids in enumerate(partitioned):
             sorted_ids = row_ids[np.argsort(sims[i, row_ids])[::-1]]
@@ -93,7 +94,7 @@ def recall_at_k(
     Returns:
         Scalar recall in [0, 1].
     """
-    gt = ground_truth[:, 0:1]                                  # nearest only
+    gt = ground_truth[:, 0:1]  # nearest only
     pred_k = predictions[:, :k]
     hits = (pred_k == gt).any(axis=1)
     return float(hits.mean())
@@ -131,6 +132,7 @@ def detect_degenerate(predictions: np.ndarray, k: int) -> str | None:
 # ---------------------------------------------------------------------------
 # Per-library wrappers
 # ---------------------------------------------------------------------------
+
 
 def _build_vectro(
     corpus: np.ndarray,
@@ -185,10 +187,13 @@ def _build_hnswlib(
     ef_construction: int,
 ) -> tuple[Any, int]:
     import hnswlib  # type: ignore[import]
+
     idx = hnswlib.Index(space="cosine", dim=corpus.shape[1])
     idx.init_index(max_elements=len(corpus), ef_construction=ef_construction, M=m)
     idx.add_items(corpus, list(range(len(corpus))))
-    byte_size = getattr(idx, "get_current_count", lambda: 0)() * corpus.shape[1] * 4 * 2  # rough estimate
+    byte_size = (
+        getattr(idx, "get_current_count", lambda: 0)() * corpus.shape[1] * 4 * 2
+    )  # rough estimate
     return idx, byte_size
 
 
@@ -203,6 +208,7 @@ def _build_annoy(
     n_trees: int,
 ) -> tuple[Any, int]:
     from annoy import AnnoyIndex  # type: ignore[import]
+
     d = corpus.shape[1]
     idx = AnnoyIndex(d, "angular")
     for i, vec in enumerate(corpus):
@@ -226,7 +232,10 @@ def _build_usearch(
     ef_construction: int,
 ) -> tuple[Any, int]:
     from usearch.index import Index as UsearchIndex  # type: ignore[import]
-    idx = UsearchIndex(ndim=corpus.shape[1], metric="cos", connectivity=m, expansion_add=ef_construction)
+
+    idx = UsearchIndex(
+        ndim=corpus.shape[1], metric="cos", connectivity=m, expansion_add=ef_construction
+    )
     idx.add(np.arange(len(corpus), dtype=np.int64), corpus)
     byte_size = getattr(idx, "memory_usage", 0)
     if callable(byte_size):
@@ -255,6 +264,7 @@ def _query_usearch(idx: Any, queries: np.ndarray, k: int, ef_search: int) -> np.
 # ---------------------------------------------------------------------------
 # Main benchmark runner
 # ---------------------------------------------------------------------------
+
 
 def run_benchmark(
     n: int = 100_000,
@@ -288,7 +298,7 @@ def run_benchmark(
     print("=" * 70)
 
     rng = np.random.default_rng(42)
-    corpus  = rng.standard_normal((n, d)).astype(np.float32)
+    corpus = rng.standard_normal((n, d)).astype(np.float32)
     queries = rng.standard_normal((q, d)).astype(np.float32)
 
     # ── Ground truth ──────────────────────────────────────────────────────────
@@ -301,8 +311,13 @@ def run_benchmark(
     results: dict[str, Any] = {
         "benchmark": "ann_comparison",
         "config": {
-            "n_corpus": n, "d": d, "n_queries": q, "k": k,
-            "hnsw_M": m, "ef_construction": ef_construction, "ef_search": ef_search,
+            "n_corpus": n,
+            "d": d,
+            "n_queries": q,
+            "k": k,
+            "hnsw_M": m,
+            "ef_construction": ef_construction,
+            "ef_search": ef_search,
             "n_trees_annoy": n_trees,
         },
         "libraries": {},
@@ -373,11 +388,11 @@ def run_benchmark(
 
             results["libraries"][name] = {
                 "status": "ok",
-                "build_sec":    round(build_sec, 3),
-                "index_bytes":  byte_size,
-                "qps":          round(qps, 1),
-                "recall_at_1":  round(r1, 4),
-                "recall_at_5":  round(r5, 4),
+                "build_sec": round(build_sec, 3),
+                "index_bytes": byte_size,
+                "qps": round(qps, 1),
+                "recall_at_1": round(r1, 4),
+                "recall_at_5": round(r5, 4),
                 "recall_at_10": round(r10, 4),
             }
 
@@ -394,9 +409,9 @@ def run_benchmark(
     print(f"{'Exact (BF)':<18} {'n/a':>8} {bf_qps:>8,.0f} {'1.000':>6} {'1.000':>6} {'1.000':>6}")
     results["exact_brute_force"] = {
         "build_sec": 0,
-        "qps":       round(bf_qps, 1),
-        "recall_at_1":  1.0,
-        "recall_at_5":  1.0,
+        "qps": round(bf_qps, 1),
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
         "recall_at_10": 1.0,
     }
 
@@ -412,19 +427,24 @@ def run_benchmark(
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="ANN library recall@K and QPS comparison"
+    parser = argparse.ArgumentParser(description="ANN library recall@K and QPS comparison")
+    parser.add_argument("--n", type=int, default=100_000, help="Corpus size (default: 100000)")
+    parser.add_argument("--d", type=int, default=128, help="Vector dimensions (default: 128)")
+    parser.add_argument(
+        "--q", type=int, default=1_000, help="Number of query vectors (default: 1000)"
     )
-    parser.add_argument("--n",              type=int,   default=100_000, help="Corpus size (default: 100000)")
-    parser.add_argument("--d",              type=int,   default=128,     help="Vector dimensions (default: 128)")
-    parser.add_argument("--q",              type=int,   default=1_000,   help="Number of query vectors (default: 1000)")
-    parser.add_argument("--k",              type=int,   default=10,      help="K for recall@K (default: 10)")
-    parser.add_argument("--m",              type=int,   default=16,      help="HNSW M parameter (default: 16)")
-    parser.add_argument("--ef-construction",type=int,   default=200,     help="HNSW ef_construction (default: 200)")
-    parser.add_argument("--ef-search",      type=int,   default=100,     help="HNSW ef_search (default: 100)")
-    parser.add_argument("--n-trees",        type=int,   default=10,      help="Annoy number of trees (default: 10)")
-    parser.add_argument("--output",         type=str,   default="results/ann_comparison.json")
+    parser.add_argument("--k", type=int, default=10, help="K for recall@K (default: 10)")
+    parser.add_argument("--m", type=int, default=16, help="HNSW M parameter (default: 16)")
+    parser.add_argument(
+        "--ef-construction", type=int, default=200, help="HNSW ef_construction (default: 200)"
+    )
+    parser.add_argument("--ef-search", type=int, default=100, help="HNSW ef_search (default: 100)")
+    parser.add_argument(
+        "--n-trees", type=int, default=10, help="Annoy number of trees (default: 10)"
+    )
+    parser.add_argument("--output", type=str, default="results/ann_comparison.json")
     args = parser.parse_args()
 
     run_benchmark(

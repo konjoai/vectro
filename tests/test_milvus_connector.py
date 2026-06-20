@@ -19,6 +19,7 @@ from python.integrations.vector_db import StoredVectorBatch  # noqa: E402
 # Minimal in-memory MilvusClient mock
 # ---------------------------------------------------------------------------
 
+
 class _FakeMilvusClient:
     """Minimal mock that satisfies MilvusConnector's usage of MilvusClient."""
 
@@ -54,6 +55,7 @@ class _FakeMilvusClient:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestMilvusConnectorBasic(unittest.TestCase):
     def setUp(self):

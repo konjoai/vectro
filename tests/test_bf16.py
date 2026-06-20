@@ -8,7 +8,6 @@ Coverage:
 - failure case: no bindings
 """
 
-import math
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -24,12 +23,15 @@ except ImportError:
 # Unit tests — mocked bindings
 # ---------------------------------------------------------------------------
 
+
 class TestBf16EncoderUnit:
     """Pure unit tests — mocked _PyBf16Encoder."""
 
     def _make_encoder(self) -> tuple:
-        with patch("python.bf16_api._BINDINGS_AVAILABLE", True), \
-             patch("python.bf16_api._PyBf16Encoder") as MockClass:
+        with (
+            patch("python.bf16_api._BINDINGS_AVAILABLE", True),
+            patch("python.bf16_api._PyBf16Encoder") as MockClass,
+        ):
             mock_instance = MagicMock()
             MockClass.return_value = mock_instance
             enc = Bf16Encoder.__new__(Bf16Encoder)
@@ -86,6 +88,7 @@ class TestBf16EncoderUnit:
 # ---------------------------------------------------------------------------
 # Import-guard failure test
 # ---------------------------------------------------------------------------
+
 
 class TestBf16EncoderGuard:
     def test_raises_without_bindings(self):

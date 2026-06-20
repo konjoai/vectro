@@ -1,4 +1,5 @@
 """Type stubs for reranker."""
+
 from __future__ import annotations
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -11,7 +12,6 @@ def _cosine_rerank(
     id_to_row: Dict[str, int],
     top_k: int,
 ) -> List[Tuple[str, Any, float]]: ...
-
 def _rrf_rerank(
     query_vec: np.ndarray,
     candidates: Sequence[Tuple[str, Any, float]],

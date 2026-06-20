@@ -40,7 +40,6 @@ def _result(n: int = 8, d: int = 8, profile: str = "balanced") -> BatchQuantizat
 
 
 class TestBatchQuantizationResult(unittest.TestCase):
-
     def test_quantize_batch_returns_correct_type(self):
         result = _result()
         self.assertIsInstance(result, BatchQuantizationResult)
@@ -119,13 +118,13 @@ class TestBatchQuantizationResult(unittest.TestCase):
 
 
 class TestVectroBatchProcessorStreaming(unittest.TestCase):
-
     def test_quantize_streaming_chunk_count(self):
         n, chunk_size = 25, 10
         vecs = _RNG.standard_normal((n, 8)).astype(np.float32)
         results = _processor().quantize_streaming(vecs, chunk_size=chunk_size)
         # 25 vectors in chunks of 10: ceil(25/10) = 3 chunks
         import math
+
         self.assertEqual(len(results), math.ceil(n / chunk_size))
 
     def test_quantize_streaming_chunk_shapes(self):
@@ -162,7 +161,6 @@ class TestVectroBatchProcessorStreaming(unittest.TestCase):
 
     def test_binary_profile_roundtrip_cosine_similarity(self):
         """Reconstructed vectors via binary must achieve cosine ≥ 0.75 (spec floor)."""
-        import math
         d = 128
         n = 8
         np.random.seed(42)
@@ -171,8 +169,10 @@ class TestVectroBatchProcessorStreaming(unittest.TestCase):
         for i in range(n):
             reconstructed = result.reconstruct_vector(i)
             orig = vecs[i]
-            cos = float(np.dot(orig, reconstructed) /
-                        (np.linalg.norm(orig) * np.linalg.norm(reconstructed) + 1e-9))
+            cos = float(
+                np.dot(orig, reconstructed)
+                / (np.linalg.norm(orig) * np.linalg.norm(reconstructed) + 1e-9)
+            )
             self.assertGreaterEqual(cos, 0.75, msg=f"Binary cosine below floor at vector {i}")
 
 
@@ -182,12 +182,18 @@ class TestVectroBatchProcessorStreaming(unittest.TestCase):
 
 
 class TestBatchCompressionAnalyzer(unittest.TestCase):
-
     def test_analyze_batch_result_keys_present(self):
         result = _result()
         analysis = BatchCompressionAnalyzer.analyze_batch_result(result)
-        for key in ("compression_ratio", "space_savings_percent", "original_mb",
-                    "compressed_mb", "savings_mb", "vectors_processed", "vector_dimension"):
+        for key in (
+            "compression_ratio",
+            "space_savings_percent",
+            "original_mb",
+            "compressed_mb",
+            "savings_mb",
+            "vectors_processed",
+            "vector_dimension",
+        ):
             self.assertIn(key, analysis)
 
     def test_compare_profiles_returns_all_three_default_profiles(self):
@@ -203,7 +209,6 @@ class TestBatchCompressionAnalyzer(unittest.TestCase):
 
 
 class TestModuleLevelFunctions(unittest.TestCase):
-
     def test_module_level_quantize_embeddings_batch(self):
         vecs = _RNG.standard_normal((8, 6)).astype(np.float32)
         result = quantize_embeddings_batch(vecs)

@@ -1,4 +1,5 @@
 """Cosine scoring + Maximal Marginal Relevance — shared across framework adapters."""
+
 from __future__ import annotations
 
 from typing import List
@@ -69,9 +70,9 @@ def mmr_select(
             best_local = 0
         else:
             sel_embs = cand_embs[np.array(selected_local)]  # (s, d)
-            sim_to_sel = cand_embs[remaining] @ sel_embs.T   # (r, s)
-            max_sim_to_sel = sim_to_sel.max(axis=1)           # (r,)
-            rel = rel_scores[cand_idx[remaining]]              # (r,)
+            sim_to_sel = cand_embs[remaining] @ sel_embs.T  # (r, s)
+            max_sim_to_sel = sim_to_sel.max(axis=1)  # (r,)
+            rel = rel_scores[cand_idx[remaining]]  # (r,)
             mmr = lambda_mult * rel - (1.0 - lambda_mult) * max_sim_to_sel
             best_local = remaining[int(np.argmax(mmr))]
 

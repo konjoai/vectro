@@ -8,9 +8,9 @@ Covers:
   - Compaction (tombstone removal, orphan reconnection)
   - Recall estimator (recall in [0,1], Wilson CI bounds, small-n edge case)
 """
+
 from __future__ import annotations
 
-import math
 import unittest
 
 import numpy as np
@@ -29,21 +29,23 @@ from python.hnsw_api import HNSWIndex  # noqa: E402
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_index(n: int = 60, d: int = 32, seed: int = 0) -> HNSWIndex:
     """Return a populated HNSWIndex with deterministic vectors."""
-    rng  = np.random.default_rng(seed)
+    rng = np.random.default_rng(seed)
     vecs = rng.standard_normal((n, d)).astype(np.float32)
     norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-    vecs  = vecs / np.maximum(norms, 1e-12)
-    meta  = [{"cat": ("a" if i < n // 2 else "b"), "idx": i} for i in range(n)]
-    idx   = HNSWIndex(M=8, ef_construction=60)
-    ids   = idx.add(vecs, metadata=meta)
+    vecs = vecs / np.maximum(norms, 1e-12)
+    meta = [{"cat": ("a" if i < n // 2 else "b"), "idx": i} for i in range(n)]
+    idx = HNSWIndex(M=8, ef_construction=60)
+    ids = idx.add(vecs, metadata=meta)
     return idx, vecs, meta, ids
 
 
 # ---------------------------------------------------------------------------
 # 1. Metadata sidecar
 # ---------------------------------------------------------------------------
+
 
 class TestMetadata(unittest.TestCase):
     def setUp(self):
@@ -73,13 +75,15 @@ class TestMetadata(unittest.TestCase):
 
     def test_add_1d_vector_with_metadata(self):
         idx = HNSWIndex(M=4, ef_construction=20)
-        v   = np.ones(8, dtype=np.float32)
+        v = np.ones(8, dtype=np.float32)
         ids = idx.add(v, metadata=[{"tag": "single"}])
         self.assertEqual(ids, [0])
         self.assertEqual(idx._metadata[0]["tag"], "single")
 
     def test_save_load_preserves_metadata(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         idx, vecs, meta, ids = _make_index(n=10, d=16)
         with tempfile.NamedTemporaryFile(suffix=".hnsw", delete=False) as f:
             path = f.name
@@ -87,8 +91,7 @@ class TestMetadata(unittest.TestCase):
             idx.save(path)
             loaded = HNSWIndex.load(path)
             for nid in ids:
-                self.assertEqual(loaded._metadata[nid]["cat"],
-                                 idx._metadata[nid]["cat"])
+                self.assertEqual(loaded._metadata[nid]["cat"], idx._metadata[nid]["cat"])
         finally:
             os.unlink(path)
 
@@ -96,6 +99,7 @@ class TestMetadata(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 2. Soft-delete
 # ---------------------------------------------------------------------------
+
 
 class TestDelete(unittest.TestCase):
     def setUp(self):
@@ -137,6 +141,7 @@ class TestDelete(unittest.TestCase):
 # 3. Pre-filter search
 # ---------------------------------------------------------------------------
 
+
 class TestFilteredSearch(unittest.TestCase):
     def setUp(self):
         self.idx, self.vecs, self.meta, self.ids = _make_index()
@@ -152,13 +157,12 @@ class TestFilteredSearch(unittest.TestCase):
             self.assertEqual(self.idx._metadata[nid]["cat"], "b")
 
     def test_filter_no_match_returns_empty(self):
-        idxs, dists = self.idx.search(self.vecs[0], k=5, ef=40,
-                                       filter={"cat": "zzz"})
+        idxs, dists = self.idx.search(self.vecs[0], k=5, ef=40, filter={"cat": "zzz"})
         self.assertEqual(len(idxs), 0)
 
     def test_filter_none_behaves_like_unfiltered(self):
-        idxs_f, _  = self.idx.search(self.vecs[0], k=5, ef=40, filter=None)
-        idxs_u, _  = self.idx.search(self.vecs[0], k=5, ef=40)
+        idxs_f, _ = self.idx.search(self.vecs[0], k=5, ef=40, filter=None)
+        idxs_u, _ = self.idx.search(self.vecs[0], k=5, ef=40)
         self.assertEqual(idxs_f.tolist(), idxs_u.tolist())
 
     def test_filter_on_node_without_metadata_excludes_it(self):
@@ -166,7 +170,7 @@ class TestFilteredSearch(unittest.TestCase):
         vecs = np.eye(8, dtype=np.float32)
         # Only first 4 have metadata
         idx.add(vecs[:4], metadata=[{"cat": "x"}] * 4)
-        idx.add(vecs[4:])   # no metadata
+        idx.add(vecs[4:])  # no metadata
         idxs, _ = idx.search(vecs[0], k=8, ef=20, filter={"cat": "x"})
         for nid in idxs.tolist():
             self.assertIsNotNone(idx._metadata[nid])
@@ -187,14 +191,22 @@ class TestFilteredSearch(unittest.TestCase):
 # 4. Stats
 # ---------------------------------------------------------------------------
 
+
 class TestStats(unittest.TestCase):
     def setUp(self):
         self.idx, self.vecs, self.meta, self.ids = _make_index()
 
     def test_stats_keys_present(self):
         s = self.idx.stats()
-        for key in ("n_total", "n_alive", "n_deleted", "orphan_count",
-                    "avg_degree_l0", "max_level", "space"):
+        for key in (
+            "n_total",
+            "n_alive",
+            "n_deleted",
+            "orphan_count",
+            "avg_degree_l0",
+            "max_level",
+            "space",
+        ):
             self.assertIn(key, s)
 
     def test_stats_before_delete(self):
@@ -224,6 +236,7 @@ class TestStats(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 5. Compaction
 # ---------------------------------------------------------------------------
+
 
 class TestCompact(unittest.TestCase):
     def setUp(self):
@@ -270,7 +283,9 @@ class TestCompact(unittest.TestCase):
         self.assertEqual(s["orphan_count"], 0)
 
     def test_compact_save_load_roundtrip(self):
-        import tempfile, os
+        import tempfile
+        import os
+
         for nid in [0, 3, 7]:
             self.idx.delete(nid)
         self.idx.compact()
@@ -289,6 +304,7 @@ class TestCompact(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 6. Recall estimator
 # ---------------------------------------------------------------------------
+
 
 class TestEstimateRecall(unittest.TestCase):
     def setUp(self):
@@ -311,8 +327,7 @@ class TestEstimateRecall(unittest.TestCase):
 
     def test_result_keys(self):
         r = self.idx.estimate_recall(sample_size=10, k=3, ef=20)
-        for key in ("recall", "ci_95_lower", "ci_95_upper",
-                    "sample_size", "k", "ef", "n_alive"):
+        for key in ("recall", "ci_95_lower", "ci_95_upper", "sample_size", "k", "ef", "n_alive"):
             self.assertIn(key, r)
 
     def test_large_ef_better_than_small_ef(self):

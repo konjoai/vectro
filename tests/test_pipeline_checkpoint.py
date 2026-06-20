@@ -20,10 +20,10 @@ Covers:
 - PipelineStage.to_config() returns dict with "name"
 - PipelineStage.from_config() reconstructs the stage
 """
+
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,7 +37,6 @@ ensure_repo_root_on_path()
 
 from python.async_pipeline import CompressionPipeline, PipelineStage
 from python.pipeline_checkpoint import (
-    PipelineCheckpoint,
     checkpoint_info,
     load_pipeline,
     save_pipeline,
@@ -134,6 +133,7 @@ class TestCheckpointInfoVersion(unittest.TestCase):
     def test_checkpoint_info_version(self) -> None:
         """version field must equal vectro.__version__."""
         from python import __version__
+
         pipeline = _make_pipeline("int8")
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "cp.json"

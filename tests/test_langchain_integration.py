@@ -4,17 +4,15 @@ All tests use a mock Embeddings object so langchain-core is NOT required
 to run the suite.  The adapter logic (add, search, delete, async) is
 exercised against the real Vectro compression stack.
 """
+
 from __future__ import annotations
 
 import asyncio
 import sys
-import uuid
 from pathlib import Path
 from typing import List
-from unittest.mock import patch
 
 import numpy as np
-import pytest
 
 try:
     from tests._path_setup import ensure_repo_root_on_path
@@ -40,6 +38,7 @@ def _random_emb(n: int = 1) -> np.ndarray:
 
 class _FakeDocument:
     """Minimal Document stub — no langchain-core required."""
+
     def __init__(self, page_content: str, metadata: dict):
         self.page_content = page_content
         self.metadata = metadata
@@ -66,6 +65,7 @@ class _FakeEmbeddings:
 
 # Patch langchain Document at import time so tests work without langchain-core
 import types as _types
+
 _fake_lc_docs = _types.ModuleType("langchain_core.documents")
 _fake_lc_docs.Document = _FakeDocument
 sys.modules.setdefault("langchain_core", _types.ModuleType("langchain_core"))
@@ -87,6 +87,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 # Construction
 # ---------------------------------------------------------------------------
 
+
 class TestConstruction:
     def test_empty_store(self):
         store = VectroVectorStore(_FakeEmbeddings())
@@ -104,7 +105,9 @@ class TestConstruction:
         assert "1" in r
 
     def test_compression_profile_quality(self):
-        store = VectroVectorStore.from_texts(TEXTS, _FakeEmbeddings(), compression_profile="quality")
+        store = VectroVectorStore.from_texts(
+            TEXTS, _FakeEmbeddings(), compression_profile="quality"
+        )
         assert len(store) == len(TEXTS)
 
     def test_model_dir_gte_selects_int8(self):
@@ -120,6 +123,7 @@ class TestConstruction:
 # ---------------------------------------------------------------------------
 # add_texts
 # ---------------------------------------------------------------------------
+
 
 class TestAddTexts:
     def test_returns_ids(self):
@@ -156,6 +160,7 @@ class TestAddTexts:
 # ---------------------------------------------------------------------------
 # similarity_search
 # ---------------------------------------------------------------------------
+
 
 class TestSimilaritySearch:
     def setup_method(self):
@@ -216,6 +221,7 @@ class TestSimilaritySearchWithScore:
 # delete
 # ---------------------------------------------------------------------------
 
+
 class TestDelete:
     def test_delete_by_id(self):
         store = VectroVectorStore(_FakeEmbeddings())
@@ -246,6 +252,7 @@ class TestDelete:
 # compression_stats
 # ---------------------------------------------------------------------------
 
+
 class TestCompressionStats:
     def test_empty_stats(self):
         store = VectroVectorStore(_FakeEmbeddings())
@@ -264,6 +271,7 @@ class TestCompressionStats:
 # ---------------------------------------------------------------------------
 # Async API
 # ---------------------------------------------------------------------------
+
 
 class TestAsyncAPI:
     def test_aadd_texts(self):
@@ -315,6 +323,8 @@ class TestAsyncAPI:
 # Import from top-level package
 # ---------------------------------------------------------------------------
 
+
 def test_importable_from_package():
     from python import LangChainVectorStore  # noqa: F401
+
     assert LangChainVectorStore is VectroVectorStore

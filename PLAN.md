@@ -1,11 +1,7 @@
 # Vectro — Plan
 
-<<<<<<< HEAD
-> Last updated: 2026-05-11
-> Current version: **5.5.0** (Python) / **8.0.0** (Rust) — quantization audit, QuantizationAuditor, QuantizationReport, VectorPairMetrics, RecallResult.
-=======
-> Last updated: 2026-05-12
-> Current version: **5.1.0** (Python) / **8.0.0** (Rust) — v5.1.0: recall estimator, HNSW compaction, metadata pre-filtering. 1046 Python + 109 Rust tests passing.
+> Last updated: 2026-06-18
+> Current version: **5.6.0** (Python) / **8.1.0** (Rust) — INT8 batch path routed through the Rust SIMD kernel with `range_factor` profile parity.
 
 ---
 
@@ -31,10 +27,10 @@ user impact × implementation cost.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **Hybrid BM25 + dense search (RRF)** | `POST /search` accepts `text` param alongside `vector`. BM25 scores over stored text metadata. Reciprocal Rank Fusion combines dense + sparse. `alpha` controls weighting (0=BM25 only, 1=dense only). | ⬜ Planned |
+| **Hybrid BM25 + dense search** | `POST /index/{name}/search` accepts `text` alongside `query` (vector). BM25 scores over each vector's `metadata["text"]`. `alpha`-weighted min-max fusion (0=BM25 only, 1=dense only); response carries `mode` + per-hit `dense_score`/`bm25_score`. | ✅ V8 |
 | **Scalar / product quantization** | `quantization: "sq8" \| "pq32"` on collection creation. SQ: scale to int8 per-dim. PQ: 8 sub-quantizers of 4 bits each. 75-97% memory reduction. `GET /collections/{name}/quantization_stats`. | ⬜ Planned |
-| **HNSW search trace visualization** | `POST /search?trace=true` returns full traversal path — visited nodes, layer descent, entry points. Demo viz.html renders traversal as animated beam with nodes lighting up. | ⬜ Planned |
-| **Batch upsert with deduplication** | `POST /batch_upsert` — deduplicates by ID, updates existing vectors in-place. Returns `{inserted: n, updated: m}`. | ⬜ Planned |
+| **HNSW search trace visualization** | `search(..., trace=True)` returns a `SearchTrace` alongside `(indices, distances)`: entry point, per-layer descent nodes, all layer-0 candidates, final result heap. Powers the animated beam in demo/viz.html. | ✅ v5.2.0 (HNSW) |
+| **Batch upsert with deduplication** | `add_batch(vectors, ids, metadata)` — deduplicates by string ID, updates existing vectors in-place (O(1) per update, no graph surgery), returns `{inserted, updated, node_ids}`. Also adds `get_by_id(str_id)`. | ✅ v5.2.0 (HNSW) |
 
 ---
 
@@ -43,13 +39,92 @@ user impact × implementation cost.
 | Feature | Description | Status |
 |---------|-------------|--------|
 | **ACORN-style filtered HNSW** | Filtered search during graph traversal for high-selectivity predicates (solving zero-result post-filter at 1% selectivity). See arXiv:2403.04871. | ⬜ Planned |
-| **Persistent HNSW on disk** | `mmap`-backed index file, survives process restart without rebuild. | ⬜ Planned |
+| **Persistent HNSW on disk** | `save(path)` / `load(path)` upgraded from pickle to numpy `.npz` format — no arbitrary code execution on load, magic-byte detection, backward-compat DeprecationWarning for old pickle files. | ✅ v5.2.0 (HNSW) |
 | **Multi-vector per document** | Multiple embeddings per document ID (title + body), max-pool distances. | ⬜ Planned |
 | **Namespace partitioning** | Logical namespaces within a collection, isolated HNSW graphs, unified cross-namespace search. | ⬜ Planned |
 
 ---
 
-## v5.1.0 — Recall estimator, HNSW compaction, metadata pre-filtering ✅ COMPLETE (2026-05-12)
+## v5.6.0 — INT8 batch path → Rust SIMD kernel ✅ COMPLETE (2026-06-18)
+
+### Summary
+`VectroBatchProcessor.quantize_batch` always used the NumPy abs-max path for
+INT8 — even when the compiled `vectro_py` SIMD kernel was installed — leaving a
+~15-20× speedup unused and dropping the d=1536 end-to-end throughput just below
+its 45K vec/s floor on x86 hosts. Routing the batch path through the kernel
+(with a NumPy fallback) fixes both. Shipped as PR #36; the throughput-test
+de-jitter follow-up shipped on top.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `VectroBatchProcessor` INT8 profiles dispatch to `vectro_py.quantize_int8_batch` when the extension is present; NumPy fallback otherwise | ✅ |
+| 2 | `batch_encode_into_with_range(..., range_factor)` in `vectro_lib` — threads rf through the per-row SIMD encode (effective scale `abs_max/rf`); `batch_encode_into` is now a `rf=1.0` wrapper | ✅ |
+| 3 | `quantize_int8_batch(vectors, range_factor=1.0)` PyO3 keyword, validated to `(0, 1]`; backward compatible | ✅ |
+| 4 | `_rust_bridge` / `batch_api` thread `range_factor`; new Rust + Python parity/fallback/validation tests | ✅ |
+| 5 | De-jitter `test_rust_int8_throughput_{1m_floor,cross_dimension}` to best-of-5 with warm-up (floors unchanged) | ✅ |
+
+### Results
+- d=1536 end-to-end `VectroBatchProcessor`: ~42K → ~110K vec/s (raw kernel
+  ~730K; the `list`/`np.stack` wrapper is the remaining ceiling).
+- Numeric parity vs the NumPy baseline (the correctness baseline): scales
+  identical, codes differ by ≤1 level only at round-half-to-even vs
+  round-half-away ties, cosine ≥ 0.9999 across `fast`/`balanced`/`quality`.
+
+### Rejected: fused single-pass kernel for the batch path
+Measured (`int8_fused_bench`, n=100k × d=768): two-pass **7.72 Gelem/s** vs
+rayon-fused **5.17 Gelem/s** — fused is **~33% slower**. At d=768 a 3 KB row
+already fits L1, so the two-pass second read is a cache hit and the fused
+buffer-copy is pure overhead. The two-pass abs-max kernel is optimal here; the
+1M-floor flakiness was a measurement-statistic issue (mean-of-3 vs best-of-5),
+not a kernel-speed issue (peak on the x86 CI runner is ~1.5-2M vec/s).
+
+---
+
+## v5.2.0 (HNSW) — Persistent .npz index, add_batch upsert, search trace ✅ COMPLETE (2026-05-13)
+
+### Summary
+Three P2/P3 items shipped as one sprint, all implemented on `HNSWIndex` in
+`python/hnsw_api.py` with zero API breakage.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `HNSWIndex.save(path)` — replaces pickle with `numpy.savez_compressed`; vectors as float32 matrix; graph/metadata/deleted/id_map as JSON byte arrays inside the ZIP archive | ✅ |
+| 2 | `HNSWIndex.load(path)` — detects format by magic bytes; `.npz` primary path with `allow_pickle=False`; legacy pickle path emits `DeprecationWarning` | ✅ |
+| 3 | `HNSWIndex._load_npz(path)` / `HNSWIndex._load_pickle(path)` — internal helpers, keep `load()` clean | ✅ |
+| 4 | `HNSWIndex._id_map: Dict[str, int]` — string-ID registry added to `__init__` and serialised in the new format | ✅ |
+| 5 | `HNSWIndex.add_batch(vectors, ids, metadata)` — upsert with deduplication; O(1) in-place update for existing IDs (no graph surgery); returns `{inserted, updated, node_ids}`; resurrects soft-deleted nodes | ✅ |
+| 6 | `HNSWIndex.get_by_id(str_id)` — metadata lookup by string ID, `None` for deleted | ✅ |
+| 7 | `HNSWIndex.search(..., trace=False)` — optional third return value when `trace=True` | ✅ |
+| 8 | `SearchTrace` dataclass — `entry_point`, `layer_descents`, `l0_visited`, `l0_candidates_final` | ✅ |
+| 9 | `tests/test_hnsw_v2.py` — 39 tests covering all three features (12 persistence, 15 add_batch, 12 trace) | ✅ |
+| 10 | PLAN.md P2/P3 rows updated to ✅ v5.2.0 | ✅ |
+| 11 | Version bump 5.1.0 → 5.2.0 | ✅ |
+
+### Design notes
+- **Pickle elimination**: numpy `.npz` is a ZIP container — no arbitrary code
+  execution, safe to open untrusted files with `allow_pickle=False`. Each
+  `.npz` embeds vectors as a proper float32 matrix + JSON blobs for the graph
+  and metadata. File sizes are comparable (compressed JSON ≈ compressed pickle).
+- **`add_batch` in-place update**: updating an existing vector means overwriting
+  `_vectors[nid]` and `_metadata[nid]` and clearing the tombstone. The graph
+  links are deliberately unchanged. This is the correct trade-off: an expensive
+  graph-reconnect would be needed only if the vector moves drastically (that
+  scenario calls for `delete` + re-insert, not upsert).
+- **`SearchTrace`**: returned as the third element of a 3-tuple when `trace=True`.
+  Caller unpacks naturally via `ids, dists, tr = idx.search(...)`. The
+  `l0_candidates_final` list is sorted ascending so the first element is the
+  nearest neighbour.
+
+### Validation
+- 39 new tests, all pass. No regressions in the 1019-test baseline suite.
+- `recall` agree within 0.01 before/after `.npz` round-trip (verified by
+  `test_recall_within_tolerance_after_round_trip`).
+
+---
+
+## v5.1.0 (HNSW) — Recall estimator, HNSW compaction, metadata pre-filtering ✅ COMPLETE (2026-05-12)
 
 ### Summary
 Three P1 items from the Researched Feature Roadmap, shipped as one sprint.
@@ -71,7 +146,6 @@ HTTP endpoints.
 | 8 | `demo/viz.html` — recall gauge panel (live if server running, static otherwise) | ✅ |
 | 9 | `tests/test_hnsw_extended.py` — 27 new tests covering all P1 features | ✅ |
 | 10 | Version bump 5.0.2 → 5.1.0 | ✅ |
->>>>>>> claude/crazy-fermat-5e6cd7
 
 ---
 

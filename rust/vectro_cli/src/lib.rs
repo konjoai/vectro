@@ -49,7 +49,12 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
             worker_handles.push(thread::spawn(move || {
                 while let Ok(e) = r.recv() {
                     if let Ok(bytes) = bincode::serialize(&e) {
-                        let _ = tx.send(bytes);
+                        if tx.send(bytes).is_err() {
+                            // Writer hung up (panicked / errored) — stop rather
+                            // than silently discarding the rest of the stream.
+                            tracing::warn!("compress worker: writer channel closed, output truncated");
+                            break;
+                        }
                     }
                 }
             }));
@@ -70,6 +75,8 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
 
     // reader: parse lines and collect embeddings
     let mut parsed = 0usize;
+    // Count embeddings dropped because every worker hung up (warn once, not per row).
+    let mut reader_drops = 0usize;
     // collect embeddings when quantizing
     let mut collected_embeddings: Vec<vectro_lib::Embedding> = Vec::new();
     for line in reader.lines().map_while(Result::ok) {
@@ -84,7 +91,7 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
                     let mut v = Vec::with_capacity(arr.len());
                     for x in arr { if let Some(flt) = x.as_f64() { v.push(flt as f32); } }
                     let emb = vectro_lib::Embedding::new(id_str, v.clone());
-                    if quantize { collected_embeddings.push(emb.clone()); } else { let _ = item_tx.send(emb); }
+                    if quantize { collected_embeddings.push(emb.clone()); } else if item_tx.send(emb).is_err() { reader_drops += 1; }
                     parsed += 1;
                     pushed = true;
                 }
@@ -98,12 +105,16 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
                 let mut v = Vec::new();
                 for p in &parts[1..] { if let Ok(f) = p.trim().parse::<f32>() { v.push(f); } }
                 let emb = vectro_lib::Embedding::new(id, v.clone());
-                if quantize { collected_embeddings.push(emb.clone()); } else { let _ = item_tx.send(emb); }
+                if quantize { collected_embeddings.push(emb.clone()); } else if item_tx.send(emb).is_err() { reader_drops += 1; }
                 parsed += 1;
             }
         }
 
-        if parsed % 100 == 0 { pb.set_message(format!("parsed {} entries", parsed)); }
+        if parsed.is_multiple_of(100) { pb.set_message(format!("parsed {} entries", parsed)); }
+    }
+
+    if reader_drops > 0 {
+        tracing::warn!(dropped = reader_drops, "compress reader: all workers hung up, embeddings dropped");
     }
 
     if quantize {
@@ -163,32 +174,63 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
                     let qv: Vec<u8> = e.vector.iter().enumerate().map(|(i, &x)| tables[i].quantize(x)).collect();
                     let rec = (e.id.clone(), qv);
                     if let Ok(bytes) = bincode::serialize(&rec) {
-                        let _ = tx.send(bytes);
+                        if tx.send(bytes).is_err() {
+                            tracing::warn!("quantize worker: writer channel closed, output truncated");
+                            break;
+                        }
                     }
                 }
             }));
         }
 
         // feed collected embeddings into item_tx2
+        let mut feed_drops = 0usize;
         for emb in collected_embeddings {
-            let _ = item_tx2.send(emb);
+            if item_tx2.send(emb).is_err() {
+                feed_drops += 1;
+            }
+        }
+        if feed_drops > 0 {
+            tracing::warn!(dropped = feed_drops, "compress: quantize workers hung up, embeddings dropped");
         }
         drop(item_tx2);
 
         // wait for workers
         drop(bytes_tx);
-        for h in worker_handles { let _ = h.join(); }
-        // wait for writer
-        if let Some(h) = writer_handle_opt { let _ = h.join(); }
+        for h in worker_handles {
+            if h.join().is_err() {
+                tracing::warn!("compress worker thread panicked");
+            }
+        }
+        // wait for writer — surface both a panic and the writer's own I/O error
+        // (e.g. a failed write_all/flush), which was previously swallowed whole.
+        if let Some(h) = writer_handle_opt {
+            match h.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "writer thread failed (output may be incomplete)"),
+                Err(_) => tracing::warn!("writer thread panicked (output may be incomplete)"),
+            }
+        }
 
     } else {
         // close item_tx to signal workers to finish
         drop(item_tx);
         // wait for workers
         drop(bytes_tx);
-        for h in worker_handles { let _ = h.join(); }
-        // wait for writer
-        if let Some(h) = writer_handle_opt { let _ = h.join(); }
+        for h in worker_handles {
+            if h.join().is_err() {
+                tracing::warn!("compress worker thread panicked");
+            }
+        }
+        // wait for writer — surface both a panic and the writer's own I/O error
+        // (e.g. a failed write_all/flush), which was previously swallowed whole.
+        if let Some(h) = writer_handle_opt {
+            match h.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "writer thread failed (output may be incomplete)"),
+                Err(_) => tracing::warn!("writer thread panicked (output may be incomplete)"),
+            }
+        }
     }
     if quantize {
     // If quantized, show a short summary including table count (attempt to read tables from file)

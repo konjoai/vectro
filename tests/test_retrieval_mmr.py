@@ -1,4 +1,5 @@
 """Unit tests for the shared mmr_select + cosine_scores utility."""
+
 from __future__ import annotations
 
 import unittest
@@ -16,7 +17,6 @@ from python.retrieval.mmr import cosine_scores, mmr_select  # noqa: E402
 
 
 class TestCosineScores(unittest.TestCase):
-
     def test_unit_vectors_diagonal(self):
         mat = np.eye(4, dtype=np.float32)
         q = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
@@ -62,7 +62,6 @@ class TestCosineScores(unittest.TestCase):
 
 
 class TestMMRSelect(unittest.TestCase):
-
     def test_returns_k_indices(self):
         rng = np.random.default_rng(1)
         mat = rng.standard_normal((20, 16)).astype(np.float32)

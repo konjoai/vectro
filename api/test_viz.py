@@ -12,6 +12,7 @@ Coverage:
     9. cluster default k=3 yields one label per vector
    10. project + cluster agree on ids ordering (so the UI can join them)
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -71,6 +72,7 @@ def _add_clustered(
 # /project
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def test_project_returns_2d_coords(client: TestClient) -> None:
     n = _add_clustered(client, "demo")
     r = client.post("/index/demo/project")
@@ -126,6 +128,7 @@ def test_project_empty_index(client: TestClient) -> None:
 # /cluster
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def test_cluster_recovers_synthetic_clusters(client: TestClient) -> None:
     _add_clustered(client, "demo", n_per_cluster=10)
     r = client.post("/index/demo/cluster", json={"k": 3, "seed": 42})
@@ -136,14 +139,13 @@ def test_cluster_recovers_synthetic_clusters(client: TestClient) -> None:
     # Each block of 10 was generated from one Gaussian — the dominant
     # label inside each block should appear at least 8/10 times.
     for blk in range(3):
-        block = labels[blk * 10:(blk + 1) * 10]
+        block = labels[blk * 10 : (blk + 1) * 10]
         dominant = Counter(block.tolist()).most_common(1)[0][1]
         assert dominant >= 8, f"block {blk} dominant label only {dominant}/10"
     # And the three blocks must each map to a distinct dominant label —
     # otherwise k-means collapsed two blobs together.
     dominants = {
-        Counter(labels[blk * 10:(blk + 1) * 10].tolist()).most_common(1)[0][0]
-        for blk in range(3)
+        Counter(labels[blk * 10 : (blk + 1) * 10].tolist()).most_common(1)[0][0] for blk in range(3)
     }
     assert len(dominants) == 3
 
@@ -176,6 +178,7 @@ def test_cluster_default_k(client: TestClient) -> None:
 # ─────────────────────────────────────────────────────────────────────────
 # Joint behaviour
 # ─────────────────────────────────────────────────────────────────────────
+
 
 def test_project_and_cluster_share_id_order(client: TestClient) -> None:
     n = _add_clustered(client, "demo")

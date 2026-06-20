@@ -32,7 +32,7 @@ impl BinaryVector {
     /// when `normalize` is true.
     pub fn encode(v: &[f32], normalize: bool) -> Self {
         let dim = v.len();
-        let bytes_per_vec = (dim + 7) / 8;
+        let bytes_per_vec = dim.div_ceil(8);
         let mut packed = vec![0u8; bytes_per_vec];
 
         // Use f64 for the norm to avoid f32 overflow on extreme-valued vectors.
@@ -85,8 +85,19 @@ impl BinaryVector {
     /// Uses SimSIMD's SIMD popcount path (NEON/SVE on ARM, Haswell/Ice on x86)
     /// with a scalar fallback for other targets.
     pub fn hamming(&self, other: &BinaryVector) -> u32 {
-        <u8 as BinarySimilarity>::hamming(&self.packed, &other.packed)
-            .unwrap_or(0.0) as u32
+        match <u8 as BinarySimilarity>::hamming(&self.packed, &other.packed) {
+            Some(h) => h as u32,
+            None => {
+                // A length mismatch yields None; falling back to 0 would rank
+                // these vectors as identical, so surface it rather than hide it.
+                tracing::warn!(
+                    a_bytes = self.packed.len(),
+                    b_bytes = other.packed.len(),
+                    "binary Hamming distance unavailable (SimSIMD returned None); falling back to 0"
+                );
+                0
+            }
+        }
     }
 }
 
@@ -140,6 +151,15 @@ mod tests {
         let bv = BinaryVector::encode(&v, false);
         assert_eq!(bv.packed.len(), 1);
         assert_eq!(bv.packed[0], 0b0000_0101);
+    }
+
+    #[test]
+    fn mismatched_length_falls_back_to_zero() {
+        // SimSIMD returns None when byte lengths differ; hamming must not panic
+        // and returns the documented fallback (0), logging a warning.
+        let a = BinaryVector::encode(&vec![1.0f32; 64], false);
+        let b = BinaryVector::encode(&[1.0f32; 32], false);
+        assert_eq!(a.hamming(&b), 0);
     }
 
     #[test]

@@ -43,7 +43,7 @@ impl Sq2Vector {
         let scale = if abs_max == 0.0 { 1.0 } else { abs_max };
         let inv = 1.0 / scale;
 
-        let n_bytes = (dim + 3) / 4;
+        let n_bytes = dim.div_ceil(4);
         let mut packed = vec![0u8; n_bytes];
 
         for (i, &x) in v.iter().enumerate() {
@@ -98,7 +98,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn unit_vec(d: usize, seed: f32) -> Vec<f32> {
-        let v: Vec<f32> = (0..d).map(|i| ((i as f32 * seed + 0.1).sin())).collect();
+        let v: Vec<f32> = (0..d).map(|i| (i as f32 * seed + 0.1).sin()).collect();
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm == 0.0 { return v; }
         v.into_iter().map(|x| x / norm).collect()
@@ -138,6 +138,21 @@ mod tests {
         let enc = Sq2Vector::encode(&v);
         let dec = enc.decode();
         assert_eq!(dec.len(), 16);
+    }
+
+    #[test]
+    fn decode_bit_exact_vs_formula() {
+        // Pins `decode` bit-for-bit to the documented reconstruction formula so
+        // any future decode optimisation (LUT/SIMD) cannot silently drift.
+        // dim=257 exercises full bytes plus a partial trailing byte.
+        let v = unit_vec(257, 0.013);
+        let enc = Sq2Vector::encode(&v);
+        let dec = enc.decode();
+        for (i, &got) in dec.iter().enumerate() {
+            let code = (enc.packed[i / 4] >> ((i % 4) * 2)) & 0b11;
+            let want = enc.scale * ((2 * code as i32 - 3) as f32 / 4.0);
+            assert_eq!(got.to_bits(), want.to_bits(), "decode mismatch at index {i}");
+        }
     }
 
     #[test]

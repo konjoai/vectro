@@ -47,7 +47,7 @@ impl Sq3Vector {
         let scale = if abs_max == 0.0 { 1.0 } else { abs_max };
         let inv = 1.0 / scale;
 
-        let n_bytes = (dim * 3 + 7) / 8;
+        let n_bytes = (dim * 3).div_ceil(8);
         let mut packed = vec![0u8; n_bytes];
 
         for (i, &x) in v.iter().enumerate() {
@@ -131,7 +131,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn unit_vec(d: usize, seed: f32) -> Vec<f32> {
-        let v: Vec<f32> = (0..d).map(|i| ((i as f32 * seed + 0.1).sin())).collect();
+        let v: Vec<f32> = (0..d).map(|i| (i as f32 * seed + 0.1).sin()).collect();
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm == 0.0 { return v; }
         v.into_iter().map(|x| x / norm).collect()
@@ -170,6 +170,30 @@ mod tests {
         let enc = Sq3Vector::encode(&v);
         let dec = enc.decode();
         assert_eq!(dec.len(), 16);
+    }
+
+    #[test]
+    fn decode_bit_exact_vs_formula() {
+        // Pins `decode` bit-for-bit to the documented reconstruction formula so
+        // any future decode optimisation (LUT/SIMD) cannot silently drift,
+        // including codes that straddle a byte boundary (dim=101 → 303 bits).
+        let v = unit_vec(101, 0.029);
+        let enc = Sq3Vector::encode(&v);
+        let dec = enc.decode();
+        for (i, &got) in dec.iter().enumerate() {
+            let bit_pos = i * 3;
+            let byte_idx = bit_pos / 8;
+            let bit_shift = bit_pos % 8;
+            let code = if bit_shift <= 5 {
+                (enc.packed[byte_idx] >> bit_shift) & 0x7
+            } else {
+                let lo = enc.packed[byte_idx] >> bit_shift;
+                let hi = enc.packed[byte_idx + 1] << (8 - bit_shift);
+                (lo | hi) & 0x7
+            };
+            let want = enc.scale * ((2 * code as i32 - 7) as f32 / 8.0);
+            assert_eq!(got.to_bits(), want.to_bits(), "decode mismatch at index {i}");
+        }
     }
 
     #[test]

@@ -4,7 +4,6 @@ import numpy as np
 
 from .base import BaseEmbeddingProvider
 
-
 class CohereEmbeddings(BaseEmbeddingProvider):
     provider_name: str
     input_type: str
@@ -20,7 +19,6 @@ class CohereEmbeddings(BaseEmbeddingProvider):
         normalize: bool = ...,
         dimension: Optional[int] = ...,
     ) -> None: ...
-
     def _ensure_client(self) -> Any: ...
     def _embed_batch(self, texts: List[str]) -> np.ndarray: ...
     def _embed_batch_with_type(self, texts: List[str], input_type: str) -> np.ndarray: ...
