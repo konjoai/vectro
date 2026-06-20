@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Performance
+- **PQ SIMD assignment + native training** (`rust/vectro_lib/src/quant/pq.rs`,
+  `python/pq_api.py`) — added a SIMD-across-K nearest-centroid kernel: centroids
+  are transposed to `ct[j*K+k]` and the assignment uses `argmin_k(‖c_k‖²−2·v·c_k)`,
+  vectorizing the dot term over the wide K (=256) axis (NEON FMA, 4 centroids per
+  step) instead of the tiny `sub_dim`. Used by both k-means training and encode.
+  `pq_api.train_pq_codebook` now routes to a new Rust binding `pq_train_batch`
+  (SIMD k-means), making PQ training **scikit-learn-free, deterministic/seeded**
+  and ~1.6× faster than the old sklearn path. On glove-100 (n=50k, M=25, K=256):
+  - **Correction:** PQ *encode* was never a real weakness — vectro is **819 K vs
+    faiss 315 K vec/s (2.6× faster)** via the Rust path. The roadmap's "18× slower"
+    was the pure-NumPy fallback, not `pq_encode_into`.
+  - Reconstruction cosine **0.954** (faiss parity). Training: vectro 2.0 s vs
+    faiss BLAS k-means 0.53 s — the one remaining PQ lag (batched-GEMM assignment
+    is future work). Raw: `benchmarks/results/20260620_phase2_pq_simd.json`.
+  Tests: `assign_nearest_matches_bruteforce_l2`.
+
+### Fixed
+- `python/pipeline_checkpoint.py` — bumped `_SCHEMA_VERSION` to match the package
+  `__version__` (was stale at 5.8.0 while the package moved to 5.9.0, failing
+  `test_checkpoint_info_version`).
+
+### Performance (HNSW)
 - **HNSW concurrent-insertion build** (`rust/vectro_lib/src/index/hnsw.rs`) —
   replaced the chunked, frozen-snapshot parallel build (which capped recall
   ≈ 0.997 because chunk-mates couldn't link to each other) with insertion

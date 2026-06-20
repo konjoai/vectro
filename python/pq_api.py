@@ -79,13 +79,6 @@ def train_pq_codebook(
     Raises:
         ValueError: If d is not divisible by n_subspaces, or K > 256.
     """
-    try:
-        from sklearn.cluster import MiniBatchKMeans
-    except ImportError:
-        raise ImportError(
-            "scikit-learn required for PQ codebook training: pip install scikit-learn"
-        )
-
     training_data = np.ascontiguousarray(training_data, dtype=np.float32)
     n_train, d = training_data.shape
 
@@ -95,8 +88,40 @@ def train_pq_codebook(
         raise ValueError(f"n_centroids={n_centroids} exceeds uint8 max (256)")
 
     sub_dim = d // n_subspaces
-    centroids = np.empty((n_subspaces, n_centroids, sub_dim), dtype=np.float32)
 
+    # Preferred path: native SIMD-accelerated, seeded Lloyd's k-means — no
+    # scikit-learn dependency, deterministic, parallel across sub-spaces.
+    if (
+        _vectro_py is not None
+        and n_centroids <= 256
+        and hasattr(_vectro_py, "pq_train_batch")
+    ):
+        try:
+            centroids = np.asarray(
+                _vectro_py.pq_train_batch(
+                    training_data, n_subspaces, n_centroids, max_iter, int(random_state)
+                )
+            )
+            return PQCodebook(
+                n_subspaces=n_subspaces,
+                n_centroids=n_centroids,
+                sub_dim=sub_dim,
+                centroids=centroids,
+            )
+        except Exception:
+            logger.warning(
+                "Rust pq_train_batch failed; falling back to scikit-learn", exc_info=True
+            )
+
+    try:
+        from sklearn.cluster import MiniBatchKMeans
+    except ImportError:
+        raise ImportError(
+            "scikit-learn required for PQ codebook training when the native "
+            "backend is unavailable: pip install scikit-learn"
+        )
+
+    centroids = np.empty((n_subspaces, n_centroids, sub_dim), dtype=np.float32)
     for m in range(n_subspaces):
         sub_vecs = training_data[:, m * sub_dim : (m + 1) * sub_dim]
         km = MiniBatchKMeans(
