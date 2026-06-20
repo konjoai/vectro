@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashSet};
 
 use super::neighbor_store::{neighbors_serde, NeighborList, NodeId};
-use super::shuffled_order;
+use super::{key_dist, key_id, pack_key, shuffled_order};
 use crate::quant::{
     Bf16Quantizer, BinaryQuantizer, Int8Quantizer, Nf4Quantizer, Quantizer, Sq2Quantizer,
     Sq3Quantizer,
@@ -55,25 +55,6 @@ pub type Sq3HnswIndex = QuantHnswIndex<Sq3Quantizer>;
 pub type Sq2HnswIndex = QuantHnswIndex<Sq2Quantizer>;
 /// HNSW backed by 1-bit sign (binary) quantization.
 pub type BinaryHnswIndex = QuantHnswIndex<BinaryQuantizer>;
-
-// ── OrdF32 (private total-order wrapper for BinaryHeap) ───────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct OrdF32(f32);
-
-impl Eq for OrdF32 {}
-
-impl PartialOrd for OrdF32 {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for OrdF32 {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.partial_cmp(&other.0).unwrap_or(std::cmp::Ordering::Equal)
-    }
-}
 
 // ── QuantHnswIndex ────────────────────────────────────────────────────────────
 
@@ -264,25 +245,27 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         // Reusable thread-local epoch visited set (see `super::scratch`): O(1)
         // mark/check, allocated once per thread instead of once per layer call.
         super::scratch::with_visited(self.encoded.len(), |visited| {
-            // cands: min-heap on distance (pop closest first)
-            let mut cands: BinaryHeap<(std::cmp::Reverse<OrdF32>, usize)> = BinaryHeap::new();
-            // window W: max-heap on distance (pop worst to enforce size <= ef)
-            let mut window: BinaryHeap<(OrdF32, usize)> = BinaryHeap::new();
+            // Packed-u64 heaps (see super::pack_key): native integer ordering,
+            // no per-comparison f32 branch.
+            let mut cands: BinaryHeap<std::cmp::Reverse<u64>> = BinaryHeap::new();
+            let mut window: BinaryHeap<u64> = BinaryHeap::new();
 
             for &ep in entry_points {
                 let d = self.node_dist(ep, query, use_f32);
                 visited.visit(ep);
-                cands.push((std::cmp::Reverse(OrdF32(d)), ep));
+                cands.push(std::cmp::Reverse(pack_key(d, ep)));
                 if !self.is_deleted(ep) && filter(ep) {
-                    window.push((OrdF32(d), ep));
+                    window.push(pack_key(d, ep));
                 }
             }
 
-            while let Some((std::cmp::Reverse(OrdF32(d_c)), c)) = cands.pop() {
-                let worst = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
+            while let Some(std::cmp::Reverse(ck)) = cands.pop() {
+                let d_c = key_dist(ck);
+                let worst = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
                 if d_c > worst && window.len() >= ef {
                     break;
                 }
+                let c = key_id(ck);
                 if layer >= self.neighbors[c].len() {
                     continue;
                 }
@@ -294,11 +277,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                         continue;
                     }
                     let d_nb = self.node_dist(nb, query, use_f32);
-                    let worst2 = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
+                    let worst2 = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
                     if d_nb < worst2 || window.len() < ef {
-                        cands.push((std::cmp::Reverse(OrdF32(d_nb)), nb));
+                        cands.push(std::cmp::Reverse(pack_key(d_nb, nb)));
                         if !self.is_deleted(nb) && filter(nb) {
-                            window.push((OrdF32(d_nb), nb));
+                            window.push(pack_key(d_nb, nb));
                             if window.len() > ef {
                                 window.pop();
                             }
@@ -307,12 +290,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                 }
             }
 
-            let mut result: Vec<(f32, usize)> =
-                window.into_iter().map(|(d, id)| (d.0, id)).collect();
-            result.sort_by(|a, b| {
-                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            result
+            window
+                .into_sorted_vec()
+                .into_iter()
+                .map(|k| (key_dist(k), key_id(k)))
+                .collect()
         })
     }
 
