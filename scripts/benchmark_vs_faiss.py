@@ -60,11 +60,23 @@ NPROBE_SWEEP: List[int] = [1, 2, 4, 5, 8, 10, 16, 20, 32, 50, 64, 100]
 # ── dataset registry ──────────────────────────────────────────────────────────
 
 DATASETS: Dict[str, Dict[str, Any]] = {
+    "glove-25-angular": {
+        "url": "http://ann-benchmarks.com/glove-25-angular.hdf5",
+        "filename": "glove-25-angular.hdf5",
+        "dim": 25,
+        "n_train_full": 1_183_514,
+    },
     "glove-100-angular": {
         "url": "http://ann-benchmarks.com/glove-100-angular.hdf5",
         "filename": "glove-100-angular.hdf5",
         "dim": 100,
         "n_train_full": 1_183_514,
+    },
+    "nytimes-256-angular": {
+        "url": "http://ann-benchmarks.com/nytimes-256-angular.hdf5",
+        "filename": "nytimes-256-angular.hdf5",
+        "dim": 256,
+        "n_train_full": 289_761,
     },
     "dbpedia-openai-1M-angular": {
         "url": "http://ann-benchmarks.com/dbpedia-openai-1M-angular.hdf5",

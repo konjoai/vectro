@@ -1,0 +1,82 @@
+{
+  "timestamp": "20260618_224913",
+  "quick": true,
+  "hardware": {
+    "platform": "Linux-6.18.5-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "machine": "x86_64",
+    "python_version": "3.11.15",
+    "numpy_version": "2.4.6"
+  },
+  "config": {
+    "K": 10,
+    "HNSW_M": 16,
+    "HNSW_EF_CONSTRUCTION": 200,
+    "IVF_NLIST": 100,
+    "N_QUERIES_EVAL": 200,
+    "N_WARMUP": 5,
+    "N_REPS": 5
+  },
+  "runs": [
+    {
+      "dataset": "glove-100-angular",
+      "n_train": 10000,
+      "conditions": [
+        {
+          "label": "vectro-hnsw",
+          "n": 10000,
+          "d": 100,
+          "build_s": 57.91,
+          "recalls": {
+            "0.9": {
+              "ef": 96,
+              "actual_recall": 0.917,
+              "peak_rss_kb": 179624,
+              "qps": {
+                "1": 373.0,
+                "10": 302.4,
+                "100": 335.1
+              }
+            }
+          }
+        },
+        {
+          "label": "faiss-hnsw",
+          "n": 10000,
+          "d": 100,
+          "build_s": 0.718,
+          "recalls": {
+            "0.9": {
+              "ef": 48,
+              "actual_recall": 0.903,
+              "peak_rss_kb": 189004,
+              "qps": {
+                "1": 8301.0,
+                "10": 36469.7,
+                "100": 54143.6
+              }
+            }
+          }
+        },
+        {
+          "label": "faiss-ivf",
+          "n": 10000,
+          "d": 100,
+          "build_s": 0.074,
+          "recalls": {
+            "0.9": {
+              "nprobe": 32,
+              "actual_recall": 0.935,
+              "peak_rss_kb": 197908,
+              "qps": {
+                "1": 6078.5,
+                "10": 30286.1,
+                "100": 41635.0
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
