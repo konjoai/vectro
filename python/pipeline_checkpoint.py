@@ -26,8 +26,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Bump this when the JSON schema changes in a breaking way.
-_SCHEMA_VERSION = "5.5.0"
+# Must track the package __version__ (enforced by test_checkpoint_info_version).
+_SCHEMA_VERSION = "5.6.0"
 _REQUIRED_KEYS = {"version", "created_at", "stage_configs", "metadata"}
 
 
