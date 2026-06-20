@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (PQ training)
+- **PQ k-means training-set subsampling** (`rust/vectro_lib/src/quant/pq.rs`) —
+  k-means doesn't need every point to place K centroids, so training now fits on
+  a deterministic strided sample of ~64 points/centroid (the FAISS strategy). On
+  glove-100 (n=50k, M=25, K=256) this cuts PQ train **2.0 s → 0.66 s — parity
+  with faiss (0.60 s)** at equal reconstruction quality (cosine 0.9525 vs faiss
+  0.951), still fully deterministic. For n ≤ cap it's a no-op (trains on
+  everything). Measured negative results first and rejected them: a portable
+  `matrixmultiply` GEMM (3.5 s) and an Accelerate `sgemm` assignment (7–12 s,
+  nested-parallelism) were both *slower* — a generic/BLAS matmul is the wrong
+  tool for PQ's thin `sub_dim`. Test:
+  `train_subsamples_above_cap_and_stays_deterministic`. Raw:
+  `benchmarks/results/20260620_phase6_pq_train_subsample.json`.
+
 ### Added
 - **Binary + INT8 re-rank pipeline** (`rust/vectro_lib/src/index/quant_hnsw.rs`) —
   `QuantHnswIndex::enable_rerank()` retains a near-lossless INT8 copy of every
