@@ -1127,6 +1127,61 @@ macro_rules! quant_hnsw_pyclass {
                 self.inner.search(&query, k, ef)
             }
 
+            /// Enable INT8 re-rank — must be called before `add`/`add_batch`.
+            /// Retains a near-lossless INT8 copy of each vector (~¼ of an f32
+            /// store) so `search_rerank*` can re-score graph candidates exactly,
+            /// lifting low-recall (binary, NF4) graphs toward R@0.95.
+            fn enable_rerank(&mut self) {
+                self.inner.enable_rerank();
+            }
+
+            /// True once an INT8 re-rank store is populated.
+            fn has_rerank(&self) -> bool {
+                self.inner.has_rerank()
+            }
+
+            /// High-recall search: navigate the quantized graph for `rerank_k`
+            /// candidates, then return the exact-cosine top-`k` re-scored against
+            /// the INT8 store. Falls back to plain `search` if re-rank is off.
+            fn search_rerank_np(
+                &self,
+                query: PyReadonlyArray1<f32>,
+                k: usize,
+                ef: usize,
+                rerank_k: usize,
+            ) -> Vec<(usize, f32)> {
+                let q = query.as_array();
+                match q.as_slice() {
+                    Some(s) => self.inner.search_rerank(s, k, ef, rerank_k),
+                    None => {
+                        let v: Vec<f32> = q.iter().copied().collect();
+                        self.inner.search_rerank(&v, k, ef, rerank_k)
+                    }
+                }
+            }
+
+            /// Batch high-recall re-rank search: queries `[Q, D]`, parallel over
+            /// rows (rayon, GIL released).
+            fn search_rerank_batch_np(
+                &self,
+                py: Python<'_>,
+                queries: PyReadonlyArray2<f32>,
+                k: usize,
+                ef: usize,
+                rerank_k: usize,
+            ) -> Vec<Vec<(usize, f32)>> {
+                let arr = queries.as_array();
+                let d = arr.ncols();
+                if let Some(flat) = arr.as_slice() {
+                    py.allow_threads(|| self.inner.search_rerank_batch_flat(flat, d, k, ef, rerank_k))
+                } else {
+                    let owned: Vec<f32> = arr.iter().copied().collect();
+                    py.allow_threads(|| {
+                        self.inner.search_rerank_batch_flat(&owned, d, k, ef, rerank_k)
+                    })
+                }
+            }
+
             /// Zero-copy search from a 1-D numpy query vector.
             fn search_np(
                 &self,
