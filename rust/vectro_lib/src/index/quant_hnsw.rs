@@ -27,7 +27,6 @@
 //! | `BinaryHnswIndex` | `BinaryQuantizer`| 1        |
 
 use rayon::prelude::*;
-use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashSet};
 
@@ -56,6 +55,46 @@ pub type BinaryHnswIndex = QuantHnswIndex<BinaryQuantizer>;
 /// Per-layer candidate neighbour lists for one node: `(layer, [(dist, id), …])`,
 /// the read-only output of the search phase handed to the commit phase.
 type LayerCandidates = Vec<(usize, Vec<(f32, usize)>)>;
+
+/// Reused per-thread "visited" set for beam search: an epoch-tagged array
+/// instead of a fresh `HashSet` per `search_layer` call. `begin` bumps the
+/// epoch in O(1) (no clear), so a node is "visited this call" iff its tag equals
+/// the current epoch. Thread-local, so it's contention-free under the parallel
+/// build and parallel batch search (each worker thread gets its own).
+struct VersionedVisited {
+    tags: Vec<u32>,
+    epoch: u32,
+}
+
+impl VersionedVisited {
+    fn begin(&mut self, n: usize) -> u32 {
+        if self.tags.len() < n {
+            self.tags.resize(n, 0);
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            // Wrapped after 4B searches on this thread — clear and restart.
+            self.tags.iter_mut().for_each(|t| *t = 0);
+            self.epoch = 1;
+        }
+        self.epoch
+    }
+
+    #[inline]
+    fn insert(&mut self, id: usize, epoch: u32) -> bool {
+        if self.tags[id] == epoch {
+            false
+        } else {
+            self.tags[id] = epoch;
+            true
+        }
+    }
+}
+
+thread_local! {
+    static VISITED: std::cell::RefCell<VersionedVisited> =
+        const { std::cell::RefCell::new(VersionedVisited { tags: Vec::new(), epoch: 0 }) };
+}
 
 // ── OrdF32 (private total-order wrapper for BinaryHeap) ───────────────────────
 
@@ -276,62 +315,60 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         use_f32: bool,
         filter: F,
     ) -> Vec<(f32, usize)> {
-        // FxHashSet: a fast integer hasher. The default SipHash dominates HNSW
-        // build/search time on the `visited` set (hot inner loop); Fx is ~3–5×
-        // faster for `usize` keys with no security relevance here.
-        let mut visited: FxHashSet<usize> =
-            FxHashSet::with_capacity_and_hasher(ef * 4, Default::default());
-        // cands: min-heap on distance (pop closest first)
-        let mut cands: BinaryHeap<(std::cmp::Reverse<OrdF32>, usize)> = BinaryHeap::new();
-        // window W: max-heap on distance (pop worst to enforce size <= ef)
-        let mut window: BinaryHeap<(OrdF32, usize)> = BinaryHeap::new();
+        VISITED.with(|cell| {
+            let mut visited = cell.borrow_mut();
+            let epoch = visited.begin(self.encoded.len());
 
-        for &ep in entry_points {
-            let d = self.node_dist(ep, query, use_f32);
-            visited.insert(ep);
-            cands.push((std::cmp::Reverse(OrdF32(d)), ep));
-            if !self.is_deleted(ep) && filter(ep) {
-                window.push((OrdF32(d), ep));
-            }
-        }
+            // cands: min-heap on distance (pop closest first)
+            let mut cands: BinaryHeap<(std::cmp::Reverse<OrdF32>, usize)> = BinaryHeap::new();
+            // window W: max-heap on distance (pop worst to enforce size <= ef)
+            let mut window: BinaryHeap<(OrdF32, usize)> = BinaryHeap::new();
 
-        while let Some((std::cmp::Reverse(OrdF32(d_c)), c)) = cands.pop() {
-            let worst = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
-            if d_c > worst && window.len() >= ef {
-                break;
-            }
-            // Borrow the neighbour slice instead of cloning — search never
-            // mutates the graph, so this avoids a Vec<usize> allocation per
-            // expanded candidate (hot path).
-            let nbrs: &[usize] = self
-                .neighbors[c]
-                .get(layer)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            for &nb in nbrs {
-                if !visited.insert(nb) {
-                    continue;
+            for &ep in entry_points {
+                let d = self.node_dist(ep, query, use_f32);
+                visited.insert(ep, epoch);
+                cands.push((std::cmp::Reverse(OrdF32(d)), ep));
+                if !self.is_deleted(ep) && filter(ep) {
+                    window.push((OrdF32(d), ep));
                 }
-                let d_nb = self.node_dist(nb, query, use_f32);
-                let worst2 = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
-                if d_nb < worst2 || window.len() < ef {
-                    cands.push((std::cmp::Reverse(OrdF32(d_nb)), nb));
-                    if !self.is_deleted(nb) && filter(nb) {
-                        window.push((OrdF32(d_nb), nb));
-                        if window.len() > ef {
-                            window.pop();
+            }
+
+            while let Some((std::cmp::Reverse(OrdF32(d_c)), c)) = cands.pop() {
+                let worst = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
+                if d_c > worst && window.len() >= ef {
+                    break;
+                }
+                // Borrow the neighbour slice instead of cloning — search never
+                // mutates the graph, so this avoids a Vec<usize> allocation per
+                // expanded candidate (hot path).
+                let nbrs: &[usize] = self
+                    .neighbors[c]
+                    .get(layer)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                for &nb in nbrs {
+                    if !visited.insert(nb, epoch) {
+                        continue;
+                    }
+                    let d_nb = self.node_dist(nb, query, use_f32);
+                    let worst2 = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
+                    if d_nb < worst2 || window.len() < ef {
+                        cands.push((std::cmp::Reverse(OrdF32(d_nb)), nb));
+                        if !self.is_deleted(nb) && filter(nb) {
+                            window.push((OrdF32(d_nb), nb));
+                            if window.len() > ef {
+                                window.pop();
+                            }
                         }
                     }
                 }
             }
-        }
 
-        let mut result: Vec<(f32, usize)> =
-            window.into_iter().map(|(d, id)| (d.0, id)).collect();
-        result.sort_by(|a, b| {
-            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        result
+            let mut result: Vec<(f32, usize)> =
+                window.into_iter().map(|(d, id)| (d.0, id)).collect();
+            result.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            result
+        })
     }
 
     fn search_layer(

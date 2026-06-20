@@ -18,7 +18,6 @@ nalgebra = "0.32"
 anyhow = "1.0"
 simsimd = "6"
 half = "2.4"
-rustc-hash = "1.1"
 
 [features]
 default = []
