@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Binary + INT8 re-rank pipeline** (`rust/vectro_lib/src/index/quant_hnsw.rs`) —
+  `QuantHnswIndex::enable_rerank()` retains a near-lossless INT8 copy of every
+  vector (abs-max quantised unit codes, ~¼ of an f32 store), and
+  `search_rerank(query, k, ef, rerank_k)` navigates the (lossy) quantized graph
+  for a wide candidate set then re-scores those candidates exactly against the
+  INT8 store. On glove-100 (n=50k) this lifts **binary HNSW recall@10 from ~0.31
+  to 0.947 at 3.5× less vector memory than f32** (113 vs 400 B/vec) — a
+  memory/recall regime faiss/hnswlib don't package. INT8 re-rank holds the recall
+  of exact f32 re-rank (0.946 vs 0.953). Exposed on every quantized-HNSW Python
+  class as `enable_rerank()`, `has_rerank()`, `search_rerank_np`, and
+  rayon-parallel `search_rerank_batch_np`. `vacuum` reconstructs survivors from
+  the INT8 store (so re-rank survives compaction) and save/load preserves it.
+  - *Measured caveat:* flat binary Hamming is a weak prefilter (exact re-rank
+    caps ~0.68); the **graph** is what makes re-rank reach 0.95. This is a memory
+    win, not a QPS win — f32 HNSW still leads QPS@recall.
+  - Tests: `rerank_lifts_binary_recall`, `rerank_survives_save_load_and_vacuum`.
+    Raw: `benchmarks/results/20260620_phase4_binary_rerank.json`.
+
+### Fixed
+- `python/pipeline_checkpoint.py` — `_SCHEMA_VERSION` synced to the package
+  `__version__` (was stale, failing `test_checkpoint_info_version`).
+
 ### Performance
 - **HNSW concurrent-insertion build** (`rust/vectro_lib/src/index/hnsw.rs`) —
   replaced the chunked, frozen-snapshot parallel build (which capped recall

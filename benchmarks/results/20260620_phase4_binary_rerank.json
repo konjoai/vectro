@@ -1,0 +1,49 @@
+{
+  "timestamp_utc": "2026-06-20",
+  "dataset": "glove-100-angular",
+  "n": 50000,
+  "nq": 1000,
+  "k": 10,
+  "M": 16,
+  "efC": 200,
+  "hardware": {
+    "cpu": "Apple M3",
+    "cores": 8
+  },
+  "vectors_bytes_per_vec": {
+    "f32": 400,
+    "binary_plus_int8_rerank": 113,
+    "compression_vs_f32": 3.54
+  },
+  "build_s": 11.07,
+  "sweep": [
+    {
+      "ef": 200,
+      "rerank_k": 100,
+      "binary_recall": 0.3203,
+      "rerank_recall": 0.7359,
+      "qps_8thr": 12612
+    },
+    {
+      "ef": 400,
+      "rerank_k": 200,
+      "binary_recall": 0.3167,
+      "rerank_recall": 0.8323,
+      "qps_8thr": 7104
+    },
+    {
+      "ef": 800,
+      "rerank_k": 400,
+      "binary_recall": 0.3118,
+      "rerank_recall": 0.899,
+      "qps_8thr": 3720
+    },
+    {
+      "ef": 1000,
+      "rerank_k": 800,
+      "binary_recall": 0.3104,
+      "rerank_recall": 0.947,
+      "qps_8thr": 3223
+    }
+  ]
+}

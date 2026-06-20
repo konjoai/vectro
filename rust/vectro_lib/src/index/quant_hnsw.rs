@@ -99,6 +99,20 @@ pub struct QuantHnswIndex<Q: Quantizer> {
     /// collapses recall; building from f32 and searching the codes recovers it.
     #[serde(skip)]
     build_vectors: Vec<Vec<f32>>,
+    /// Optional INT8 re-rank store: per-vector abs-max-quantized unit codes
+    /// (`dim` per row, flat) plus a per-row dequant multiplier (`scale/127`).
+    /// When present, [`search_rerank`] navigates the (lossy) quantized graph for
+    /// a wide candidate set, then re-scores those candidates against these
+    /// near-lossless INT8 codes — lifting binary/NF4 recall toward exact at ~¼
+    /// the memory of an f32 store. `None` unless [`enable_rerank`] was called
+    /// before building. Aligned to `encoded`.
+    #[serde(default)]
+    rerank_codes: Option<Vec<i8>>,
+    #[serde(default)]
+    rerank_mult: Vec<f32>,
+    /// Vector dimensionality (set when re-rank is enabled; 0 otherwise).
+    #[serde(default)]
+    dim: usize,
     #[serde(skip)]
     _phantom: std::marker::PhantomData<Q>,
 }
@@ -124,8 +138,37 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             deleted: Vec::new(),
             center: None,
             build_vectors: Vec::new(),
+            rerank_codes: None,
+            rerank_mult: Vec::new(),
+            dim: 0,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Enable INT8 re-rank: the next build retains a near-lossless INT8 copy of
+    /// every vector so [`search_rerank`] can re-score graph candidates exactly.
+    /// Must be called on an empty index, before `add` / `add_batch`. Adds ~`dim`
+    /// bytes per vector (¼ of an f32 store) and unlocks high-recall search over
+    /// otherwise-lossy (binary, NF4) graphs.
+    pub fn enable_rerank(&mut self) {
+        assert!(self.encoded.is_empty(), "enable_rerank must be called before building");
+        self.rerank_codes = Some(Vec::new());
+    }
+
+    /// True when an INT8 re-rank store is populated.
+    pub fn has_rerank(&self) -> bool {
+        self.rerank_codes.as_ref().is_some_and(|c| !c.is_empty())
+    }
+
+    /// Abs-max INT8 encode of one unit vector into the re-rank store.
+    /// Returns the dequant multiplier (`abs_max / 127`).
+    fn rerank_encode_row(normalized: &[f32], out: &mut Vec<i8>) -> f32 {
+        let abs_max = normalized.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        let scale = if abs_max > 0.0 { 127.0 / abs_max } else { 0.0 };
+        for &x in normalized {
+            out.push((x * scale).round().clamp(-127.0, 127.0) as i8);
+        }
+        if scale > 0.0 { abs_max / 127.0 } else { 0.0 }
     }
 
     /// Number of vectors currently stored (including soft-deleted).
@@ -387,7 +430,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
 
     /// Insert a single vector (normalised, mean-centered for binary, then encoded).
     pub fn add(&mut self, vector: &[f32]) {
-        let norm_vec = self.apply_center(&Self::normalize(vector));
+        let normalized = Self::normalize(vector);
+        if self.rerank_codes.is_some() {
+            self.store_rerank(std::slice::from_ref(&normalized));
+        }
+        let norm_vec = self.apply_center(&normalized);
         let node_id = self.encoded.len();
         let node_level = self.random_level();
         // Retain the f32 vector for graph construction while the buffer is still
@@ -473,10 +520,12 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
     /// chunk keep recall at parity with serial regardless of input ordering.
     fn build_parallel(&mut self, vectors: &[Vec<f32>]) {
         let n = vectors.len();
-        let transformed: Vec<Vec<f32>> = vectors
-            .iter()
-            .map(|v| self.apply_center(&Self::normalize(v)))
-            .collect();
+        let normalized: Vec<Vec<f32>> = vectors.iter().map(|v| Self::normalize(v)).collect();
+        if self.rerank_codes.is_some() {
+            self.store_rerank(&normalized);
+        }
+        let transformed: Vec<Vec<f32>> =
+            normalized.iter().map(|nv| self.apply_center(nv)).collect();
         let encoded: Vec<Q::Encoded> = transformed.par_iter().map(|t| Q::encode(t)).collect();
         let levels: Vec<usize> = (0..n).map(|id| Self::level_of(id, self.ml)).collect();
 
@@ -566,6 +615,26 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             .collect()
     }
 
+    /// Batch high-recall re-rank search over a row-major `[q, d]` flat buffer,
+    /// parallel over queries (rayon). See [`search_rerank`].
+    pub fn search_rerank_batch_flat(
+        &self,
+        flat: &[f32],
+        d: usize,
+        k: usize,
+        ef: usize,
+        rerank_k: usize,
+    ) -> Vec<Vec<(usize, f32)>> {
+        if d == 0 {
+            return Vec::new();
+        }
+        let q = flat.len() / d;
+        (0..q)
+            .into_par_iter()
+            .map(|i| self.search_rerank(&flat[i * d..(i + 1) * d], k, ef, rerank_k))
+            .collect()
+    }
+
     /// Approximate k-nearest-neighbour search.
     ///
     /// Returns `Vec<(node_id, cosine_distance)>` sorted ascending by distance.
@@ -589,6 +658,62 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         // Full beam search at layer 0.
         let res = self.search_layer(&q, &curr_ep, ef, 0, false);
         res.into_iter().take(k).map(|(d, id)| (id, d)).collect()
+    }
+
+    /// Append INT8 re-rank codes for a batch of already-normalised unit vectors.
+    fn store_rerank(&mut self, normalized: &[Vec<f32>]) {
+        if normalized.is_empty() {
+            return;
+        }
+        if self.dim == 0 {
+            self.dim = normalized[0].len();
+        }
+        let codes = self.rerank_codes.get_or_insert_with(Vec::new);
+        codes.reserve(normalized.len() * self.dim);
+        self.rerank_mult.reserve(normalized.len());
+        for nv in normalized {
+            let mult = Self::rerank_encode_row(nv, codes);
+            self.rerank_mult.push(mult);
+        }
+    }
+
+    /// High-recall search: navigate the quantized graph for a wide candidate set
+    /// (`rerank_k`), then re-score those candidates against the near-lossless
+    /// INT8 re-rank store and return the exact-cosine top-`k`.
+    ///
+    /// Requires [`enable_rerank`] before building; otherwise falls back to plain
+    /// [`search`]. This is what turns a 1-bit (binary) graph — fast and tiny but
+    /// low-recall on its own — into an R@0.95 index at ~¼ the memory of f32.
+    pub fn search_rerank(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        rerank_k: usize,
+    ) -> Vec<(usize, f32)> {
+        let codes = match &self.rerank_codes {
+            Some(c) if !c.is_empty() && self.dim > 0 => c,
+            _ => return self.search(query, k, ef),
+        };
+        let rk = rerank_k.max(k);
+        let candidates = self.search(query, rk, ef.max(rk));
+
+        // Re-score each candidate by exact cosine against its INT8 code. Stored
+        // codes are abs-max quantised unit vectors, so cosine ≈ dot(qn, code)·mult.
+        let qn = Self::normalize(query);
+        let mut scored: Vec<(usize, f32)> = candidates
+            .into_iter()
+            .map(|(id, _)| {
+                let base = id * self.dim;
+                let row = &codes[base..base + self.dim];
+                let dot: f32 = qn.iter().zip(row).map(|(&a, &c)| a * c as f32).sum();
+                let cos = dot * self.rerank_mult[id];
+                (id, (1.0 - cos).max(0.0))
+            })
+            .collect();
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(k);
+        scored
     }
 
     /// Compute mean recall@k over a set of queries.
@@ -681,19 +806,31 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             return 0;
         }
 
-        // Decode surviving vectors and re-normalise.
-        let survivors: Vec<Vec<f32>> = self
-            .encoded
-            .iter()
-            .zip(self.deleted.iter())
-            .filter(|(_, &d)| !d)
-            .map(|(enc, _)| {
-                let dec = Q::decode(enc, 0);
-                Self::normalize(&dec)
+        // Reconstruct surviving vectors. With re-rank enabled, decode from the
+        // near-lossless INT8 store (preserves quality); otherwise from the graph
+        // codes. Re-normalise either way.
+        let rerank_enabled = self.rerank_codes.is_some();
+        let survivors: Vec<Vec<f32>> = (0..self.encoded.len())
+            .filter(|&i| !self.deleted[i])
+            .map(|i| {
+                if rerank_enabled && self.dim > 0 {
+                    let base = i * self.dim;
+                    let mult = self.rerank_mult[i];
+                    let codes = self.rerank_codes.as_ref().expect("rerank store present");
+                    codes[base..base + self.dim]
+                        .iter()
+                        .map(|&c| c as f32 * mult)
+                        .collect()
+                } else {
+                    Self::normalize(&Q::decode(&self.encoded[i], 0))
+                }
             })
             .collect();
 
         let mut new_idx = QuantHnswIndex::<Q>::new(self.m, self.ef_construction);
+        if rerank_enabled {
+            new_idx.enable_rerank();
+        }
         new_idx.add_batch(&survivors);
         *self = new_idx;
         deleted_count
@@ -798,6 +935,77 @@ mod tests {
     recall_test!(recall_sq2,    Sq2Quantizer,    0.55);
     // Binary (1-bit) has very limited angular resolution in 64-d; realistic target.
     recall_test!(recall_binary, BinaryQuantizer, 0.20);
+
+    #[test]
+    fn rerank_lifts_binary_recall() {
+        // INT8 re-rank over a binary graph must beat binary-only recall by a wide
+        // margin — the whole point of the pipeline.
+        let vecs = make_vecs(600, 64);
+        let queries = &vecs[..40];
+        let k = 10;
+        let gt = brute_force_gt(&vecs, queries, k);
+
+        let mut plain = BinaryHnswIndex::new(8, 64);
+        plain.add_batch(&vecs);
+
+        let mut rr = BinaryHnswIndex::new(8, 64);
+        rr.enable_rerank();
+        rr.add_batch(&vecs);
+        assert!(rr.has_rerank());
+
+        let recall = |search: &dyn Fn(&[f32]) -> Vec<(usize, f32)>| -> f32 {
+            let hits: usize = queries
+                .iter()
+                .zip(gt.iter())
+                .map(|(q, g)| {
+                    let found: HashSet<usize> = search(q).iter().map(|&(id, _)| id).collect();
+                    g.iter().take(k).filter(|&&id| found.contains(&id)).count()
+                })
+                .sum();
+            hits as f32 / (queries.len() * k) as f32
+        };
+
+        let r_plain = recall(&|q| plain.search(q, k, 200));
+        let r_rerank = recall(&|q| rr.search_rerank(q, k, 200, 200));
+        // The lift is the contract. (Absolute recall is data-dependent — this
+        // synthetic 64-d set is adversarial for 1-bit codes; real glove-100 hits
+        // ~0.95, see benchmarks/results/20260620_phase4_binary_rerank.json.)
+        assert!(
+            r_rerank >= r_plain + 0.15,
+            "rerank {r_rerank:.3} did not beat binary {r_plain:.3} by ≥0.15"
+        );
+        assert!(r_rerank >= 0.45, "reranked recall {r_rerank:.3} < 0.45");
+    }
+
+    #[test]
+    fn rerank_survives_save_load_and_vacuum() {
+        let vecs = make_vecs(300, 32);
+        let mut idx = BinaryHnswIndex::new(8, 64);
+        idx.enable_rerank();
+        idx.add_batch(&vecs);
+
+        // save/load preserves the re-rank store.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rr.bin");
+        idx.save(&path).unwrap();
+        let loaded = BinaryHnswIndex::load(&path).unwrap();
+        assert!(loaded.has_rerank());
+        let a = idx.search_rerank(&vecs[5], 5, 80, 80);
+        let b = loaded.search_rerank(&vecs[5], 5, 80, 80);
+        assert_eq!(
+            a.iter().map(|x| x.0).collect::<Vec<_>>(),
+            b.iter().map(|x| x.0).collect::<Vec<_>>()
+        );
+
+        // vacuum keeps re-rank enabled and aligned.
+        let mut idx2 = idx.clone();
+        idx2.delete(1);
+        idx2.delete(2);
+        idx2.vacuum();
+        assert!(idx2.has_rerank());
+        let r = idx2.search_rerank(&vecs[10], 5, 80, 80);
+        assert!(!r.is_empty());
+    }
 
     // ── save / load round-trip ────────────────────────────────────────────────
 

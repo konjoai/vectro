@@ -47,7 +47,17 @@ Raw sweep: `benchmarks/results/20260620_phase3_concurrent_build_sweep.json`.
 | NF4   | 0.925 | 8× smaller | 20,000 |
 | Binary| 0.597 | 32× smaller | 17,000 |
 
-**Standing:** A genuine differentiator — searchable graphs over compressed vectors. Binary is at its 1-bit metric ceiling (re-rank needed for higher).
+**Standing:** A genuine differentiator — searchable graphs over compressed vectors. Binary is at its 1-bit metric ceiling — **re-rank now ships (Phase 4)**:
+
+| Variant | Recall@10 | Vectors B/vec | vs f32 |
+|---------|----------:|------:|------:|
+| f32 HNSW | 0.998 | 400 | 1× |
+| Binary HNSW (alone) | 0.31–0.60 | 13 | **31× smaller** |
+| **Binary HNSW + INT8 re-rank** | **0.947** | 113 | **3.5× smaller** |
+
+Binary-graph navigation + a near-lossless INT8 re-rank store lifts 1-bit recall from
+~0.31 to **0.95** at **3.5× less vector memory than f32** — `enable_rerank()` +
+`search_rerank(query, k, ef, rerank_k)`. Raw: `benchmarks/results/20260620_phase4_binary_rerank.json`.
 
 ## 4. Throughput wins already banked this session
 - Parallel batch search (rayon, GIL released): ~5× → Int8 50k QPS on 8 cores.
@@ -98,9 +108,20 @@ the exact path for callers needing bit-reproducible builds.
 > substance — max recall = serial ceiling, build ≪ hnswlib.
 
 ## Phase 4 — Widen the moat (be uncatchable, not just faster)
-1. **Binary + re-rank pipeline** — flat binary Hamming prefilter (SIMD popcount) → INT8/f32 re-rank. Targets R@0.95 at 32× memory, a regime faiss/hnswlib can't touch.
-2. **Quantized HNSW batch search for all variants** + `search_batch_np` parity (mostly done) → serving throughput crown.
-3. **Mojo/Accelerate path** for encode on Apple Silicon (AMX) — push INT8 past 100 M vec/s as a headline.
+1. **Binary + re-rank pipeline** ✅ DONE — but **graph**, not flat. Measured: flat
+   binary Hamming is a *weak* prefilter (exact re-rank caps ~0.68 @rerank_k=500; the
+   true NN often isn't in the Hamming top-N). The **binary HNSW graph** is the strong
+   prefilter: `enable_rerank()` retains a near-lossless **INT8** copy (~¼ of f32), and
+   `search_rerank(q, k, ef, rerank_k)` re-scores graph candidates exactly →
+   **R@10 = 0.947 at 3.5× less vector memory than f32** (113 vs 400 B/vec). INT8 holds
+   the recall of f32 re-rank (0.946 vs 0.953). All quant variants get the binding;
+   `search_rerank_batch_np` is rayon-parallel. `vacuum` rebuilds from the INT8 store so
+   re-rank survives compaction; save/load preserves it.
+   - *Honest caveat:* this is a **memory** win (3.5× smaller at R@0.95), not a speed win
+     — f32 HNSW still wins QPS@recall. Quant-HNSW build is also still on the older chunk
+     path (~11 s); porting Phase 3's concurrent build would cut it ~5×.
+2. **Quantized HNSW batch search for all variants** + `search_batch_np` parity (done).
+3. **Mojo/Accelerate path** for encode on Apple Silicon (AMX) — push INT8 past 100 M vec/s.
 4. **GPU build/search** (longer term) — the only axis where faiss has a categorical option vectro lacks.
 
 ## Suggested order & exit criteria
