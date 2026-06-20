@@ -223,8 +223,58 @@ impl HnswIndex {
         self.search_layer_impl(query, entry_points, ef, layer, |_| true)
     }
 
-    fn select_neighbors(candidates: &[(f32, usize)], m: usize) -> Vec<usize> {
-        candidates.iter().take(m).map(|&(_, id)| id).collect()
+    /// Heuristic neighbour selection (Malkov & Yashunin 2018, Algorithm 4 — the
+    /// `getNeighborsByHeuristic2` of hnswlib/FAISS).
+    ///
+    /// `candidates` must be sorted ascending by distance to the query node.
+    /// A candidate `e` is kept only if it is closer to the query than to every
+    /// already-selected neighbour `r` (`dist(e, r) >= dist(e, q)`). This keeps
+    /// the chosen links *diverse* (pointing in different directions) instead of
+    /// clustered in the single nearest direction — which is what makes the graph
+    /// navigable at high recall (R@0.99). Naive top-m maxes out around R@0.98.
+    fn select_heuristic(&self, candidates: &[(f32, usize)], m: usize) -> Vec<usize> {
+        if candidates.len() <= m {
+            return candidates.iter().map(|&(_, id)| id).collect();
+        }
+        let mut result: Vec<usize> = Vec::with_capacity(m);
+        for &(dist_eq, e) in candidates {
+            if result.len() >= m {
+                break;
+            }
+            let e_vec = &self.vectors[e];
+            let diverse = result
+                .iter()
+                .all(|&r| Self::cosine_dist(e_vec, &self.vectors[r]) >= dist_eq);
+            if diverse {
+                result.push(e);
+            }
+        }
+        result
+    }
+
+    /// Set `node_id`'s forward links at `lc` (heuristic-selected from
+    /// `candidates`), then add reverse links to each neighbour, re-applying the
+    /// heuristic when a neighbour's list grows past `max_m`.
+    fn connect(&mut self, node_id: usize, lc: usize, max_m: usize, candidates: &[(f32, usize)]) {
+        let nbrs = self.select_heuristic(candidates, max_m);
+        self.neighbors[node_id][lc] = nbrs.iter().map(|&id| id as NodeId).collect();
+
+        for &nb_id in &nbrs {
+            if lc >= self.neighbors[nb_id].len() {
+                continue;
+            }
+            self.neighbors[nb_id][lc].push(node_id as NodeId);
+            if self.neighbors[nb_id][lc].len() > max_m {
+                let nb_vec = self.vectors[nb_id].clone();
+                let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
+                    .iter()
+                    .map(|&n| (Self::cosine_dist(&nb_vec, &self.vectors[n as usize]), n as usize))
+                    .collect();
+                scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                let kept = self.select_heuristic(&scored, max_m);
+                self.neighbors[nb_id][lc] = kept.iter().map(|&id| id as NodeId).collect();
+            }
+        }
     }
 
     // ─────────────────────────── public API ─────────────────────────────
@@ -261,33 +311,8 @@ impl HnswIndex {
                     let candidates =
                         self.search_layer(&norm_vec, &curr_ep, self.ef_construction, lc);
                     let max_m = if lc == 0 { self.m0 } else { self.m };
-                    let nbrs = Self::select_neighbors(&candidates, max_m);
-
-                    self.neighbors[node_id][lc] =
-                        nbrs.iter().map(|&id| id as NodeId).collect();
+                    self.connect(node_id, lc, max_m, &candidates);
                     curr_ep = candidates.into_iter().map(|(_, id)| id).collect();
-
-                    // Add reverse links and prune if over max_m.
-                    for &nb_id in &nbrs {
-                        if lc < self.neighbors[nb_id].len() {
-                            self.neighbors[nb_id][lc].push(node_id as NodeId);
-                            if self.neighbors[nb_id][lc].len() > max_m {
-                                let nb_vec = self.vectors[nb_id].clone();
-                                let mut scored: Vec<(f32, NodeId)> = self.neighbors[nb_id][lc]
-                                    .iter()
-                                    .map(|&n| {
-                                        (Self::cosine_dist(&nb_vec, &self.vectors[n as usize]), n)
-                                    })
-                                    .collect();
-                                scored.sort_by(|a, b| {
-                                    a.0.partial_cmp(&b.0)
-                                        .unwrap_or(std::cmp::Ordering::Equal)
-                                });
-                                self.neighbors[nb_id][lc] =
-                                    scored.into_iter().take(max_m).map(|(_, id)| id).collect();
-                            }
-                        }
-                    }
                 }
 
                 if node_level > max_l {
@@ -300,10 +325,13 @@ impl HnswIndex {
 
     /// Minimum batch size into an empty index that triggers the parallel build.
     const PARALLEL_BUILD_THRESHOLD: usize = 512;
-    /// Chunk size for the parallel build, bounded to ~n/64 (clamped to
-    /// [64, 1024]) so few true-neighbour pairs land in the same chunk.
+    /// Chunk size for the parallel build. Nodes in one chunk search the graph
+    /// frozen at the chunk boundary and so can't link to each other; the
+    /// fraction of lost intra-chunk links is ≈ chunk/n, which directly caps the
+    /// achievable recall. Bounded to ~n/512 (clamped [32, 256]) keeps that loss
+    /// under ~0.2% so the heuristic-built graph still reaches R@0.99+.
     fn parallel_build_chunk(n: usize) -> usize {
-        (n / 64).clamp(64, 1024)
+        (n / 512).clamp(32, 256)
     }
 
     /// Insert a batch of vectors.
@@ -394,26 +422,7 @@ impl HnswIndex {
     fn commit_node(&mut self, node_id: usize, node_level: usize, per_layer: LayerCandidates) {
         for (lc, candidates) in per_layer {
             let max_m = if lc == 0 { self.m0 } else { self.m };
-            let nbrs = Self::select_neighbors(&candidates, max_m);
-            self.neighbors[node_id][lc] = nbrs.iter().map(|&id| id as NodeId).collect();
-
-            for &nb_id in &nbrs {
-                if lc < self.neighbors[nb_id].len() {
-                    self.neighbors[nb_id][lc].push(node_id as NodeId);
-                    if self.neighbors[nb_id][lc].len() > max_m {
-                        let nb_vec = self.vectors[nb_id].clone();
-                        let mut scored: Vec<(f32, NodeId)> = self.neighbors[nb_id][lc]
-                            .iter()
-                            .map(|&nn| (Self::cosine_dist(&nb_vec, &self.vectors[nn as usize]), nn))
-                            .collect();
-                        scored.sort_by(|a, b| {
-                            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                        self.neighbors[nb_id][lc] =
-                            scored.into_iter().take(max_m).map(|(_, id)| id).collect();
-                    }
-                }
-            }
+            self.connect(node_id, lc, max_m, &candidates);
         }
 
         if node_level > self.max_level {

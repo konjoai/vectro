@@ -327,17 +327,58 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         self.search_layer_impl(query, entry_points, ef, layer, use_f32, |_| true)
     }
 
-    fn select_neighbors(candidates: &[(f32, usize)], m: usize) -> Vec<usize> {
-        candidates.iter().take(m).map(|&(_, id)| id).collect()
+    /// Distance between two stored nodes (for the selection heuristic). Uses the
+    /// exact f32 build vectors during construction (`use_f32`), else the decoded
+    /// codes.
+    #[inline]
+    fn node_to_node_dist(&self, a: usize, b: usize, use_f32: bool) -> f32 {
+        if use_f32 {
+            if let (Some(va), Some(vb)) = (self.build_vectors.get(a), self.build_vectors.get(b)) {
+                if !va.is_empty() && !vb.is_empty() {
+                    return crate::quant::cosine_dist_unit(va, vb);
+                }
+            }
+        }
+        let vb = Q::decode(&self.encoded[b], 0);
+        Q::dist_to_query(&self.encoded[a], &vb)
     }
 
-    /// Set `node_id`'s forward links at `lc`, then add reverse links to each
-    /// neighbour, pruning over-full lists. Pruning scores from each neighbour's
-    /// own viewpoint — its full-precision build vector when available
-    /// (`use_f32`), else its decoded code.
-    fn connect(&mut self, node_id: usize, lc: usize, max_m: usize, nbrs: &[usize], use_f32: bool) {
+    /// Heuristic neighbour selection (HNSW Algorithm 4): keep a candidate only if
+    /// it is closer to the query than to every already-selected neighbour, so the
+    /// links stay diverse. `candidates` sorted ascending by distance to the query.
+    fn select_heuristic(&self, candidates: &[(f32, usize)], m: usize, use_f32: bool) -> Vec<usize> {
+        if candidates.len() <= m {
+            return candidates.iter().map(|&(_, id)| id).collect();
+        }
+        let mut result: Vec<usize> = Vec::with_capacity(m);
+        for &(dist_eq, e) in candidates {
+            if result.len() >= m {
+                break;
+            }
+            let diverse = result
+                .iter()
+                .all(|&r| self.node_to_node_dist(e, r, use_f32) >= dist_eq);
+            if diverse {
+                result.push(e);
+            }
+        }
+        result
+    }
+
+    /// Set `node_id`'s forward links at `lc` (heuristic-selected from
+    /// `candidates`), then add reverse links to each neighbour, re-applying the
+    /// heuristic when a neighbour's list grows past `max_m`.
+    fn connect(
+        &mut self,
+        node_id: usize,
+        lc: usize,
+        max_m: usize,
+        candidates: &[(f32, usize)],
+        use_f32: bool,
+    ) {
+        let nbrs = self.select_heuristic(candidates, max_m, use_f32);
         self.neighbors[node_id][lc] = nbrs.iter().map(|&id| id as NodeId).collect();
-        for &nb_id in nbrs {
+        for &nb_id in &nbrs {
             if lc >= self.neighbors[nb_id].len() {
                 continue;
             }
@@ -349,13 +390,13 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                     .filter(|v| !v.is_empty())
                     .cloned()
                     .unwrap_or_else(|| Q::decode(&self.encoded[nb_id], 0));
-                let mut scored: Vec<(f32, NodeId)> = self.neighbors[nb_id][lc]
+                let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
                     .iter()
-                    .map(|&n| (self.node_dist(n as usize, &nb_query, use_f32), n))
+                    .map(|&n| (self.node_dist(n as usize, &nb_query, use_f32), n as usize))
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-                self.neighbors[nb_id][lc] =
-                    scored.into_iter().take(max_m).map(|(_, id)| id).collect();
+                let kept = self.select_heuristic(&scored, max_m, use_f32);
+                self.neighbors[nb_id][lc] = kept.iter().map(|&id| id as NodeId).collect();
             }
         }
     }
@@ -398,9 +439,8 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                     let candidates =
                         self.search_layer(&norm_vec, &curr_ep, self.ef_construction, lc, building);
                     let max_m = if lc == 0 { self.m0 } else { self.m };
-                    let nbrs = Self::select_neighbors(&candidates, max_m);
+                    self.connect(node_id, lc, max_m, &candidates, building);
                     curr_ep = candidates.into_iter().map(|(_, id)| id).collect();
-                    self.connect(node_id, lc, max_m, &nbrs, building);
                 }
 
                 if node_level > max_l {
@@ -415,7 +455,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
     const PARALLEL_BUILD_THRESHOLD: usize = 512;
     /// Chunk size for the parallel build, bounded to ~n/64 (clamped [64,1024]).
     fn parallel_build_chunk(n: usize) -> usize {
-        (n / 64).clamp(64, 1024)
+        (n / 512).clamp(32, 256)
     }
 
     /// Insert a batch of vectors. On the first batch into an empty index the
@@ -517,8 +557,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
     fn commit_node(&mut self, node_id: usize, node_level: usize, per_layer: LayerCandidates) {
         for (lc, candidates) in per_layer {
             let max_m = if lc == 0 { self.m0 } else { self.m };
-            let nbrs = Self::select_neighbors(&candidates, max_m);
-            self.connect(node_id, lc, max_m, &nbrs, true);
+            self.connect(node_id, lc, max_m, &candidates, true);
         }
         if node_level > self.max_level {
             self.max_level = node_level;
