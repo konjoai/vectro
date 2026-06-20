@@ -67,6 +67,22 @@ fn bench_rq_decode(c: &mut Criterion) {
     group.finish();
 }
 
+/// RQ encode throughput — exercises the residual-subtraction path (no k-means),
+/// which the fused in-place update targets.
+fn bench_rq_encode(c: &mut Criterion) {
+    const N: usize = 5_000;
+    const D: usize = 128;
+    let vecs = make_vecs(N, D);
+    let cb: RQCodebook = train_rq_codebook(&vecs, 2, 8, 64, 10, 42).expect("rq train failed");
+
+    let mut group = c.benchmark_group("rq_encode");
+    group.throughput(Throughput::Elements((N * D) as u64));
+    group.bench_function("encode_flat_n5k_d128_l2_m8_k64", |b| {
+        b.iter(|| rq_encode_flat(black_box(&cb), black_box(&vecs)))
+    });
+    group.finish();
+}
+
 /// PQ encode throughput (assignment-heavy; complements pq_train).
 fn bench_pq_encode(c: &mut Criterion) {
     const N: usize = 5_000;
@@ -132,6 +148,7 @@ criterion_group!(
     bench_pq_train,
     bench_rq_train,
     bench_rq_decode,
+    bench_rq_encode,
     bench_pq_encode,
     bench_int8_decode,
     bench_hnsw_insert

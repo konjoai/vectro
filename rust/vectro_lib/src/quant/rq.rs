@@ -17,7 +17,7 @@
 //! On-disk flat-code layout: `n_passes × n_subspaces` bytes per vector
 //! (fixed record size, no nested-Vec overhead).
 
-use crate::quant::pq::{pq_decode, pq_encode, train_pq_codebook, PQCodebook};
+use crate::quant::pq::{pq_encode, train_pq_codebook, PQCodebook};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -72,15 +72,10 @@ pub fn train_rq_codebook(
             seed + pass as u64,
         )?;
 
-        // Encode current residuals, decode approximation, subtract → next residuals
+        // Encode current residuals, then subtract the PQ reconstruction in
+        // place (fused decode+subtract — no recon/residual reallocation).
         let codes = pq_encode(&residuals, &cb);
-        let recon = pq_decode(&codes, &cb);
-
-        residuals = residuals
-            .par_iter()
-            .zip(recon.par_iter())
-            .map(|(r, rec)| r.iter().zip(rec.iter()).map(|(a, b)| a - b).collect())
-            .collect();
+        subtract_pq_reconstruction(&mut residuals, &codes, &cb);
 
         codebooks.push(cb);
     }
@@ -105,20 +100,37 @@ pub fn rq_encode(codebook: &RQCodebook, vecs: &[Vec<f32>]) -> Vec<Vec<Vec<u8>>> 
 
     for (pass, cb) in codebook.codebooks.iter().enumerate() {
         let codes = pq_encode(&residuals, cb);
-        let recon = pq_decode(&codes, cb);
-
+        // Fused decode+subtract before moving `codes` into the output.
+        subtract_pq_reconstruction(&mut residuals, &codes, cb);
         for (i, code) in codes.into_iter().enumerate() {
             all_codes[i][pass] = code;
         }
-
-        residuals = residuals
-            .par_iter()
-            .zip(recon.par_iter())
-            .map(|(r, rec)| r.iter().zip(rec.iter()).map(|(a, b)| a - b).collect())
-            .collect();
     }
 
     all_codes
+}
+
+/// Subtract the PQ reconstruction implied by `codes` from `residuals` in place.
+///
+/// Fuses `pq_decode` + the residual subtraction: each subspace centroid is
+/// subtracted directly from the matching slice of the running residual, so no
+/// full reconstruction array (and no fresh residual array) is allocated per
+/// pass. Because every element belongs to exactly one subspace, this computes
+/// the identical `residual − decode(codes)` value element-by-element.
+fn subtract_pq_reconstruction(residuals: &mut [Vec<f32>], codes: &[Vec<u8>], cb: &PQCodebook) {
+    let sub_dim = cb.sub_dim;
+    residuals
+        .par_iter_mut()
+        .zip(codes.par_iter())
+        .for_each(|(res, code)| {
+            for (mi, &k) in code.iter().enumerate() {
+                let cent = cb.centroid(mi, k as usize);
+                let off = mi * sub_dim;
+                for (r, &c) in res[off..off + sub_dim].iter_mut().zip(cent.iter()) {
+                    *r -= c;
+                }
+            }
+        });
 }
 
 /// Encode `vecs` and return flat codes: `[n_vecs][n_passes * n_subspaces]`.
