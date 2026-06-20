@@ -11,6 +11,7 @@
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "aarch64"))]
 use simsimd::SpatialSimilarity;
 use std::collections::{BinaryHeap, HashSet};
 
@@ -20,6 +21,39 @@ use super::shuffled_order;
 /// Per-layer candidate neighbour lists for one node: `(layer, [(dist, id), …])`,
 /// the read-only output of the parallel search phase handed to the serial commit.
 type LayerCandidates = Vec<(usize, Vec<(f32, usize)>)>;
+
+/// Inlined NEON f32 dot product — `Σ a[i]*b[i]` — for the HNSW search hot loop.
+/// Four independent `f32x4` accumulators break the reduction dependency chain.
+///
+/// # Safety
+/// Requires NEON (mandated on AArch64-v8). Reads only `min(a, b)` lanes.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn dot_f32_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let (ap, bp) = (a.as_ptr(), b.as_ptr());
+    let mut acc0 = vdupq_n_f32(0.0);
+    let mut acc1 = vdupq_n_f32(0.0);
+    let mut acc2 = vdupq_n_f32(0.0);
+    let mut acc3 = vdupq_n_f32(0.0);
+    let chunks = n / 16;
+    for i in 0..chunks {
+        let o = i * 16;
+        acc0 = vfmaq_f32(acc0, vld1q_f32(ap.add(o)), vld1q_f32(bp.add(o)));
+        acc1 = vfmaq_f32(acc1, vld1q_f32(ap.add(o + 4)), vld1q_f32(bp.add(o + 4)));
+        acc2 = vfmaq_f32(acc2, vld1q_f32(ap.add(o + 8)), vld1q_f32(bp.add(o + 8)));
+        acc3 = vfmaq_f32(acc3, vld1q_f32(ap.add(o + 12)), vld1q_f32(bp.add(o + 12)));
+    }
+    let sum = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
+    let mut total = vaddvq_f32(sum);
+    for i in chunks * 16..n {
+        total += a[i] * b[i];
+    }
+    total
+}
+
 
 /// Newtype wrapping f32 with a total order so we can use a standard
 /// `BinaryHeap` without an external crate.
@@ -50,7 +84,13 @@ pub struct HnswIndex {
     m0: usize,            // 2 * m — max links at layer 0
     ef_construction: usize,
     ml: f64,              // level multiplier = 1 / ln(m)
-    vectors: Vec<Vec<f32>>, // unit-norm stored vectors
+    /// Unit-norm stored vectors in **one contiguous buffer**, row `i` at
+    /// `vectors[i*dim .. (i+1)*dim]`. Flat layout (vs `Vec<Vec<f32>>`) removes a
+    /// pointer-chase per distance eval and lets the hardware prefetcher stream.
+    vectors: Vec<f32>,
+    /// Vector dimensionality (0 until the first insert).
+    #[serde(default)]
+    dim: usize,
     /// `neighbors[node][layer] = [node_id, ...]`; `u32` ids in inline-capable
     /// lists (see [`super::neighbor_store`]).
     #[serde(with = "neighbors_serde")]
@@ -78,6 +118,7 @@ impl HnswIndex {
             ef_construction,
             ml,
             vectors: Vec::new(),
+            dim: 0,
             neighbors: Vec::new(),
             entry_point: None,
             max_level: 0,
@@ -87,7 +128,11 @@ impl HnswIndex {
 
     /// Number of vectors currently stored.
     pub fn len(&self) -> usize {
-        self.vectors.len()
+        if self.dim == 0 {
+            0
+        } else {
+            self.vectors.len() / self.dim
+        }
     }
 
     /// True when the index is empty.
@@ -95,14 +140,28 @@ impl HnswIndex {
         self.vectors.is_empty()
     }
 
+    /// Borrow stored vector `id` from the flat buffer (no allocation/indirection).
+    #[inline]
+    fn vec(&self, id: usize) -> &[f32] {
+        let base = id * self.dim;
+        &self.vectors[base..base + self.dim]
+    }
+
     // ─────────────────────────── internal helpers ────────────────────────
 
     #[inline]
     fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
         // Stored vectors are pre-normalised; dot product == cosine similarity.
-        // SimSIMD dispatches to NEON/SVE on ARM or AVX2/AVX-512 on x86 at runtime.
-        let dot: f64 = <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0);
-        (1.0 - dot as f32).max(0.0)
+        // On aarch64 use a directly-inlined NEON f32 dot — at small dims the
+        // SimSIMD path's per-call overhead (runtime dispatch, f64 accumulator,
+        // `Option` unwrap) is a large fraction of the tiny compute. Elsewhere
+        // SimSIMD's runtime dispatch is the portable best.
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: NEON is mandated on AArch64-v8; the helper reads in-bounds lanes.
+        let dot = unsafe { dot_f32_neon(a, b) };
+        #[cfg(not(target_arch = "aarch64"))]
+        let dot = <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0) as f32;
+        (1.0 - dot).max(0.0)
     }
 
     fn normalize(v: &[f32]) -> Vec<f32> {
@@ -134,7 +193,7 @@ impl HnswIndex {
     }
 
     fn random_level(&self) -> usize {
-        Self::level_of(self.vectors.len(), self.ml)
+        Self::level_of(self.len(), self.ml)
     }
 
     /// Core beam search with an optional per-node inclusion filter.
@@ -155,14 +214,14 @@ impl HnswIndex {
     ) -> Vec<(f32, usize)> {
         // Reusable thread-local epoch visited set (see `super::scratch`): O(1)
         // mark/check, allocated once per thread instead of once per layer call.
-        super::scratch::with_visited(self.vectors.len(), |visited| {
+        super::scratch::with_visited(self.len(), |visited| {
             // cands: min-heap on dist — pop closest first.
             let mut cands: BinaryHeap<(std::cmp::Reverse<OrdF32>, usize)> = BinaryHeap::new();
             // window W: max-heap on dist — pop worst to maintain size <= ef.
             let mut window: BinaryHeap<(OrdF32, usize)> = BinaryHeap::new();
 
             for &ep in entry_points {
-                let d = Self::cosine_dist(query, &self.vectors[ep]);
+                let d = Self::cosine_dist(query, self.vec(ep));
                 visited.visit(ep);
                 cands.push((std::cmp::Reverse(OrdF32(d)), ep));
                 if !self.is_deleted(ep) && filter(ep) {
@@ -181,12 +240,15 @@ impl HnswIndex {
                 }
                 // Iterate adjacency by reference — `neighbors` and `vectors` are
                 // distinct shared borrows of `self`, so no clone is needed here.
+                // (Software prefetch of the next neighbour was measured a net
+                // loss at small dims — the vectors are tiny and the HW prefetcher
+                // already hides the latency.)
                 for &nb in &self.neighbors[c][layer] {
                     let nb = nb as usize;
                     if !visited.visit(nb) {
                         continue;
                     }
-                    let d_nb = Self::cosine_dist(query, &self.vectors[nb]);
+                    let d_nb = Self::cosine_dist(query, self.vec(nb));
                     let worst2 = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
                     if d_nb < worst2 || window.len() < ef {
                         cands.push((std::cmp::Reverse(OrdF32(d_nb)), nb));
@@ -241,10 +303,10 @@ impl HnswIndex {
             if result.len() >= m {
                 break;
             }
-            let e_vec = &self.vectors[e];
+            let e_vec = self.vec(e);
             let diverse = result
                 .iter()
-                .all(|&r| Self::cosine_dist(e_vec, &self.vectors[r]) >= dist_eq);
+                .all(|&r| Self::cosine_dist(e_vec, self.vec(r)) >= dist_eq);
             if diverse {
                 result.push(e);
             }
@@ -265,10 +327,10 @@ impl HnswIndex {
             }
             self.neighbors[nb_id][lc].push(node_id as NodeId);
             if self.neighbors[nb_id][lc].len() > max_m {
-                let nb_vec = self.vectors[nb_id].clone();
+                let nb_vec = self.vec(nb_id).to_vec();
                 let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
                     .iter()
-                    .map(|&n| (Self::cosine_dist(&nb_vec, &self.vectors[n as usize]), n as usize))
+                    .map(|&n| (Self::cosine_dist(&nb_vec, self.vec(n as usize)), n as usize))
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let kept = self.select_heuristic(&scored, max_m);
@@ -282,10 +344,13 @@ impl HnswIndex {
     /// Insert a single vector into the index (normalised internally).
     pub fn add(&mut self, vector: &[f32]) {
         let norm_vec = Self::normalize(vector);
-        let node_id = self.vectors.len();
+        let node_id = self.len();
         let node_level = self.random_level();
 
-        self.vectors.push(norm_vec.clone());
+        if self.dim == 0 {
+            self.dim = norm_vec.len();
+        }
+        self.vectors.extend_from_slice(&norm_vec);
         self.neighbors.push(vec![NeighborList::new(); node_level + 1]);
         self.deleted.push(false);
 
@@ -358,11 +423,15 @@ impl HnswIndex {
     /// the serial path regardless of input ordering.
     fn build_parallel<V: AsRef<[f32]>>(&mut self, vectors: &[V]) {
         let n = vectors.len();
-        let normalized: Vec<Vec<f32>> =
-            vectors.iter().map(|v| Self::normalize(v.as_ref())).collect();
+        self.dim = vectors.first().map(|v| v.as_ref().len()).unwrap_or(0);
+        // Normalise into one contiguous flat buffer.
+        let mut flat = Vec::with_capacity(n * self.dim);
+        for v in vectors {
+            flat.extend_from_slice(&Self::normalize(v.as_ref()));
+        }
+        self.vectors = flat;
         let levels: Vec<usize> = (0..n).map(|id| Self::level_of(id, self.ml)).collect();
 
-        self.vectors = normalized;
         self.deleted = vec![false; n];
         self.neighbors = levels
             .iter()
@@ -393,7 +462,7 @@ impl HnswIndex {
     /// lists. Mirrors the search portion of [`add`] but commits nothing — safe
     /// to call concurrently.
     fn find_candidates(&self, node_id: usize, node_level: usize) -> LayerCandidates {
-        let q = &self.vectors[node_id];
+        let q = self.vec(node_id).to_vec(); let q = &q;
         let ep = match self.entry_point {
             Some(ep) => ep,
             None => return Vec::new(),
@@ -502,11 +571,11 @@ impl HnswIndex {
     /// The vector is excluded from all future search results but stays in the
     /// graph structure to maintain connectivity for its non-deleted neighbours.
     pub fn delete(&mut self, id: usize) {
-        if id < self.vectors.len() {
+        if id < self.len() {
             // Backfill tombstone vec in case this index was loaded from a file
             // saved before the `deleted` field was introduced.
-            if self.deleted.len() < self.vectors.len() {
-                self.deleted.resize(self.vectors.len(), false);
+            if self.deleted.len() < self.len() {
+                self.deleted.resize(self.len(), false);
             }
             self.deleted[id] = true;
         }
@@ -574,12 +643,9 @@ impl HnswIndex {
         }
 
         // Collect surviving original vectors (already unit-normalised by `add`).
-        let survivors: Vec<Vec<f32>> = self
-            .vectors
-            .iter()
-            .zip(self.deleted.iter())
-            .filter(|(_, &d)| !d)
-            .map(|(v, _)| v.clone())
+        let survivors: Vec<Vec<f32>> = (0..self.len())
+            .filter(|&i| !self.deleted.get(i).copied().unwrap_or(false))
+            .map(|i| self.vec(i).to_vec())
             .collect();
 
         // Rebuild with the same construction parameters.
