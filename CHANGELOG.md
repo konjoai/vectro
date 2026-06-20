@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (INT8 encode)
+- **Parallelized `quantize_int8_batch`** (`rust/vectro_py/src/lib.rs`,
+  `rust/vectro_lib/src/quant/int8.rs`) — the batch INT8 encoder barely scaled
+  past one core (1.3× on 8 threads) because of two serial Amdahl bottlenecks: a
+  serial NaN/Inf scan over the entire `[N,D]` input and the serial zero-init of
+  the output buffer. Now the finite-check runs in parallel (new
+  `int8::first_non_finite`, rayon), the kernel writes directly into an
+  **uninitialised** numpy output (no intermediate `Vec`, no 0-init), and the GIL
+  is released during compute. **d=64 44→66 M vec/s, d=100 26→40 M vec/s (~1.5×);
+  multi-core scaling 1.3× → 4.6×.** Memory-bandwidth bound (~16 GB/s) thereafter.
+  Same fix applied to `quantize_int8_batch_normalized`. Reconstruction unchanged
+  (cosine 0.99998); NaN/Inf still rejected with exact (row, col). Raw:
+  `benchmarks/results/20260620_phase7_int8_encode_parallel.json`.
+
 ### Added
 - **Binary + INT8 re-rank pipeline** (`rust/vectro_lib/src/index/quant_hnsw.rs`) —
   `QuantHnswIndex::enable_rerank()` retains a near-lossless INT8 copy of every
