@@ -61,12 +61,16 @@ type LayerCandidates = Vec<(usize, Vec<(f32, usize)>)>;
 /// epoch in O(1) (no clear), so a node is "visited this call" iff its tag equals
 /// the current epoch. Thread-local, so it's contention-free under the parallel
 /// build and parallel batch search (each worker thread gets its own).
-struct VersionedVisited {
+struct SearchScratch {
     tags: Vec<u32>,
     epoch: u32,
+    cands: BinaryHeap<(std::cmp::Reverse<OrdF32>, usize)>,
+    window: BinaryHeap<(OrdF32, usize)>,
 }
 
-impl VersionedVisited {
+impl SearchScratch {
+    /// Prepare for one `search_layer` call: grow the tag array to `n`, bump the
+    /// epoch (O(1) "clear"), and empty the heaps while keeping their capacity.
     fn begin(&mut self, n: usize) -> u32 {
         if self.tags.len() < n {
             self.tags.resize(n, 0);
@@ -77,23 +81,21 @@ impl VersionedVisited {
             self.tags.iter_mut().for_each(|t| *t = 0);
             self.epoch = 1;
         }
+        self.cands.clear();
+        self.window.clear();
         self.epoch
-    }
-
-    #[inline]
-    fn insert(&mut self, id: usize, epoch: u32) -> bool {
-        if self.tags[id] == epoch {
-            false
-        } else {
-            self.tags[id] = epoch;
-            true
-        }
     }
 }
 
 thread_local! {
-    static VISITED: std::cell::RefCell<VersionedVisited> =
-        const { std::cell::RefCell::new(VersionedVisited { tags: Vec::new(), epoch: 0 }) };
+    static SCRATCH: std::cell::RefCell<SearchScratch> = const {
+        std::cell::RefCell::new(SearchScratch {
+            tags: Vec::new(),
+            epoch: 0,
+            cands: BinaryHeap::new(),
+            window: BinaryHeap::new(),
+        })
+    };
 }
 
 // ── OrdF32 (private total-order wrapper for BinaryHeap) ───────────────────────
@@ -315,27 +317,22 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         use_f32: bool,
         filter: F,
     ) -> Vec<(f32, usize)> {
-        VISITED.with(|cell| {
-            let mut visited = cell.borrow_mut();
-            let epoch = visited.begin(self.encoded.len());
-
-            // cands: min-heap on distance (pop closest first)
-            let mut cands: BinaryHeap<(std::cmp::Reverse<OrdF32>, usize)> = BinaryHeap::new();
-            // window W: max-heap on distance (pop worst to enforce size <= ef)
-            let mut window: BinaryHeap<(OrdF32, usize)> = BinaryHeap::new();
+        SCRATCH.with(|cell| {
+            let s = &mut *cell.borrow_mut();
+            let epoch = s.begin(self.encoded.len());
 
             for &ep in entry_points {
                 let d = self.node_dist(ep, query, use_f32);
-                visited.insert(ep, epoch);
-                cands.push((std::cmp::Reverse(OrdF32(d)), ep));
+                s.tags[ep] = epoch;
+                s.cands.push((std::cmp::Reverse(OrdF32(d)), ep));
                 if !self.is_deleted(ep) && filter(ep) {
-                    window.push((OrdF32(d), ep));
+                    s.window.push((OrdF32(d), ep));
                 }
             }
 
-            while let Some((std::cmp::Reverse(OrdF32(d_c)), c)) = cands.pop() {
-                let worst = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
-                if d_c > worst && window.len() >= ef {
+            while let Some((std::cmp::Reverse(OrdF32(d_c)), c)) = s.cands.pop() {
+                let worst = s.window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
+                if d_c > worst && s.window.len() >= ef {
                     break;
                 }
                 // Borrow the neighbour slice instead of cloning — search never
@@ -347,17 +344,18 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
                 for &nb in nbrs {
-                    if !visited.insert(nb, epoch) {
+                    if s.tags[nb] == epoch {
                         continue;
                     }
+                    s.tags[nb] = epoch;
                     let d_nb = self.node_dist(nb, query, use_f32);
-                    let worst2 = window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
-                    if d_nb < worst2 || window.len() < ef {
-                        cands.push((std::cmp::Reverse(OrdF32(d_nb)), nb));
+                    let worst2 = s.window.peek().map(|e| e.0 .0).unwrap_or(f32::INFINITY);
+                    if d_nb < worst2 || s.window.len() < ef {
+                        s.cands.push((std::cmp::Reverse(OrdF32(d_nb)), nb));
                         if !self.is_deleted(nb) && filter(nb) {
-                            window.push((OrdF32(d_nb), nb));
-                            if window.len() > ef {
-                                window.pop();
+                            s.window.push((OrdF32(d_nb), nb));
+                            if s.window.len() > ef {
+                                s.window.pop();
                             }
                         }
                     }
@@ -365,7 +363,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             }
 
             let mut result: Vec<(f32, usize)> =
-                window.into_iter().map(|(d, id)| (d.0, id)).collect();
+                s.window.drain().map(|(d, id)| (d.0, id)).collect();
             result.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             result
         })
