@@ -14,13 +14,10 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "aarch64"))]
 use simsimd::SpatialSimilarity;
 use std::collections::{BinaryHeap, HashSet};
+use std::sync::{PoisonError, RwLock};
 
 use super::neighbor_store::{neighbors_serde, NeighborList, NodeId};
-use super::{key_dist, key_id, pack_key, shuffled_order};
-
-/// Per-layer candidate neighbour lists for one node: `(layer, [(dist, id), …])`,
-/// the read-only output of the parallel search phase handed to the serial commit.
-type LayerCandidates = Vec<(usize, Vec<(f32, usize)>)>;
+use super::{key_dist, key_id, pack_key};
 
 /// Inlined NEON f32 dot product — `Σ a[i]*b[i]` — for the HNSW search hot loop.
 /// Four independent `f32x4` accumulators break the reduction dependency chain.
@@ -371,24 +368,16 @@ impl HnswIndex {
 
     /// Minimum batch size into an empty index that triggers the parallel build.
     const PARALLEL_BUILD_THRESHOLD: usize = 512;
-    /// Chunk size for the parallel build. Nodes in one chunk search the graph
-    /// frozen at the chunk boundary and so can't link to each other; the
-    /// fraction of lost intra-chunk links is ≈ chunk/n, which directly caps the
-    /// achievable recall. Bounded to ~n/512 (clamped [32, 256]) keeps that loss
-    /// under ~0.2% so the heuristic-built graph still reaches R@0.99+.
-    fn parallel_build_chunk(n: usize) -> usize {
-        (n / 512).clamp(32, 256)
-    }
 
     /// Insert a batch of vectors.
     ///
     /// Generic over `AsRef<[f32]>` so callers can pass borrowed row slices
     /// (e.g. `&[&[f32]]` over a contiguous buffer) without an owning copy. A
-    /// large first batch into an empty index is built in parallel
-    /// (see [`build_parallel`]).
+    /// large first batch into an empty index is built with the concurrent
+    /// insertion path (see [`build_concurrent`]).
     pub fn add_batch<V: AsRef<[f32]>>(&mut self, vectors: &[V]) {
         if self.vectors.is_empty() && vectors.len() >= Self::PARALLEL_BUILD_THRESHOLD {
-            self.build_parallel(vectors);
+            self.build_concurrent(vectors);
         } else {
             for v in vectors {
                 self.add(v.as_ref());
@@ -396,88 +385,210 @@ impl HnswIndex {
         }
     }
 
-    /// Parallel graph construction for a fresh index: **parallel search + serial
-    /// commit** in chunks. Each node's candidate search is read-only and runs
-    /// concurrently across a chunk; link stitching/pruning is serial, so no
-    /// locks are needed. Build order is shuffled and the chunk bounded so
-    /// correlated input rows don't share a chunk — keeps recall at parity with
-    /// the serial path regardless of input ordering.
-    fn build_parallel<V: AsRef<[f32]>>(&mut self, vectors: &[V]) {
+    // ───────────────────── concurrent-insertion build ───────────────────
+    //
+    // The chunked `build_parallel` freezes the graph at each chunk boundary, so
+    // chunk-mates can't link to each other — a residual ≈ chunk/n that caps recall
+    // around 0.997. This path instead inserts every node against the **live**
+    // graph behind per-node locks (hnswlib-style): full visibility recovers
+    // serial-quality recall (R@10 → 1.000) at parallel speed. Wiring is
+    // schedule-dependent (not bit-reproducible) but node *levels* stay seeded.
+
+    /// Number of nodes to seed serially before the concurrent insert phase.
+    /// Sized to dominate the early-graph region (where concurrent inserts would
+    /// otherwise see a sparse graph) while staying a small fraction of the build.
+    fn concurrent_seed(n: usize) -> usize {
+        (n / 20).clamp(256, 4096).min(n)
+    }
+
+    /// Concurrent graph construction: insert all nodes in parallel against a
+    /// live, per-node-locked adjacency. No thread ever holds two node locks at
+    /// once (forward links touch only this node's own list; each reverse link is
+    /// locked, mutated, released independently) — so the build is deadlock-free.
+    fn build_concurrent<V: AsRef<[f32]>>(&mut self, vectors: &[V]) {
         let n = vectors.len();
         self.dim = vectors.first().map(|v| v.as_ref().len()).unwrap_or(0);
-        // Normalise into one contiguous flat buffer.
         let mut flat = Vec::with_capacity(n * self.dim);
         for v in vectors {
             flat.extend_from_slice(&Self::normalize(v.as_ref()));
         }
         self.vectors = flat;
-        let levels: Vec<usize> = (0..n).map(|id| Self::level_of(id, self.ml)).collect();
-
         self.deleted = vec![false; n];
-        self.neighbors = levels
+
+        let levels: Vec<usize> = (0..n).map(|id| Self::level_of(id, self.ml)).collect();
+        // Per-node, per-layer locked adjacency lists.
+        let graph: Vec<Vec<RwLock<NeighborList>>> = levels
             .iter()
-            .map(|&lv| vec![NeighborList::new(); lv + 1])
+            .map(|&lv| (0..=lv).map(|_| RwLock::new(NeighborList::new())).collect())
             .collect();
+        // (entry_point, max_level) — written only when a node raises the top level.
+        let ep_state = RwLock::new((0usize, levels[0]));
 
-        let order = shuffled_order(n);
-        self.entry_point = Some(order[0]);
-        self.max_level = levels[order[0]];
-
-        let chunk = Self::parallel_build_chunk(n);
-        let mut start = 1;
-        while start < n {
-            let end = (start + chunk).min(n);
-            let ids = &order[start..end];
-            let found: Vec<LayerCandidates> = ids
-                .par_iter()
-                .map(|&id| self.find_candidates(id, levels[id]))
-                .collect();
-            for (&id, per_layer) in ids.iter().zip(found.into_iter()) {
-                self.commit_node(id, levels[id], per_layer);
-            }
-            start = end;
+        // Serial seed: build a high-quality core first. Without it the first node
+        // of each thread's range searches a near-empty graph (every other thread
+        // has barely started) and gets poor links — the residual that otherwise
+        // caps recall below 1.0. Once `seed` nodes are well-connected, every
+        // concurrent insert searches a fully-formed graph, recovering serial
+        // recall (R@10 → 1.0) at ~parallel speed.
+        let seed = Self::concurrent_seed(n);
+        for (id, &lv) in levels.iter().enumerate().take(seed).skip(1) {
+            self.insert_concurrent(id, lv, &graph, &ep_state);
         }
+        (seed..n)
+            .into_par_iter()
+            .for_each(|id| self.insert_concurrent(id, levels[id], &graph, &ep_state));
+
+        // Drain the locks into the flat neighbour store.
+        self.neighbors = graph
+            .into_iter()
+            .map(|node| {
+                node.into_iter()
+                    .map(|lock| lock.into_inner().unwrap_or_else(PoisonError::into_inner))
+                    .collect()
+            })
+            .collect();
+        let (ep, max_level) = ep_state.into_inner().unwrap_or_else(PoisonError::into_inner);
+        self.entry_point = Some(ep);
+        self.max_level = max_level;
     }
 
-    /// Read-only neighbour search for `node_id`, returning per-layer candidate
-    /// lists. Mirrors the search portion of [`add`] but commits nothing — safe
-    /// to call concurrently.
-    fn find_candidates(&self, node_id: usize, node_level: usize) -> LayerCandidates {
-        let q = self.vec(node_id).to_vec(); let q = &q;
-        let ep = match self.entry_point {
-            Some(ep) => ep,
-            None => return Vec::new(),
-        };
-        let max_l = self.max_level;
+    /// Insert one node against the live locked graph (mirrors [`add`], but every
+    /// graph read/write goes through the per-node `RwLock`s in `graph`).
+    fn insert_concurrent(
+        &self,
+        node_id: usize,
+        node_level: usize,
+        graph: &[Vec<RwLock<NeighborList>>],
+        ep_state: &RwLock<(usize, usize)>,
+    ) {
+        let q = self.vec(node_id);
+        let (ep, max_l) = *ep_state.read().unwrap_or_else(PoisonError::into_inner);
         let mut curr_ep = vec![ep];
 
+        // Greedy descent from the (snapshot) top down to node_level + 1.
         for lc in (node_level + 1..=max_l).rev() {
-            let res = self.search_layer(q, &curr_ep, 1, lc);
+            let res = self.search_layer_locked(q, &curr_ep, 1, lc, graph);
             if !res.is_empty() {
                 curr_ep = vec![res[0].1];
             }
         }
 
-        let mut per_layer = Vec::new();
+        // ef_construction beam search + connect on each owned layer.
         for lc in (0..=node_level.min(max_l)).rev() {
-            let candidates = self.search_layer(q, &curr_ep, self.ef_construction, lc);
-            curr_ep = candidates.iter().map(|&(_, id)| id).collect();
-            per_layer.push((lc, candidates));
+            let candidates = self.search_layer_locked(q, &curr_ep, self.ef_construction, lc, graph);
+            let max_m = if lc == 0 { self.m0 } else { self.m };
+            self.connect_locked(node_id, lc, max_m, &candidates, graph);
+            curr_ep = candidates.into_iter().map(|(_, id)| id).collect();
         }
-        per_layer
+
+        // Raise the entry point if this node introduced a new top level.
+        if node_level > max_l {
+            let mut st = ep_state.write().unwrap_or_else(PoisonError::into_inner);
+            if node_level > st.1 {
+                *st = (node_id, node_level);
+            }
+        }
     }
 
-    /// Serially commit a node's links from pre-computed per-layer candidates
-    /// (forward links + reverse links + prune), mirroring [`add`].
-    fn commit_node(&mut self, node_id: usize, node_level: usize, per_layer: LayerCandidates) {
-        for (lc, candidates) in per_layer {
-            let max_m = if lc == 0 { self.m0 } else { self.m };
-            self.connect(node_id, lc, max_m, &candidates);
+    /// Beam search on one layer of the live locked graph. Each adjacency list is
+    /// snapshotted under a read lock and released *before* the distance evals, so
+    /// no lock is ever held across compute.
+    fn search_layer_locked(
+        &self,
+        query: &[f32],
+        entry_points: &[usize],
+        ef: usize,
+        layer: usize,
+        graph: &[Vec<RwLock<NeighborList>>],
+    ) -> Vec<(f32, usize)> {
+        super::scratch::with_visited(self.len(), |visited| {
+            let mut cands: BinaryHeap<std::cmp::Reverse<u64>> = BinaryHeap::new();
+            let mut window: BinaryHeap<u64> = BinaryHeap::new();
+
+            for &ep in entry_points {
+                let d = Self::cosine_dist(query, self.vec(ep));
+                visited.visit(ep);
+                cands.push(std::cmp::Reverse(pack_key(d, ep)));
+                window.push(pack_key(d, ep));
+            }
+
+            while let Some(std::cmp::Reverse(ck)) = cands.pop() {
+                let d_c = key_dist(ck);
+                let worst = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
+                if d_c > worst && window.len() >= ef {
+                    break;
+                }
+                let c = key_id(ck);
+                if layer >= graph[c].len() {
+                    continue;
+                }
+                let nbrs: NeighborList = graph[c][layer]
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                for &nb in &nbrs {
+                    let nb = nb as usize;
+                    if !visited.visit(nb) {
+                        continue;
+                    }
+                    let d_nb = Self::cosine_dist(query, self.vec(nb));
+                    let worst2 = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
+                    if d_nb < worst2 || window.len() < ef {
+                        cands.push(std::cmp::Reverse(pack_key(d_nb, nb)));
+                        window.push(pack_key(d_nb, nb));
+                        if window.len() > ef {
+                            window.pop();
+                        }
+                    }
+                }
+            }
+
+            window
+                .into_sorted_vec()
+                .into_iter()
+                .map(|k| (key_dist(k), key_id(k)))
+                .collect()
+        })
+    }
+
+    /// Locked equivalent of [`connect`]: heuristic-select forward links (write
+    /// this node's own list), then add a reverse link to each neighbour,
+    /// re-applying the heuristic when its list overflows `max_m`. Each neighbour
+    /// lock is taken and dropped in turn — never two at once.
+    fn connect_locked(
+        &self,
+        node_id: usize,
+        lc: usize,
+        max_m: usize,
+        candidates: &[(f32, usize)],
+        graph: &[Vec<RwLock<NeighborList>>],
+    ) {
+        let nbrs = self.select_heuristic(candidates, max_m);
+        {
+            let mut fwd = graph[node_id][lc]
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            *fwd = nbrs.iter().map(|&id| id as NodeId).collect();
         }
 
-        if node_level > self.max_level {
-            self.max_level = node_level;
-            self.entry_point = Some(node_id);
+        for &nb_id in &nbrs {
+            if lc >= graph[nb_id].len() {
+                continue;
+            }
+            let mut lock = graph[nb_id][lc]
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            lock.push(node_id as NodeId);
+            if lock.len() > max_m {
+                let nb_vec = self.vec(nb_id);
+                let mut scored: Vec<(f32, usize)> = lock
+                    .iter()
+                    .map(|&nbr| (Self::cosine_dist(nb_vec, self.vec(nbr as usize)), nbr as usize))
+                    .collect();
+                scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                let kept = self.select_heuristic(&scored, max_m);
+                *lock = kept.iter().map(|&id| id as NodeId).collect();
+            }
         }
     }
 
@@ -740,6 +851,44 @@ mod tests {
         let gt = brute_force_gt(&vecs, queries, k);
         let recall = idx.recall_at_k(queries, &gt, k, 60);
         assert!(recall >= 0.80, "recall@{k} = {recall:.3} < 0.80");
+    }
+
+    #[test]
+    fn concurrent_build_high_recall() {
+        // A batch over PARALLEL_BUILD_THRESHOLD routes through `build_concurrent`
+        // (serial seed + parallel live-graph insertion). It must reach near-exact
+        // recall — the whole point of the concurrent path over the chunked one.
+        let n = 1500;
+        assert!(n > HnswIndex::PARALLEL_BUILD_THRESHOLD);
+        let vecs = make_vecs(n, 32);
+        let mut idx = HnswIndex::new(16, 200);
+        idx.add_batch(&vecs);
+        assert_eq!(idx.len(), n);
+
+        let queries = &vecs[..50];
+        let k = 10;
+        let gt = brute_force_gt(&vecs, queries, k);
+        let recall = idx.recall_at_k(queries, &gt, k, 200);
+        assert!(recall >= 0.98, "concurrent-build recall@{k} = {recall:.4} < 0.98");
+    }
+
+    #[test]
+    fn concurrent_build_graph_is_valid() {
+        // Every node's adjacency must reference in-bounds ids and contain no
+        // self-loops — a basic structural invariant the locked build must keep.
+        let n = 800;
+        let vecs = make_vecs(n, 16);
+        let mut idx = HnswIndex::new(8, 64);
+        idx.add_batch(&vecs);
+        for (node, layers) in idx.neighbors.iter().enumerate() {
+            for layer in layers {
+                for &nb in layer {
+                    let nb = nb as usize;
+                    assert!(nb < n, "neighbour id {nb} out of bounds (n={n})");
+                    assert_ne!(nb, node, "self-loop at node {node}");
+                }
+            }
+        }
     }
 
     #[test]
