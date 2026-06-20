@@ -121,6 +121,21 @@ mod tests {
     }
 
     #[test]
+    fn decode_bit_exact_vs_formula() {
+        // Pins `decode` bit-for-bit to the documented reconstruction formula so
+        // any future decode optimisation (LUT/SIMD) cannot silently drift.
+        // dim=257 exercises full bytes plus a partial trailing byte.
+        let v = unit_vec(257, 0.013);
+        let enc = Sq2Vector::encode(&v);
+        let dec = enc.decode();
+        for (i, &got) in dec.iter().enumerate() {
+            let code = (enc.packed[i / 4] >> ((i % 4) * 2)) & 0b11;
+            let want = enc.scale * ((2 * code as i32 - 3) as f32 / 4.0);
+            assert_eq!(got.to_bits(), want.to_bits(), "decode mismatch at index {i}");
+        }
+    }
+
+    #[test]
     fn odd_dim_roundtrip() {
         // dim not divisible by 4
         let v = unit_vec(13, 0.07);

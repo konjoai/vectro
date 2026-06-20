@@ -32,7 +32,7 @@ from .profiles_api import (
     get_compression_profile,
 )
 
-__version__ = "5.6.0"
+__version__ = "5.8.0"
 __author__ = "Wesley Scholl"
 __license__ = "MIT"
 __description__ = "Ultra-High-Performance LLM Embedding Compressor"
