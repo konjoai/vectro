@@ -15,16 +15,6 @@ from __future__ import annotations
 import numpy as np
 from typing import Tuple, List, Optional
 
-try:
-    from . import _mojo_bridge
-except ImportError:
-    import importlib.util as _ilu, pathlib as _pl
-    _spec = _ilu.spec_from_file_location(
-        "_mojo_bridge", _pl.Path(__file__).parent / "_mojo_bridge.py"
-    )
-    _mojo_bridge = _ilu.module_from_spec(_spec)  # type: ignore[assignment]
-    _spec.loader.exec_module(_mojo_bridge)  # type: ignore[union-attr]
-
 
 def quantize_binary(
     vectors: np.ndarray,
@@ -32,7 +22,10 @@ def quantize_binary(
 ) -> np.ndarray:
     """Encode float32 vectors to binary (sign bit), packed 8 per byte.
 
-    Uses the compiled Mojo binary when available; falls back to NumPy.
+    Uses the vectorised NumPy path. Binary's per-element work is a single sign
+    bit, so the compiled Mojo binary — invoked as a subprocess over a stdin/stdout
+    pipe — is dominated by pipe I/O and was measured ~180× *slower* than NumPy on
+    a 20k×768 batch (9.5 s vs 52 ms). The NumPy output is bit-identical to Mojo.
 
     Args:
         vectors:   Shape (n, d), float32.
@@ -50,9 +43,6 @@ def quantize_binary(
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         safe = np.where(norms == 0, 1.0, norms)
         vectors = vectors / safe
-
-    if _mojo_bridge.is_available():
-        return _mojo_bridge.bin_encode(vectors)
 
     bits = (vectors > 0.0).astype(np.uint8)  # (n, d)
 
@@ -73,7 +63,8 @@ def dequantize_binary(
 ) -> np.ndarray:
     """Decode binary packed bytes to {-1, +1} float32 vectors.
 
-    Uses the compiled Mojo binary when available; falls back to NumPy.
+    Vectorised NumPy path — the Mojo subprocess pipe is dominated by I/O for
+    binary's trivial work (see :func:`quantize_binary`).
 
     Args:
         packed: Shape (n, ceil(d/8)), dtype uint8.
@@ -82,9 +73,6 @@ def dequantize_binary(
     Returns:
         Float32 array of shape (n, d); each element is +1.0 or -1.0.
     """
-    if _mojo_bridge.is_available():
-        return _mojo_bridge.bin_decode(packed, d)
-
     packed = np.ascontiguousarray(packed, dtype=np.uint8)
     n, bytes_per_vec = packed.shape
 
