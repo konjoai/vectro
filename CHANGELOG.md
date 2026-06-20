@@ -29,9 +29,16 @@ recall** simultaneously.
 - **Parallel HNSW build** (`HnswIndex` + `QuantHnswIndex`): parallel
   search + serial commit, shuffled order + bounded chunk. Build **6.5s → 1.82s**
   at n=20k (≈parity with hnswlib); quantized builds sub-second on GloVe-8k.
-- HNSW search: `FxHashSet` visited-set (was SipHash), slice-borrow neighbours
-  (no per-candidate clone), SIMD unit-cosine for construction. QPS **5,062 →
-  6,177** (beats hnswlib).
+- **Parallel batch search** (`search_batch_np`, rayon over queries, GIL released)
+  on all variants — ~5× throughput (Int8 up to ~45k QPS on 8-core M3).
+- **Alloc-free quantized distance**: NF4/Binary/SQ2/SQ3/Bf16 compute the
+  asymmetric cosine directly from packed codes (no per-comparison `decode()`
+  allocation) — NF4 search 2.6×, Binary 1.9×.
+- **SIMD (NEON) INT8 `dot_query`** — Int8 search 2.0× (now faster than f32).
+- **Binary encode** no longer shells out to the Mojo subprocess (pipe I/O bound):
+  2,091 → 291,978 vec/s (140×) on a 20k×768 batch.
+- HNSW search: reusable thread-local epoch-tagged visited set + heaps, slice-borrow
+  neighbours, SIMD unit-cosine for construction. Per-query QPS 5,062 → 6,177.
 - NF4 encode: branchless threshold count replaces per-element binary search.
 
 ### Changed

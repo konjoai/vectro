@@ -188,6 +188,29 @@ no branch mispredicts, portable.
 Quantized builds on real GloVe are now sub-second (Int8 0.33s @ 0.980, NF4 0.34s
 @ 0.918, Binary 0.35s @ 0.595). Full suite green: **170 Rust + 1347 Python tests.**
 
+## ⚡ ROUND 2 — throughput sweep (measurement-driven)
+
+Profiled the post-overhaul hot paths and fixed the top finds (each committed
+separately, all tests green):
+
+| Fix | Result (M3) |
+|--|--|
+| **Parallel batch search** (rayon over queries, all variants, GIL released) | f32 7.4k→34k, Int8 4.4k→24k, NF4/Binary 1.6k→8.5k QPS (~5×) |
+| **Alloc-free quantized distance** (no `decode()` per comparison) | NF4 search 2.6×, Binary 1.9×; parity-tested |
+| **SIMD (NEON) Int8 `dot_query`** | Int8 search 2.0× — now faster than f32 |
+| **Binary encode: drop Mojo subprocess** | 2,091→291,978 vec/s (140×); the encode shelled out to a subprocess pipe |
+| **Reusable thread-local search scratch** (epoch-tagged visited + heaps) | Int8 +20%; f32/NF4 +4–5% |
+| **INT8 fused encode** | investigated → *negative result* (slower), reverted + documented |
+
+**Combined batch-search throughput (8-core M3, n=50k, ef=100):** Int8 **44,958
+QPS**, NF4 19,671, f32 19,350. Recall identical throughout — the distance
+rewrites are parity-tested and batch search is the same algorithm.
+
+Known remaining (lower value / higher risk): HNSW build is superlinear at scale
+(n=100k ≈ 18.5s — the serial commit phase; parallelizing it needs per-node
+locking); binary distance is a per-bit walk (a per-byte version could add ~1.3×);
+PQ compression 32× vs FAISS 64× (OPQ — a feature, not a perf win).
+
 ## Prioritized hardening backlog
 
 | # | Severity | Item | Effort | Status |
