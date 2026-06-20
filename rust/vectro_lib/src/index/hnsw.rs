@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use simsimd::SpatialSimilarity;
 use std::collections::{BinaryHeap, HashSet};
 
-use super::shuffled_order;
+use super::{shuffled_order, NeighborGraph};
 
 /// Per-layer candidate neighbour lists for one node: `(layer, [(dist, id), …])`,
 /// the read-only output of the search phase handed to the commit phase.
@@ -90,7 +90,8 @@ pub struct HnswIndex {
     ef_construction: usize,
     ml: f64,              // level multiplier = 1 / ln(m)
     vectors: Vec<Vec<f32>>,            // unit-norm stored vectors
-    neighbors: Vec<Vec<Vec<usize>>>,   // neighbors[node][layer] = [node_id, ...]
+    /// Adjacency: flat u32 layer-0 + nested upper layers (see `NeighborGraph`).
+    graph: NeighborGraph,
     entry_point: Option<usize>,
     max_level: usize,
     /// Soft-deletion tombstones; index aligns with `vectors`.
@@ -114,7 +115,7 @@ impl HnswIndex {
             ef_construction,
             ml,
             vectors: Vec::new(),
-            neighbors: Vec::new(),
+            graph: NeighborGraph::new(2 * m),
             entry_point: None,
             max_level: 0,
             deleted: Vec::new(),
@@ -208,16 +209,12 @@ impl HnswIndex {
                     break;
                 }
 
-                // Borrow the neighbour slice instead of cloning — search never
-                // mutates the graph, so this avoids a Vec<usize> allocation per
-                // expanded candidate (hot path).
-                let nbrs: &[usize] = self
-                    .neighbors[c]
-                    .get(layer)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
+                // Contiguous u32 layer-0 slice (or nested upper layer) — no
+                // allocation, cache-dense (16 ids/line).
+                let nbrs: &[u32] = self.graph.links(c, layer);
 
-                for &nb in nbrs {
+                for &nb_u in nbrs {
+                    let nb = nb_u as usize;
                     if s.tags[nb] == epoch {
                         continue;
                     }
@@ -256,8 +253,34 @@ impl HnswIndex {
         self.search_layer_impl(query, entry_points, ef, layer, |_| true)
     }
 
-    fn select_neighbors(candidates: &[(f32, usize)], m: usize) -> Vec<usize> {
-        candidates.iter().take(m).map(|&(_, id)| id).collect()
+    fn select_neighbors(candidates: &[(f32, usize)], m: usize) -> Vec<u32> {
+        candidates.iter().take(m).map(|&(_, id)| id as u32).collect()
+    }
+
+    /// Set `node_id`'s forward links at layer `lc`, then add reverse links to
+    /// each neighbour, pruning any neighbour whose list exceeds `max_m`.
+    fn connect(&mut self, node_id: usize, lc: usize, max_m: usize, nbrs: &[u32]) {
+        self.graph.set(node_id, lc, nbrs);
+        for &nb_u in nbrs {
+            let nb_id = nb_u as usize;
+            if !self.graph.has_layer(nb_id, lc) {
+                continue;
+            }
+            self.graph.push_link(nb_id, lc, node_id as u32);
+            if self.graph.link_count(nb_id, lc) > max_m {
+                let nb_vec = self.vectors[nb_id].clone();
+                let mut scored: Vec<(f32, u32)> = self
+                    .graph
+                    .links(nb_id, lc)
+                    .iter()
+                    .map(|&n| (Self::cosine_dist(&nb_vec, &self.vectors[n as usize]), n))
+                    .collect();
+                scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                scored.truncate(max_m);
+                let pruned: Vec<u32> = scored.into_iter().map(|(_, id)| id).collect();
+                self.graph.set(nb_id, lc, &pruned);
+            }
+        }
     }
 
     // ─────────────────────────── public API ─────────────────────────────
@@ -269,7 +292,7 @@ impl HnswIndex {
         let node_level = self.random_level();
 
         self.vectors.push(norm_vec.clone());
-        self.neighbors.push(vec![vec![]; node_level + 1]);
+        self.graph.push_node(node_level);
         self.deleted.push(false);
 
         match self.entry_point {
@@ -295,29 +318,8 @@ impl HnswIndex {
                         self.search_layer(&norm_vec, &curr_ep, self.ef_construction, lc);
                     let max_m = if lc == 0 { self.m0 } else { self.m };
                     let nbrs = Self::select_neighbors(&candidates, max_m);
-
-                    self.neighbors[node_id][lc] = nbrs.clone();
                     curr_ep = candidates.into_iter().map(|(_, id)| id).collect();
-
-                    // Add reverse links and prune if over max_m.
-                    for nb_id in nbrs {
-                        if lc < self.neighbors[nb_id].len() {
-                            self.neighbors[nb_id][lc].push(node_id);
-                            if self.neighbors[nb_id][lc].len() > max_m {
-                                let nb_vec = self.vectors[nb_id].clone();
-                                let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
-                                    .iter()
-                                    .map(|&n| (Self::cosine_dist(&nb_vec, &self.vectors[n]), n))
-                                    .collect();
-                                scored.sort_by(|a, b| {
-                                    a.0.partial_cmp(&b.0)
-                                        .unwrap_or(std::cmp::Ordering::Equal)
-                                });
-                                self.neighbors[nb_id][lc] =
-                                    scored.into_iter().take(max_m).map(|(_, id)| id).collect();
-                            }
-                        }
-                    }
+                    self.connect(node_id, lc, max_m, &nbrs);
                 }
 
                 if node_level > max_l {
@@ -365,7 +367,11 @@ impl HnswIndex {
 
         self.vectors = normalized;
         self.deleted = vec![false; n];
-        self.neighbors = levels.iter().map(|&lv| vec![Vec::new(); lv + 1]).collect();
+        let mut graph = NeighborGraph::new(self.m0);
+        for &lv in &levels {
+            graph.push_node(lv);
+        }
+        self.graph = graph;
 
         // Shuffled processing order so correlated input rows don't share a chunk.
         let order = shuffled_order(n);
@@ -421,25 +427,7 @@ impl HnswIndex {
         for (lc, candidates) in per_layer {
             let max_m = if lc == 0 { self.m0 } else { self.m };
             let nbrs = Self::select_neighbors(&candidates, max_m);
-            self.neighbors[node_id][lc] = nbrs.clone();
-
-            for nb_id in nbrs {
-                if lc < self.neighbors[nb_id].len() {
-                    self.neighbors[nb_id][lc].push(node_id);
-                    if self.neighbors[nb_id][lc].len() > max_m {
-                        let nb_vec = self.vectors[nb_id].clone();
-                        let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
-                            .iter()
-                            .map(|&n| (Self::cosine_dist(&nb_vec, &self.vectors[n]), n))
-                            .collect();
-                        scored.sort_by(|a, b| {
-                            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                        self.neighbors[nb_id][lc] =
-                            scored.into_iter().take(max_m).map(|(_, id)| id).collect();
-                    }
-                }
-            }
+            self.connect(node_id, lc, max_m, &nbrs);
         }
 
         if node_level > self.max_level {

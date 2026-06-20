@@ -30,7 +30,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashSet};
 
-use super::shuffled_order;
+use super::{shuffled_order, NeighborGraph};
 
 use crate::quant::{
     Bf16Quantizer, BinaryQuantizer, Int8Quantizer, Nf4Quantizer, Quantizer, Sq2Quantizer,
@@ -138,8 +138,8 @@ pub struct QuantHnswIndex<Q: Quantizer> {
     ml: f64,
     /// Per-node quantized representations.
     encoded: Vec<Q::Encoded>,
-    /// `neighbors[node][layer] = [neighbor_id, ...]`
-    neighbors: Vec<Vec<Vec<usize>>>,
+    /// Adjacency: flat u32 layer-0 + nested upper layers (see `NeighborGraph`).
+    graph: NeighborGraph,
     entry_point: Option<usize>,
     max_level: usize,
     /// Soft-deletion tombstones; always aligned to `encoded.len()`.
@@ -182,7 +182,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             ef_construction,
             ml,
             encoded: Vec::new(),
-            neighbors: Vec::new(),
+            graph: NeighborGraph::new(2 * m),
             entry_point: None,
             max_level: 0,
             deleted: Vec::new(),
@@ -335,15 +335,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                 if d_c > worst && s.window.len() >= ef {
                     break;
                 }
-                // Borrow the neighbour slice instead of cloning — search never
-                // mutates the graph, so this avoids a Vec<usize> allocation per
-                // expanded candidate (hot path).
-                let nbrs: &[usize] = self
-                    .neighbors[c]
-                    .get(layer)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                for &nb in nbrs {
+                // Contiguous u32 layer-0 slice (or nested upper layer) — no
+                // allocation, cache-dense (16 ids/line).
+                let nbrs: &[u32] = self.graph.links(c, layer);
+                for &nb_u in nbrs {
+                    let nb = nb_u as usize;
                     if s.tags[nb] == epoch {
                         continue;
                     }
@@ -380,8 +376,41 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         self.search_layer_impl(query, entry_points, ef, layer, use_f32, |_| true)
     }
 
-    fn select_neighbors(candidates: &[(f32, usize)], m: usize) -> Vec<usize> {
-        candidates.iter().take(m).map(|&(_, id)| id).collect()
+    fn select_neighbors(candidates: &[(f32, usize)], m: usize) -> Vec<u32> {
+        candidates.iter().take(m).map(|&(_, id)| id as u32).collect()
+    }
+
+    /// Set `node_id`'s forward links at layer `lc`, then add reverse links to
+    /// each neighbour, pruning over-full lists. Pruning scores from each
+    /// neighbour's own viewpoint — its full-precision build vector when
+    /// available (`use_f32`), else its decoded code.
+    fn connect(&mut self, node_id: usize, lc: usize, max_m: usize, nbrs: &[u32], use_f32: bool) {
+        self.graph.set(node_id, lc, nbrs);
+        for &nb_u in nbrs {
+            let nb_id = nb_u as usize;
+            if !self.graph.has_layer(nb_id, lc) {
+                continue;
+            }
+            self.graph.push_link(nb_id, lc, node_id as u32);
+            if self.graph.link_count(nb_id, lc) > max_m {
+                let nb_query: Vec<f32> = self
+                    .build_vectors
+                    .get(nb_id)
+                    .filter(|v| !v.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| Q::decode(&self.encoded[nb_id], 0));
+                let mut scored: Vec<(f32, u32)> = self
+                    .graph
+                    .links(nb_id, lc)
+                    .iter()
+                    .map(|&n| (self.node_dist(n as usize, &nb_query, use_f32), n))
+                    .collect();
+                scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                scored.truncate(max_m);
+                let pruned: Vec<u32> = scored.into_iter().map(|(_, id)| id).collect();
+                self.graph.set(nb_id, lc, &pruned);
+            }
+        }
     }
 
     // ─────────────────────────── public API ─────────────────────────────────
@@ -406,7 +435,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         if building {
             self.build_vectors.push(norm_vec.clone());
         }
-        self.neighbors.push(vec![vec![]; node_level + 1]);
+        self.graph.push_node(node_level);
         self.deleted.push(false);
 
         match self.entry_point {
@@ -432,39 +461,8 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                         self.search_layer(&norm_vec, &curr_ep, self.ef_construction, lc, building);
                     let max_m = if lc == 0 { self.m0 } else { self.m };
                     let nbrs = Self::select_neighbors(&candidates, max_m);
-
-                    self.neighbors[node_id][lc] = nbrs.clone();
                     curr_ep = candidates.into_iter().map(|(_, id)| id).collect();
-
-                    // Add reverse links and prune if over max_m.
-                    for nb_id in nbrs {
-                        if lc < self.neighbors[nb_id].len() {
-                            self.neighbors[nb_id][lc].push(node_id);
-                            if self.neighbors[nb_id][lc].len() > max_m {
-                                // Score nb's neighbors from nb's own viewpoint.
-                                // Prefer nb's full-precision vector (exact pruning)
-                                // and fall back to its decoded code post-finalize.
-                                let nb_query: Vec<f32> = self
-                                    .build_vectors
-                                    .get(nb_id)
-                                    .filter(|v| !v.is_empty())
-                                    .cloned()
-                                    .unwrap_or_else(|| Q::decode(&self.encoded[nb_id], 0));
-                                let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
-                                    .iter()
-                                    .map(|&n| (self.node_dist(n, &nb_query, building), n))
-                                    .collect();
-                                scored.sort_by(|a, b| {
-                                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-                                });
-                                self.neighbors[nb_id][lc] = scored
-                                    .into_iter()
-                                    .take(max_m)
-                                    .map(|(_, id)| id)
-                                    .collect();
-                            }
-                        }
-                    }
+                    self.connect(node_id, lc, max_m, &nbrs, building);
                 }
 
                 if node_level > max_l {
@@ -544,7 +542,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         self.encoded = encoded;
         self.build_vectors = transformed;
         self.deleted = vec![false; n];
-        self.neighbors = levels.iter().map(|&lv| vec![Vec::new(); lv + 1]).collect();
+        let mut graph = NeighborGraph::new(self.m0);
+        for &lv in &levels {
+            graph.push_node(lv);
+        }
+        self.graph = graph;
 
         // Shuffled processing order: chunk-mates must not be true neighbours,
         // and adjacent input rows are often correlated, so process in a
@@ -608,30 +610,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         for (lc, candidates) in per_layer {
             let max_m = if lc == 0 { self.m0 } else { self.m };
             let nbrs = Self::select_neighbors(&candidates, max_m);
-            self.neighbors[node_id][lc] = nbrs.clone();
-
-            for nb_id in nbrs {
-                if lc < self.neighbors[nb_id].len() {
-                    self.neighbors[nb_id][lc].push(node_id);
-                    if self.neighbors[nb_id][lc].len() > max_m {
-                        let nb_query: Vec<f32> = self
-                            .build_vectors
-                            .get(nb_id)
-                            .filter(|v| !v.is_empty())
-                            .cloned()
-                            .unwrap_or_else(|| Q::decode(&self.encoded[nb_id], 0));
-                        let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
-                            .iter()
-                            .map(|&n| (self.node_dist(n, &nb_query, true), n))
-                            .collect();
-                        scored.sort_by(|a, b| {
-                            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                        self.neighbors[nb_id][lc] =
-                            scored.into_iter().take(max_m).map(|(_, id)| id).collect();
-                    }
-                }
-            }
+            self.connect(node_id, lc, max_m, &nbrs, true);
         }
 
         if node_level > self.max_level {
