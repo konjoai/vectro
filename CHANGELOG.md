@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Concurrent-build self-loop race** (`rust/vectro_lib/src/index/hnsw.rs`,
-  `quant_hnsw.rs`) — under the concurrent-insertion build a node could become
-  reachable via a concurrent inserter's reverse link before its own forward links
-  were set, so `connect_locked` occasionally wrote a **self-loop** (≈1 build in
-  8). `connect_locked` now filters `node_id` out of its neighbours in both
-  indices; the `concurrent_build_graph_is_valid*` tests build 8× to surface the
-  race. (Also in #52.)
+  `quant_hnsw.rs`) — under the concurrent-insertion build (Phases 3 & 5) a node
+  could become reachable via a concurrent inserter's reverse link *before* its
+  own forward links were set, so the beam search occasionally returned the node
+  itself and `connect_locked` wrote a **self-loop** into the graph (≈1 build in
+  8). `connect_locked` now filters `node_id` out of its selected neighbours in
+  both the f32 and quantized indices. The `concurrent_build_graph_is_valid*`
+  tests now build 8× to surface the schedule-dependent race (0 failures across
+  120+ builds post-fix). Serial `add` was never affected.
 
 ### Performance (INT8 encode)
 - **Parallelized `quantize_int8_batch`** (`rust/vectro_py/src/lib.rs`,

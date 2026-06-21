@@ -674,7 +674,9 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         candidates: &[(f32, usize)],
         graph: &[Vec<RwLock<NeighborList>>],
     ) {
-        // Exclude self (concurrent-insertion self-loop race; see #52).
+        // Exclude self — under concurrent insertion the beam search can return
+        // `node_id` itself once a concurrent inserter has reverse-linked to it,
+        // which would create a self-loop. (See the f32 `HnswIndex` twin.)
         let nbrs: Vec<usize> = self
             .select_heuristic(candidates, max_m, true)
             .into_iter()
@@ -1123,16 +1125,19 @@ mod tests {
     #[test]
     fn concurrent_build_graph_is_valid_binary() {
         // In-bounds neighbour ids, no self-loops — structural invariant the
-        // locked build must preserve for a lossy (1-bit) quantizer.
+        // locked build must preserve for a lossy (1-bit) quantizer. The self-loop
+        // race is schedule-dependent, so build several times to surface it.
         let n = 800;
         let vecs = make_vecs(n, 32);
-        let mut idx = BinaryHnswIndex::new(8, 64);
-        idx.add_batch(&vecs);
-        for (node, layers) in idx.neighbors.iter().enumerate() {
-            for layer in layers {
-                for &nb in layer {
-                    assert!((nb as usize) < n, "neighbour {nb} out of bounds");
-                    assert_ne!(nb as usize, node, "self-loop at {node}");
+        for attempt in 0..8 {
+            let mut idx = BinaryHnswIndex::new(8, 64);
+            idx.add_batch(&vecs);
+            for (node, layers) in idx.neighbors.iter().enumerate() {
+                for layer in layers {
+                    for &nb in layer {
+                        assert!((nb as usize) < n, "neighbour {nb} out of bounds");
+                        assert_ne!(nb as usize, node, "self-loop at {node} (attempt {attempt})");
+                    }
                 }
             }
         }
