@@ -563,7 +563,16 @@ impl HnswIndex {
         candidates: &[(f32, usize)],
         graph: &[Vec<RwLock<NeighborList>>],
     ) {
-        let nbrs = self.select_heuristic(candidates, max_m);
+        // Exclude self. Under concurrent insertion a node can become reachable
+        // (via a reverse link from a concurrent inserter) before its own forward
+        // links are set, so the beam search can return `node_id` itself — which
+        // must never be a neighbour (a self-loop wastes a slot and corrupts the
+        // graph). The serial `add` path can't hit this; the locked path can.
+        let nbrs: Vec<usize> = self
+            .select_heuristic(candidates, max_m)
+            .into_iter()
+            .filter(|&id| id != node_id)
+            .collect();
         {
             let mut fwd = graph[node_id][lc]
                 .write()
@@ -875,17 +884,21 @@ mod tests {
     #[test]
     fn concurrent_build_graph_is_valid() {
         // Every node's adjacency must reference in-bounds ids and contain no
-        // self-loops — a basic structural invariant the locked build must keep.
+        // self-loops — a structural invariant the locked build must keep. The
+        // self-loop race surfaces only on some thread schedules, so build several
+        // times to make a regression reliably visible.
         let n = 800;
         let vecs = make_vecs(n, 16);
-        let mut idx = HnswIndex::new(8, 64);
-        idx.add_batch(&vecs);
-        for (node, layers) in idx.neighbors.iter().enumerate() {
-            for layer in layers {
-                for &nb in layer {
-                    let nb = nb as usize;
-                    assert!(nb < n, "neighbour id {nb} out of bounds (n={n})");
-                    assert_ne!(nb, node, "self-loop at node {node}");
+        for attempt in 0..8 {
+            let mut idx = HnswIndex::new(8, 64);
+            idx.add_batch(&vecs);
+            for (node, layers) in idx.neighbors.iter().enumerate() {
+                for layer in layers {
+                    for &nb in layer {
+                        let nb = nb as usize;
+                        assert!(nb < n, "neighbour id {nb} out of bounds (n={n})");
+                        assert_ne!(nb, node, "self-loop at node {node} (attempt {attempt})");
+                    }
                 }
             }
         }
