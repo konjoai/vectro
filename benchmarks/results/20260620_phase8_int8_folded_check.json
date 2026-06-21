@@ -1,0 +1,31 @@
+{
+  "timestamp_utc": "2026-06-20",
+  "hardware": {
+    "cpu": "Apple M3",
+    "cores": 8
+  },
+  "kernel": "quantize_int8_batch (abs-max) \u2014 finite-check folded into encode pass",
+  "results": {
+    "64": {
+      "vectro_M_per_s": 191.1,
+      "faiss_M_per_s": 76.6,
+      "speedup": 2.5
+    },
+    "100": {
+      "vectro_M_per_s": 125.1,
+      "faiss_M_per_s": 51.4,
+      "speedup": 2.4
+    },
+    "256": {
+      "vectro_M_per_s": 45.9,
+      "faiss_M_per_s": 18.4,
+      "speedup": 2.5
+    },
+    "768": {
+      "vectro_M_per_s": 13.2,
+      "faiss_M_per_s": 6.2,
+      "speedup": 2.1
+    }
+  },
+  "note": "Phase 8: folded NaN/Inf check into the encode (was a separate streaming scan, the dominant cost). d=100 ~40 -> ~120 M vec/s (3x)."
+}

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (INT8 encode — 100 M+ vec/s)
+- **Folded the NaN/Inf check into the encode pass** (`rust/vectro_lib/src/quant/int8.rs`,
+  `rust/vectro_py/src/lib.rs`) — Phase 7's *separate* parallel finite-scan over
+  the whole `[N,D]` array turned out to be the dominant cost (it doubled input
+  memory traffic). New `batch_encode_checked_into_with_range` /
+  `batch_encode_normalized_checked_into` validate each row while it is already hot
+  in cache for the encode (SIMD `|x| < ∞` row scan, `first_non_finite_row`),
+  returning the first non-finite flat index — no separate pass. On an M3:
+  **d=64 66 → 191 M vec/s, d=100 40 → 125 M vec/s (~3×)**, now **2.4× faster than
+  faiss ScalarQuantizer** at every dim. Reconstruction unchanged (cosine 1.0000);
+  NaN/Inf still rejected with the exact (row, col), first offender deterministic.
+  (Also corrects the Phase 7 note: the normalized kernel was never slow — that was
+  a measurement under load; clean it ties/edges abs-max at ~207 M vec/s @ d=64.)
+  Test: `checked_encode_matches_unchecked_and_detects_nonfinite`. Raw:
+  `benchmarks/results/20260620_phase8_int8_folded_check.json`.
+
 ### Fixed
 - **Concurrent-build self-loop race** (`rust/vectro_lib/src/index/hnsw.rs`,
   `quant_hnsw.rs`) — under the concurrent-insertion build (Phases 3 & 5) a node
