@@ -66,9 +66,22 @@ pub fn train_pq_codebook(
     }
 
     let sub_dim = d / n_subspaces;
-    let _n = training_data.len();
     let total = n_subspaces * n_centroids * sub_dim;
     let mut centroids_flat = vec![0.0f32; total];
+
+    // Training-set subsampling (FAISS strategy): k-means doesn't need every point
+    // to place K centroids — a bounded sample of ~`TRAIN_POINTS_PER_CENTROID` per
+    // centroid is statistically sufficient, and the assignment cost (the hot
+    // loop) scales with the point count. A deterministic strided sample keeps the
+    // build reproducible. For n ≤ cap this is a no-op (trains on everything).
+    const TRAIN_POINTS_PER_CENTROID: usize = 64;
+    let cap = n_centroids.saturating_mul(TRAIN_POINTS_PER_CENTROID);
+    let sample: Vec<&Vec<f32>> = if training_data.len() > cap {
+        let stride = training_data.len() / cap;
+        training_data.iter().step_by(stride.max(1)).take(cap).collect()
+    } else {
+        training_data.iter().collect()
+    };
 
     // Train each sub-space independently; parallelize across subspaces.
     let stride = n_centroids * sub_dim;
@@ -76,7 +89,7 @@ pub fn train_pq_codebook(
         .into_par_iter()
         .map(|m| {
             let col_start = m * sub_dim;
-            let sub_vecs: Vec<&[f32]> = training_data
+            let sub_vecs: Vec<&[f32]> = sample
                 .iter()
                 .map(|v| &v[col_start..col_start + sub_dim])
                 .collect();
@@ -474,6 +487,24 @@ mod tests {
         let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
         if na == 0.0 || nb == 0.0 { return -1.0; }
         dot / (na * nb)
+    }
+
+    #[test]
+    fn train_subsamples_above_cap_and_stays_deterministic() {
+        // With K=8 the training cap is 64*8 = 512, so n=2000 triggers the strided
+        // subsample. Training must (a) still produce a usable codebook and (b) be
+        // deterministic for a fixed seed despite subsampling.
+        let (d, m, k) = (16usize, 4usize, 8usize);
+        let vecs = make_vecs(2000, d);
+        let cb1 = train_pq_codebook(&vecs, m, k, 15, 7).unwrap();
+        let cb2 = train_pq_codebook(&vecs, m, k, 15, 7).unwrap();
+        assert_eq!(cb1.centroids, cb2.centroids, "subsampled training not deterministic");
+
+        // Codebook still reconstructs reasonably (encode→decode cosine).
+        let codes = pq_encode(&vecs[..100], &cb1);
+        let decoded = pq_decode(&codes, &cb1);
+        let avg: f32 = vecs[..100].iter().zip(&decoded).map(|(v, r)| cosine(v, r)).sum::<f32>() / 100.0;
+        assert!(avg >= 0.80, "subsampled-train reconstruction cosine {avg} < 0.80");
     }
 
     #[test]

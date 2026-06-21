@@ -674,7 +674,12 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         candidates: &[(f32, usize)],
         graph: &[Vec<RwLock<NeighborList>>],
     ) {
-        let nbrs = self.select_heuristic(candidates, max_m, true);
+        // Exclude self (concurrent-insertion self-loop race; see #52).
+        let nbrs: Vec<usize> = self
+            .select_heuristic(candidates, max_m, true)
+            .into_iter()
+            .filter(|&id| id != node_id)
+            .collect();
         {
             let mut fwd = graph[node_id][lc]
                 .write()

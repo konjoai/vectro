@@ -1,0 +1,18 @@
+{
+  "timestamp_utc": "2026-06-20",
+  "dataset": "glove-100-angular",
+  "n": 50000,
+  "M": 25,
+  "K": 256,
+  "train_points_per_centroid": 64,
+  "hardware": {
+    "cpu": "Apple M3",
+    "cores": 8
+  },
+  "vectro_train_s": 0.658,
+  "faiss_train_s": 0.605,
+  "ratio": 1.09,
+  "vectro_recon_cosine": 0.9525,
+  "deterministic": true,
+  "note": "subsampled k-means (64 pts/centroid). Pre-Phase-6 vectro train was ~2.0s (3.8x slower); now ~parity."
+}

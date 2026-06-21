@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Concurrent-build self-loop race** (`rust/vectro_lib/src/index/hnsw.rs`,
+  `quant_hnsw.rs`) — under the concurrent-insertion build a node could become
+  reachable via a concurrent inserter's reverse link before its own forward links
+  were set, so `connect_locked` occasionally wrote a **self-loop** (≈1 build in
+  8). `connect_locked` now filters `node_id` out of its neighbours in both
+  indices; the `concurrent_build_graph_is_valid*` tests build 8× to surface the
+  race. (Also in #52.)
+
 ### Performance (INT8 encode)
 - **Parallelized `quantize_int8_batch`** (`rust/vectro_py/src/lib.rs`,
   `rust/vectro_lib/src/quant/int8.rs`) — the batch INT8 encoder barely scaled
@@ -20,6 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Same fix applied to `quantize_int8_batch_normalized`. Reconstruction unchanged
   (cosine 0.99998); NaN/Inf still rejected with exact (row, col). Raw:
   `benchmarks/results/20260620_phase7_int8_encode_parallel.json`.
+
+### Performance (PQ training)
+- **PQ k-means training-set subsampling** (`rust/vectro_lib/src/quant/pq.rs`) —
+  k-means doesn't need every point to place K centroids, so training now fits on
+  a deterministic strided sample of ~64 points/centroid (the FAISS strategy). On
+  glove-100 (n=50k, M=25, K=256) this cuts PQ train **2.0 s → 0.66 s — parity
+  with faiss (0.60 s)** at equal reconstruction quality (cosine 0.9525 vs faiss
+  0.951), still fully deterministic. For n ≤ cap it's a no-op (trains on
+  everything). Measured negative results first and rejected them: a portable
+  `matrixmultiply` GEMM (3.5 s) and an Accelerate `sgemm` assignment (7–12 s,
+  nested-parallelism) were both *slower* — a generic/BLAS matmul is the wrong
+  tool for PQ's thin `sub_dim`. Test:
+  `train_subsamples_above_cap_and_stays_deterministic`. Raw:
+  `benchmarks/results/20260620_phase6_pq_train_subsample.json`.
 
 ### Performance (quantized HNSW)
 - **Concurrent-insertion build for `QuantHnswIndex`** (`rust/vectro_lib/src/index/quant_hnsw.rs`)
