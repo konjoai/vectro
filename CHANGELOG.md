@@ -21,6 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `train_subsamples_above_cap_and_stays_deterministic`. Raw:
   `benchmarks/results/20260620_phase6_pq_train_subsample.json`.
 
+### Performance (quantized HNSW)
+- **Concurrent-insertion build for `QuantHnswIndex`** (`rust/vectro_lib/src/index/quant_hnsw.rs`)
+  — ported Phase 3's live-graph + per-node-`RwLock` build (with serial seed) to
+  the quantized index, replacing the chunked frozen-snapshot build. Build
+  distances route through the exact f32 `build_vectors`, so even a 1-bit graph is
+  built from full-precision geometry. On glove-100 (n=50k) **quant-HNSW build
+  drops ~11 s → ~3.5 s (≈3× faster)** with recall held (binary+re-rank 0.949,
+  int8 0.978). Deadlock-free, poison-tolerant; concurrent matches serial graph
+  quality. Removed the now-dead chunk helpers (`build_parallel`,
+  `find_candidates`, `commit_node`, `parallel_build_chunk`, `LayerCandidates`)
+  and the unused `index::shuffled_order`. Tests:
+  `concurrent_build_matches_serial_int8`, `concurrent_build_graph_is_valid_binary`.
+  Raw: `benchmarks/results/20260620_phase5_quant_concurrent_build.json`.
+
 ### Added
 - **Binary + INT8 re-rank pipeline** (`rust/vectro_lib/src/index/quant_hnsw.rs`) —
   `QuantHnswIndex::enable_rerank()` retains a near-lossless INT8 copy of every
