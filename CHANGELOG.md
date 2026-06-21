@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Concurrent-build self-loop race** (`rust/vectro_lib/src/index/hnsw.rs`,
+  `quant_hnsw.rs`) — under the concurrent-insertion build a node could become
+  reachable via a concurrent inserter's reverse link before its own forward links
+  were set, so `connect_locked` occasionally wrote a **self-loop** (≈1 build in
+  8). `connect_locked` now filters `node_id` out of its neighbours in both
+  indices; the `concurrent_build_graph_is_valid*` tests build 8× to surface the
+  race. (Also in #52.)
+
+### Performance (INT8 encode)
+- **Parallelized `quantize_int8_batch`** (`rust/vectro_py/src/lib.rs`,
+  `rust/vectro_lib/src/quant/int8.rs`) — the batch INT8 encoder barely scaled
+  past one core (1.3× on 8 threads) because of two serial Amdahl bottlenecks: a
+  serial NaN/Inf scan over the entire `[N,D]` input and the serial zero-init of
+  the output buffer. Now the finite-check runs in parallel (new
+  `int8::first_non_finite`, rayon), the kernel writes directly into an
+  **uninitialised** numpy output (no intermediate `Vec`, no 0-init), and the GIL
+  is released during compute. **d=64 44→66 M vec/s, d=100 26→40 M vec/s (~1.5×);
+  multi-core scaling 1.3× → 4.6×.** Memory-bandwidth bound (~16 GB/s) thereafter.
+  Same fix applied to `quantize_int8_batch_normalized`. Reconstruction unchanged
+  (cosine 0.99998); NaN/Inf still rejected with exact (row, col). Raw:
+  `benchmarks/results/20260620_phase7_int8_encode_parallel.json`.
+
 ### Performance (PQ training)
 - **PQ k-means training-set subsampling** (`rust/vectro_lib/src/quant/pq.rs`) —
   k-means doesn't need every point to place K centroids, so training now fits on

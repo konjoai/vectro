@@ -1347,26 +1347,43 @@ fn quantize_int8_batch<'py>(
     }
     let arr = vectors.as_array();
     let (n, d) = (arr.nrows(), arr.ncols());
-    let mut codes_flat = vec![0i8; n * d];
-    let mut scales = vec![0.0f32; n];
-    match arr.as_slice() {
-        Some(flat) => {
-            ensure_finite(flat, d)?;
-            vectro_lib::quant::int8::batch_encode_into_with_range(
-                flat, n, d, &mut codes_flat, &mut scales, range_factor,
-            );
-        }
-        None => {
-            let flat: Vec<f32> = arr.iter().copied().collect();
-            ensure_finite(&flat, d)?;
-            vectro_lib::quant::int8::batch_encode_into_with_range(
-                &flat, n, d, &mut codes_flat, &mut scales, range_factor,
-            );
-        }
+
+    // Own a contiguous copy only when the input isn't already row-major.
+    let owned: Option<Vec<f32>> = match arr.as_slice() {
+        Some(_) => None,
+        None => Some(arr.iter().copied().collect()),
+    };
+    let flat: &[f32] = match (&owned, arr.as_slice()) {
+        (Some(v), _) => v,
+        (None, Some(s)) => s,
+        (None, None) => unreachable!("non-contiguous arrays were copied above"),
+    };
+
+    // Parallel finite-check (the old serial scan was the Amdahl bottleneck).
+    if let Some(pos) = vectro_lib::quant::int8::first_non_finite(flat) {
+        let (row, col) = if d > 0 { (pos / d, pos % d) } else { (0, pos) };
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "input contains a non-finite value (NaN or Inf) at row {row}, col {col}; \
+             quantization requires finite float32 input"
+        )));
     }
-    let codes_arr = Array2::from_shape_vec((n, d), codes_flat)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok((codes_arr.into_pyarray(py), Array1::from(scales).into_pyarray(py)))
+
+    // Allocate the outputs **uninitialised** and let the rayon kernel fill every
+    // element — skipping the serial 0-init of an intermediate `Vec` (the other
+    // half of the bottleneck). SAFETY: `batch_encode_into_with_range` writes all
+    // `n*d` codes and all `n` scales before we read them back.
+    let codes_arr = unsafe { PyArray2::<i8>::new(py, [n, d], false) };
+    let scales_arr = unsafe { PyArray1::<f32>::new(py, [n], false) };
+    {
+        let codes_slice = unsafe { codes_arr.as_slice_mut()? };
+        let scales_slice = unsafe { scales_arr.as_slice_mut()? };
+        py.allow_threads(|| {
+            vectro_lib::quant::int8::batch_encode_into_with_range(
+                flat, n, d, codes_slice, scales_slice, range_factor,
+            );
+        });
+    }
+    Ok((codes_arr, scales_arr))
 }
 
 /// Wave 1.3 — Batch encode an L2-normalised f32 numpy array [N, D] to INT8
@@ -1386,27 +1403,39 @@ fn quantize_int8_batch_normalized<'py>(
 ) -> PyResult<(&'py PyArray2<i8>, &'py PyArray1<f32>)> {
     let arr = vectors.as_array();
     let (n, d) = (arr.nrows(), arr.ncols());
-    let mut codes_flat = vec![0i8; n * d];
-    let mut scales = vec![0.0f32; n];
-    match arr.as_slice() {
-        Some(flat) => {
-            ensure_finite(flat, d)?;
-            vectro_lib::quant::int8::batch_encode_normalized_into(
-                flat, n, d, &mut codes_flat, &mut scales,
-            );
-        }
-        None => {
-            // Non-contiguous — collapse to a contiguous copy first.
-            let flat: Vec<f32> = arr.iter().copied().collect();
-            ensure_finite(&flat, d)?;
-            vectro_lib::quant::int8::batch_encode_normalized_into(
-                &flat, n, d, &mut codes_flat, &mut scales,
-            );
-        }
+
+    let owned: Option<Vec<f32>> = match arr.as_slice() {
+        Some(_) => None,
+        None => Some(arr.iter().copied().collect()),
+    };
+    let flat: &[f32] = match (&owned, arr.as_slice()) {
+        (Some(v), _) => v,
+        (None, Some(s)) => s,
+        (None, None) => unreachable!("non-contiguous arrays were copied above"),
+    };
+
+    if let Some(pos) = vectro_lib::quant::int8::first_non_finite(flat) {
+        let (row, col) = if d > 0 { (pos / d, pos % d) } else { (0, pos) };
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "input contains a non-finite value (NaN or Inf) at row {row}, col {col}; \
+             quantization requires finite float32 input"
+        )));
     }
-    let codes_arr = Array2::from_shape_vec((n, d), codes_flat)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok((codes_arr.into_pyarray(py), Array1::from(scales).into_pyarray(py)))
+
+    // Uninitialised outputs filled by the rayon kernel (see `quantize_int8_batch`).
+    // SAFETY: `batch_encode_normalized_into` writes all `n*d` codes and `n` scales.
+    let codes_arr = unsafe { PyArray2::<i8>::new(py, [n, d], false) };
+    let scales_arr = unsafe { PyArray1::<f32>::new(py, [n], false) };
+    {
+        let codes_slice = unsafe { codes_arr.as_slice_mut()? };
+        let scales_slice = unsafe { scales_arr.as_slice_mut()? };
+        py.allow_threads(|| {
+            vectro_lib::quant::int8::batch_encode_normalized_into(
+                flat, n, d, codes_slice, scales_slice,
+            );
+        });
+    }
+    Ok((codes_arr, scales_arr))
 }
 
 /// Wave 4 — Batch encode a float16 numpy array [N, D] directly to INT8 via
