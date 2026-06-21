@@ -198,9 +198,20 @@ fn kmeans_lloyd(
             .map(|v| assign_nearest(v, &lut, k, sub_dim) as usize)
             .collect();
 
-        let changed = new_assignments.iter().zip(assignments.iter()).any(|(a, b)| a != b);
+        let changed = new_assignments
+            .iter()
+            .zip(assignments.iter())
+            .filter(|(a, b)| a != b)
+            .count();
         assignments = new_assignments;
-        if !changed { break; }
+        // Early stop on a tolerance: once < 1% of points move between iterations
+        // the centroids have effectively converged (their motion is sub-quantum
+        // for INT8/PQ reconstruction). The old exact-zero check almost never
+        // tripped — a fraction of a percent of boundary points always flip — so
+        // k-means ran all `max_iter` rounds every time, which is wasted work.
+        if changed * 100 <= n {
+            break;
+        }
 
         // Update step
         let mut sums = vec![0.0f32; k * sub_dim];
@@ -274,15 +285,15 @@ fn build_subspace_lut(table: &[f32], k: usize, sub_dim: usize) -> SubspaceLut {
 #[inline]
 fn assign_nearest(v: &[f32], lut: &SubspaceLut, k: usize, sub_dim: usize) -> u8 {
     debug_assert!(k <= MAX_K);
-    let mut dist = [0.0f32; MAX_K];
     #[cfg(target_arch = "aarch64")]
     // SAFETY: NEON is mandated on AArch64-v8; all indices below stay < k ≤ MAX_K.
     unsafe {
-        assign_dist_neon(v, &lut.ct, &lut.norms, &mut dist, k, sub_dim);
+        assign_argmin_neon(v, &lut.ct, &lut.norms, k, sub_dim)
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
         // Portable reformulation: dist[ki] = ‖c_ki‖² − 2·(v·c_ki).
+        let mut dist = [0.0f32; MAX_K];
         dist[..k].copy_from_slice(&lut.norms[..k]);
         for j in 0..sub_dim {
             let vj = v[j];
@@ -291,37 +302,39 @@ fn assign_nearest(v: &[f32], lut: &SubspaceLut, k: usize, sub_dim: usize) -> u8 
                 dist[ki] -= 2.0 * vj * cjk;
             }
         }
-    }
-    let mut best = 0usize;
-    let mut best_d = dist[0];
-    for (ki, &d) in dist[1..k].iter().enumerate() {
-        if d < best_d {
-            best_d = d;
-            best = ki + 1;
+        let mut best = 0usize;
+        let mut best_d = dist[0];
+        for (ki, &d) in dist[1..k].iter().enumerate() {
+            if d < best_d {
+                best_d = d;
+                best = ki + 1;
+            }
         }
+        best as u8
     }
-    best as u8
 }
 
-/// NEON inner kernel: fill `dist[ki] = norms[ki] − 2·Σ_j v[j]·ct[j*k+ki]`,
-/// vectorizing the FMA accumulation across 4 centroids at a time.
+/// Fused NEON nearest-centroid: computes `dist = norms − 2·v·cᵀ` and tracks the
+/// running minimum **in registers**, 4 centroids at a time — no per-point `dist`
+/// buffer (the old kernel wrote 256 floats to the stack then re-read them to
+/// argmin). Lane 0 holds centroids 0,4,8…, lane 1 holds 1,5,9…, etc.; ties pick
+/// the lower index (the scalar argmin's behaviour, modulo lane order — which only
+/// matters for exactly-equidistant centroids, i.e. effectively never on f32).
 ///
 /// # Safety
-/// Requires NEON. `ct.len() >= sub_dim*k`, `norms.len() >= k`, `dist.len() >= k`,
-/// `v.len() >= sub_dim`. Reads/writes stay within `k` centroids.
+/// Requires NEON. `ct.len() >= sub_dim*k`, `norms.len() >= k`, `v.len() >= sub_dim`.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-unsafe fn assign_dist_neon(
-    v: &[f32],
-    ct: &[f32],
-    norms: &[f32],
-    dist: &mut [f32],
-    k: usize,
-    sub_dim: usize,
-) {
+unsafe fn assign_argmin_neon(v: &[f32], ct: &[f32], norms: &[f32], k: usize, sub_dim: usize) -> u8 {
     use std::arch::aarch64::*;
     let two = vdupq_n_f32(2.0);
-    let kc = k & !3; // largest multiple of 4 ≤ k
+    let four = vdupq_n_u32(4);
+    let mut min_vals = vdupq_n_f32(f32::INFINITY);
+    let mut min_idx = vdupq_n_u32(0);
+    let lane0: [u32; 4] = [0, 1, 2, 3];
+    let mut cur_idx = vld1q_u32(lane0.as_ptr());
+
+    let kc = k & !3;
     let mut ki = 0;
     while ki < kc {
         let mut acc = vdupq_n_f32(0.0);
@@ -331,21 +344,44 @@ unsafe fn assign_dist_neon(
             acc = vfmaq_f32(acc, vj, cj);
         }
         let nrm = vld1q_f32(norms.as_ptr().add(ki));
-        // dist = norms − 2·acc
-        let d = vfmsq_f32(nrm, two, acc);
-        vst1q_f32(dist.as_mut_ptr().add(ki), d);
+        let d = vfmsq_f32(nrm, two, acc); // norms − 2·acc
+        let mask = vcltq_f32(d, min_vals); // d < running min ?
+        min_vals = vbslq_f32(mask, d, min_vals);
+        min_idx = vbslq_u32(mask, cur_idx, min_idx);
+        cur_idx = vaddq_u32(cur_idx, four);
         ki += 4;
     }
-    // scalar tail (< 4 centroids)
+
+    // Reduce the 4 SIMD lanes to a scalar (value, index).
+    let mut vals = [0.0f32; 4];
+    let mut idxs = [0u32; 4];
+    vst1q_f32(vals.as_mut_ptr(), min_vals);
+    vst1q_u32(idxs.as_mut_ptr(), min_idx);
+    let mut best = idxs[0];
+    let mut best_d = vals[0];
+    for l in 1..4 {
+        if vals[l] < best_d {
+            best_d = vals[l];
+            best = idxs[l];
+        }
+    }
+
+    // Scalar tail (< 4 centroids).
     while ki < k {
         let mut dot = 0.0f32;
         for j in 0..sub_dim {
             dot += *v.get_unchecked(j) * *ct.get_unchecked(j * k + ki);
         }
-        *dist.get_unchecked_mut(ki) = *norms.get_unchecked(ki) - 2.0 * dot;
+        let d = *norms.get_unchecked(ki) - 2.0 * dot;
+        if d < best_d {
+            best_d = d;
+            best = ki as u32;
+        }
         ki += 1;
     }
+    best as u8
 }
+
 
 /// Encode a batch of f32 vectors to PQ codes (u8 per sub-space).
 ///

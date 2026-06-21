@@ -33,12 +33,12 @@ Raw sweep: `benchmarks/results/20260620_phase3_concurrent_build_sweep.json`.
 |--------|-----------:|------------:|--------------:|---------:|
 | vectro INT8 (Rust SIMD, folded check) | **125 M vec/s** (d=100, 8-core) | 3.9× | 1.0000 | **2.4× faster** |
 | faiss ScalarQuantizer INT8 | 51 M vec/s (d=100) | 4.0× | 0.9999 | — |
-| vectro PQ encode (M=25, Rust) | **819 K vec/s** | 16× | 0.9544 | **2.6× faster** ✓ |
+| vectro PQ encode (M=25, fused argmin) | **1.54 M vec/s** | 16× | 0.9544 | **4.9× faster** ✓ |
 | faiss IndexPQ encode (M=25) | 315 K vec/s | 16× | 0.951 | — |
-| vectro PQ train (M=25, subsampled k-means) | **0.66 s** | — | 0.9525 | **~parity (1.09×)** |
-| faiss IndexPQ train (BLAS k-means) | 0.60 s | — | 0.951 | — |
+| vectro PQ train (M=25, early-stop + fused argmin) | **0.27 s** | — | 0.9524 | **2.2× faster** ✓ |
+| faiss IndexPQ train (k-means) | 0.59 s | — | 0.951 | — |
 
-**Standing (corrected, Phase 2):** PQ **encode** is *not* a weakness — vectro is **2.6× faster** than faiss. The roadmap's earlier "47 K vec/s, 18× slower" was the pure-**NumPy** fallback, not the Rust `pq_encode_into` path. Phase 2 added a SIMD-across-K nearest-centroid kernel and moved Python PQ **training** onto the native (sklearn-free, deterministic) Rust k-means — reconstruction cosine 0.954 (parity with faiss). **Phase 6 closed the train-time gap**: training-set subsampling (64 pts/centroid, FAISS strategy) cut train 2.0 s → **0.66 s — parity with faiss (0.60 s)** at equal quality (0.9525 vs 0.951), still deterministic. (Measured negative results first: a portable `matrixmultiply` GEMM and an Accelerate `sgemm` assignment were both *slower* for PQ's thin sub_dim=4 — generic/BLAS matmul is the wrong tool there.)
+**Standing (corrected, Phase 2):** PQ **encode** is *not* a weakness — vectro is **2.6× faster** than faiss. The roadmap's earlier "47 K vec/s, 18× slower" was the pure-**NumPy** fallback, not the Rust `pq_encode_into` path. Phase 2 added a SIMD-across-K nearest-centroid kernel and moved Python PQ **training** onto the native (sklearn-free, deterministic) Rust k-means — reconstruction cosine 0.954 (parity with faiss). **Phase 6 → Phase 9 smashed the train-time gap**: subsampling (64 pts/centroid) got it to parity (0.66 s), then Phase 9 added (a) a **tolerance early-stop** — k-means was running all 25 iterations because the exact-zero convergence check never tripped; stopping at <1% reassignment cuts it to ~13 iterations — and (b) a **fused SIMD argmin** that tracks the running minimum in NEON registers instead of writing a 256-float distance buffer per point. Net: **train 2.0 s → 0.27 s, now 2.2× faster than faiss** at equal quality (0.9524), still deterministic; and the shared kernel made PQ **encode** 1.9× faster too (→ 1.54 M vec/s, 4.9× faster than faiss). (Measured negative results first: portable `matrixmultiply` GEMM and Accelerate `sgemm` were both *slower* for PQ's thin sub_dim=4 — the win was algorithmic, not BLAS.)
 
 ## 3. Quantized HNSW — recall @ memory (unique to vectro; no competitor ships this)
 

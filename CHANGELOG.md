@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (PQ training + encode — now 2.2× faster than faiss)
+- **Tolerance early-stop + fused SIMD argmin** (`rust/vectro_lib/src/quant/pq.rs`)
+  — two algorithmic wins that take PQ k-means training from parity to a decisive
+  lead. (1) The convergence check required *zero* reassignments, which never
+  happened (a fraction of a percent of boundary points always flip), so k-means
+  ran all `max_iter` rounds; now it stops once <1% of points move (~25 → ~13
+  iterations). (2) `assign_argmin_neon` fuses the nearest-centroid argmin into
+  the distance loop, tracking the running minimum in NEON registers instead of
+  writing a 256-float distance buffer per point. On glove-100 (n=50k, M=25,
+  K=256, M3): **PQ train 0.66 → 0.27 s — 2.2× faster than faiss** at equal quality
+  (cosine 0.9524), still deterministic. The shared kernel also makes PQ **encode**
+  ~1.9× faster (819 K → 1.54 M vec/s, 4.9× faster than faiss). Removed the now-dead
+  `assign_dist_neon`. Raw: `benchmarks/results/20260620_phase9_pq_train_smash.json`.
+
+
 ### Performance (INT8 encode — 100 M+ vec/s)
 - **Folded the NaN/Inf check into the encode pass** (`rust/vectro_lib/src/quant/int8.rs`,
   `rust/vectro_py/src/lib.rs`) — Phase 7's *separate* parallel finite-scan over
