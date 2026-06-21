@@ -615,9 +615,21 @@ struct PyHnswIndex {
 
 #[pymethods]
 impl PyHnswIndex {
+    /// `metric`: `"cosine"` (default), `"l2"`/`"euclidean"`, or `"ip"`/`"inner_product"`.
     #[new]
-    fn new(m: usize, ef_construction: usize) -> Self {
-        Self { inner: HnswIndex::new(m, ef_construction) }
+    #[pyo3(signature = (m, ef_construction, metric = "cosine"))]
+    fn new(m: usize, ef_construction: usize, metric: &str) -> PyResult<Self> {
+        let metric = match metric.to_ascii_lowercase().as_str() {
+            "cosine" | "angular" => vectro_lib::index::hnsw::Metric::Cosine,
+            "l2" | "euclidean" => vectro_lib::index::hnsw::Metric::L2,
+            "ip" | "inner_product" | "dot" => vectro_lib::index::hnsw::Metric::InnerProduct,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown metric '{other}' (expected cosine, l2/euclidean, or ip)"
+                )))
+            }
+        };
+        Ok(Self { inner: HnswIndex::with_metric(m, ef_construction, metric) })
     }
 
     fn add(&mut self, vector: Vec<f32>) {
@@ -694,7 +706,7 @@ impl PyHnswIndex {
         ef: usize,
     ) -> Vec<Vec<(usize, f32)>> {
         let arr = queries.as_array();
-        let (q, d) = (arr.nrows(), arr.ncols());
+        let d = arr.ncols();
         if let Some(flat) = arr.as_slice() {
             py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, ef))
         } else {
@@ -1688,6 +1700,20 @@ fn hybrid_search_py(
 }
 
 /// Main Python module
+/// Diagnostic: reset the global distance-eval counter (feature `distcount`).
+#[cfg(feature = "distcount")]
+#[pyfunction]
+fn dist_evals_reset() {
+    vectro_lib::index::hnsw::dist_evals_reset();
+}
+
+/// Diagnostic: read the global distance-eval counter (feature `distcount`).
+#[cfg(feature = "distcount")]
+#[pyfunction]
+fn dist_evals_get() -> u64 {
+    vectro_lib::index::hnsw::dist_evals_get()
+}
+
 #[pymodule]
 fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyEmbedding>()?;
@@ -1722,6 +1748,11 @@ fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // BM25 + hybrid search (v6.0.0)
     m.add_class::<PyBM25Index>()?;
     m.add_function(wrap_pyfunction!(hybrid_search_py, m)?)?;
+    #[cfg(feature = "distcount")]
+    {
+        m.add_function(wrap_pyfunction!(dist_evals_reset, m)?)?;
+        m.add_function(wrap_pyfunction!(dist_evals_get, m)?)?;
+    }
 
     // Add version info
     m.add("__version__", "4.10.0")?;

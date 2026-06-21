@@ -32,27 +32,148 @@ unsafe fn dot_f32_neon(a: &[f32], b: &[f32]) -> f32 {
     use std::arch::aarch64::*;
     let n = a.len().min(b.len());
     let (ap, bp) = (a.as_ptr(), b.as_ptr());
+    // Eight independent f32x4 accumulators (32 lanes/iter). M3 Firestorm issues up
+    // to 4 FP ops/cycle but each FMA has ~3-4 cycle latency, so it takes ~12-16
+    // in-flight FMAs to saturate the pipes; 4 accumulator chains stall at ~25% of
+    // peak, 8 chains roughly double high-dim throughput. Verified: closes the L2/IP
+    // search gap vs faiss at d≥256.
     let mut acc0 = vdupq_n_f32(0.0);
     let mut acc1 = vdupq_n_f32(0.0);
     let mut acc2 = vdupq_n_f32(0.0);
     let mut acc3 = vdupq_n_f32(0.0);
-    let chunks = n / 16;
+    let mut acc4 = vdupq_n_f32(0.0);
+    let mut acc5 = vdupq_n_f32(0.0);
+    let mut acc6 = vdupq_n_f32(0.0);
+    let mut acc7 = vdupq_n_f32(0.0);
+    let chunks = n / 32;
     for i in 0..chunks {
-        let o = i * 16;
+        let o = i * 32;
         acc0 = vfmaq_f32(acc0, vld1q_f32(ap.add(o)), vld1q_f32(bp.add(o)));
         acc1 = vfmaq_f32(acc1, vld1q_f32(ap.add(o + 4)), vld1q_f32(bp.add(o + 4)));
         acc2 = vfmaq_f32(acc2, vld1q_f32(ap.add(o + 8)), vld1q_f32(bp.add(o + 8)));
         acc3 = vfmaq_f32(acc3, vld1q_f32(ap.add(o + 12)), vld1q_f32(bp.add(o + 12)));
+        acc4 = vfmaq_f32(acc4, vld1q_f32(ap.add(o + 16)), vld1q_f32(bp.add(o + 16)));
+        acc5 = vfmaq_f32(acc5, vld1q_f32(ap.add(o + 20)), vld1q_f32(bp.add(o + 20)));
+        acc6 = vfmaq_f32(acc6, vld1q_f32(ap.add(o + 24)), vld1q_f32(bp.add(o + 24)));
+        acc7 = vfmaq_f32(acc7, vld1q_f32(ap.add(o + 28)), vld1q_f32(bp.add(o + 28)));
     }
-    let sum = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
+    // Handle the 16-lane remainder before the scalar tail.
+    let mut o = chunks * 32;
+    if o + 16 <= n {
+        acc0 = vfmaq_f32(acc0, vld1q_f32(ap.add(o)), vld1q_f32(bp.add(o)));
+        acc1 = vfmaq_f32(acc1, vld1q_f32(ap.add(o + 4)), vld1q_f32(bp.add(o + 4)));
+        acc2 = vfmaq_f32(acc2, vld1q_f32(ap.add(o + 8)), vld1q_f32(bp.add(o + 8)));
+        acc3 = vfmaq_f32(acc3, vld1q_f32(ap.add(o + 12)), vld1q_f32(bp.add(o + 12)));
+        o += 16;
+    }
+    let sum = vaddq_f32(
+        vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)),
+        vaddq_f32(vaddq_f32(acc4, acc5), vaddq_f32(acc6, acc7)),
+    );
     let mut total = vaddvq_f32(sum);
-    for i in chunks * 16..n {
+    for i in o..n {
         total += a[i] * b[i];
     }
     total
 }
 
+/// Inlined NEON squared-Euclidean distance — `Σ (a[i] − b[i])²` — for L2 search.
+/// Four `f32x4` accumulators of `(a−b)²` via FMA, mirroring [`dot_f32_neon`].
+///
+/// # Safety
+/// Requires NEON (mandated on AArch64-v8). Reads only `min(a, b)` lanes.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn l2_sq_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let (ap, bp) = (a.as_ptr(), b.as_ptr());
+    // Eight independent accumulators (32 lanes/iter) — see `dot_f32_neon` for the
+    // ILP rationale (4 chains stall the FMA pipes at high dim; 8 saturate them).
+    let mut acc0 = vdupq_n_f32(0.0);
+    let mut acc1 = vdupq_n_f32(0.0);
+    let mut acc2 = vdupq_n_f32(0.0);
+    let mut acc3 = vdupq_n_f32(0.0);
+    let mut acc4 = vdupq_n_f32(0.0);
+    let mut acc5 = vdupq_n_f32(0.0);
+    let mut acc6 = vdupq_n_f32(0.0);
+    let mut acc7 = vdupq_n_f32(0.0);
+    let chunks = n / 32;
+    for i in 0..chunks {
+        let o = i * 32;
+        let d0 = vsubq_f32(vld1q_f32(ap.add(o)), vld1q_f32(bp.add(o)));
+        let d1 = vsubq_f32(vld1q_f32(ap.add(o + 4)), vld1q_f32(bp.add(o + 4)));
+        let d2 = vsubq_f32(vld1q_f32(ap.add(o + 8)), vld1q_f32(bp.add(o + 8)));
+        let d3 = vsubq_f32(vld1q_f32(ap.add(o + 12)), vld1q_f32(bp.add(o + 12)));
+        let d4 = vsubq_f32(vld1q_f32(ap.add(o + 16)), vld1q_f32(bp.add(o + 16)));
+        let d5 = vsubq_f32(vld1q_f32(ap.add(o + 20)), vld1q_f32(bp.add(o + 20)));
+        let d6 = vsubq_f32(vld1q_f32(ap.add(o + 24)), vld1q_f32(bp.add(o + 24)));
+        let d7 = vsubq_f32(vld1q_f32(ap.add(o + 28)), vld1q_f32(bp.add(o + 28)));
+        acc0 = vfmaq_f32(acc0, d0, d0);
+        acc1 = vfmaq_f32(acc1, d1, d1);
+        acc2 = vfmaq_f32(acc2, d2, d2);
+        acc3 = vfmaq_f32(acc3, d3, d3);
+        acc4 = vfmaq_f32(acc4, d4, d4);
+        acc5 = vfmaq_f32(acc5, d5, d5);
+        acc6 = vfmaq_f32(acc6, d6, d6);
+        acc7 = vfmaq_f32(acc7, d7, d7);
+    }
+    let mut o = chunks * 32;
+    if o + 16 <= n {
+        let d0 = vsubq_f32(vld1q_f32(ap.add(o)), vld1q_f32(bp.add(o)));
+        let d1 = vsubq_f32(vld1q_f32(ap.add(o + 4)), vld1q_f32(bp.add(o + 4)));
+        let d2 = vsubq_f32(vld1q_f32(ap.add(o + 8)), vld1q_f32(bp.add(o + 8)));
+        let d3 = vsubq_f32(vld1q_f32(ap.add(o + 12)), vld1q_f32(bp.add(o + 12)));
+        acc0 = vfmaq_f32(acc0, d0, d0);
+        acc1 = vfmaq_f32(acc1, d1, d1);
+        acc2 = vfmaq_f32(acc2, d2, d2);
+        acc3 = vfmaq_f32(acc3, d3, d3);
+        o += 16;
+    }
+    let sum = vaddq_f32(
+        vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)),
+        vaddq_f32(vaddq_f32(acc4, acc5), vaddq_f32(acc6, acc7)),
+    );
+    let mut total = vaddvq_f32(sum);
+    for i in o..n {
+        let d = a[i] - b[i];
+        total += d * d;
+    }
+    total
+}
 
+/// Diagnostic counter of distance evaluations (compile with `--features
+/// distcount`). Compared against faiss `hnsw_stats.ndis` to attribute the
+/// high-dim search gap to kernel throughput vs node-visit count.
+#[cfg(feature = "distcount")]
+pub static DIST_EVALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Reset the distance-eval counter to zero.
+#[cfg(feature = "distcount")]
+pub fn dist_evals_reset() {
+    DIST_EVALS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read the distance-eval counter.
+#[cfg(feature = "distcount")]
+pub fn dist_evals_get() -> u64 {
+    DIST_EVALS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Distance metric for [`HnswIndex`]. Cosine stores unit-normalised vectors and
+/// ranks by `1 − cosine`; L2 and inner-product store vectors **raw** (the two
+/// most-requested non-cosine metrics — e.g. SIFT/GIST are L2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Metric {
+    /// `1 − cosine_similarity`, vectors stored unit-normalised. The default.
+    #[default]
+    Cosine,
+    /// Squared Euclidean (`‖a−b‖²`, monotone in true L2), vectors stored raw.
+    L2,
+    /// Negative inner product (maximum-inner-product search), vectors stored raw.
+    InnerProduct,
+}
 
 /// HNSW approximate nearest-neighbour index.
 ///
@@ -79,6 +200,17 @@ pub struct HnswIndex {
     /// Soft-deletion tombstones; index aligns with `vectors`.
     #[serde(default)]
     deleted: Vec<bool>,
+    /// Distance metric. `#[serde(default)]` → indexes saved before metrics
+    /// existed load as [`Metric::Cosine`], preserving their behaviour.
+    #[serde(default)]
+    metric: Metric,
+    /// Precomputed `‖vᵢ‖²` per stored vector — **only populated for [`Metric::L2`]**.
+    /// Lets the L2 hot path compute `‖q−v‖² = ‖q‖² + ‖v‖² − 2⟨q,v⟩` as a single
+    /// dot product (1 FMA/elt) instead of subtract-then-square (2 ops/elt),
+    /// matching faiss's `IndexFlatL2` distance computer. Derived from `vectors`,
+    /// so it is not serialised — `ensure_norms` rebuilds it after load.
+    #[serde(skip)]
+    norms_sq: Vec<f32>,
 }
 
 impl HnswIndex {
@@ -88,6 +220,11 @@ impl HnswIndex {
     /// * `m`               — max bidirectional links per node in layers ≥ 1 (layer 0 uses `2*m`).
     /// * `ef_construction` — beam width used while building (≥ m, larger → better recall, slower build).
     pub fn new(m: usize, ef_construction: usize) -> Self {
+        Self::with_metric(m, ef_construction, Metric::Cosine)
+    }
+
+    /// Create a new empty HNSW index with an explicit distance [`Metric`].
+    pub fn with_metric(m: usize, ef_construction: usize, metric: Metric) -> Self {
         assert!(m >= 2, "m must be >= 2");
         assert!(ef_construction >= m, "ef_construction must be >= m");
         let ml = 1.0 / (m as f64).ln();
@@ -102,6 +239,8 @@ impl HnswIndex {
             entry_point: None,
             max_level: 0,
             deleted: Vec::new(),
+            metric,
+            norms_sq: Vec::new(),
         }
     }
 
@@ -128,29 +267,112 @@ impl HnswIndex {
 
     // ─────────────────────────── internal helpers ────────────────────────
 
+    /// Raw dot product. On aarch64 a directly-inlined NEON FMA reduction; at
+    /// small dims SimSIMD's per-call dispatch overhead dominates, so it's only
+    /// the portable fallback.
     #[inline]
-    fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
-        // Stored vectors are pre-normalised; dot product == cosine similarity.
-        // On aarch64 use a directly-inlined NEON f32 dot — at small dims the
-        // SimSIMD path's per-call overhead (runtime dispatch, f64 accumulator,
-        // `Option` unwrap) is a large fraction of the tiny compute. Elsewhere
-        // SimSIMD's runtime dispatch is the portable best.
+    fn dot(a: &[f32], b: &[f32]) -> f32 {
         #[cfg(target_arch = "aarch64")]
         // SAFETY: NEON is mandated on AArch64-v8; the helper reads in-bounds lanes.
-        let dot = unsafe { dot_f32_neon(a, b) };
+        {
+            unsafe { dot_f32_neon(a, b) }
+        }
         #[cfg(not(target_arch = "aarch64"))]
-        let dot = <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0) as f32;
-        (1.0 - dot).max(0.0)
+        {
+            <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0) as f32
+        }
     }
 
-    /// Software-prefetch a stored vector into L1, hiding the ~100 ns DRAM miss
-    /// that dominates beam search once the vector buffer (473 MB at 1M × d=100)
-    /// dwarfs cache. A pure hint — no correctness or aliasing effect.
+    /// Distance between two stored vectors under this index's [`Metric`]
+    /// (smaller = closer for all metrics).
+    #[inline]
+    fn dist(&self, a: &[f32], b: &[f32]) -> f32 {
+        #[cfg(feature = "distcount")]
+        DIST_EVALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match self.metric {
+            // Stored unit-norm, so dot == cosine similarity.
+            Metric::Cosine => (1.0 - Self::dot(a, b)).max(0.0),
+            Metric::L2 => {
+                #[cfg(target_arch = "aarch64")]
+                // SAFETY: NEON mandated; reads in-bounds lanes.
+                {
+                    unsafe { l2_sq_neon(a, b) }
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    a.iter().zip(b).map(|(x, y)| { let d = x - y; d * d }).sum()
+                }
+            }
+            // Negate so the beam's "smaller is closer" ordering finds the maximum.
+            Metric::InnerProduct => -Self::dot(a, b),
+        }
+    }
+
+    /// `‖query‖²`, computed once per beam call and reused across every node
+    /// distance in the L2 fast path. Zero for non-L2 metrics (unused there).
+    #[inline]
+    fn query_norm_sq(&self, query: &[f32]) -> f32 {
+        match self.metric {
+            Metric::L2 => Self::dot(query, query),
+            _ => 0.0,
+        }
+    }
+
+    /// Distance from `query` (with precomputed `q_norm_sq`) to stored node `id`.
+    /// The L2 branch reformulates `‖q−v‖² = ‖q‖² + ‖v‖² − 2⟨q,v⟩`, so each eval
+    /// is a single dot product plus two precomputed-norm lookups (1 FMA/elt) —
+    /// vs subtract-then-square (2 ops/elt). `.max(0.0)` absorbs fp rounding to
+    /// tiny negatives near zero distance.
+    #[inline]
+    fn dist_q(&self, query: &[f32], q_norm_sq: f32, id: usize) -> f32 {
+        let v = self.vec(id);
+        match self.metric {
+            Metric::Cosine => (1.0 - Self::dot(query, v)).max(0.0),
+            Metric::L2 => (q_norm_sq + self.norms_sq[id] - 2.0 * Self::dot(query, v)).max(0.0),
+            Metric::InnerProduct => -Self::dot(query, v),
+        }
+    }
+
+    /// Rebuild `norms_sq` from `vectors` when the metric is L2 (no-op otherwise).
+    /// Called after every mutation of `vectors` and after load, so the L2 hot
+    /// path can assume `norms_sq[id]` is valid for every live node.
+    fn ensure_norms(&mut self) {
+        if self.metric != Metric::L2 {
+            return;
+        }
+        let n = self.len();
+        self.norms_sq.clear();
+        self.norms_sq.reserve(n);
+        for i in 0..n {
+            self.norms_sq.push(Self::dot(self.vec(i), self.vec(i)));
+        }
+    }
+
+    /// Prepare a vector for storage/query under this metric: cosine needs unit
+    /// normalisation; L2 and inner-product keep the raw values.
+    #[inline]
+    fn prep(&self, v: &[f32]) -> Vec<f32> {
+        match self.metric {
+            Metric::Cosine => Self::normalize(v),
+            Metric::L2 | Metric::InnerProduct => v.to_vec(),
+        }
+    }
+
+    /// Prefetch **every** cache line spanning a stored vector, not just the first.
+    /// At high dimension a single-line hint barely helps — the distance loop then
+    /// demand-loads the other ~`dim/16` lines and stalls on each. Issuing the whole
+    /// span (software-pipelined a couple of neighbours ahead in the beam loop) keeps
+    /// the full cold vector streaming while the current distance computes.
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
-    unsafe fn prefetch_vec(&self, id: usize) {
-        let p = self.vectors.as_ptr().add(id * self.dim);
-        core::arch::asm!("prfm pldl1keep, [{p}]", p = in(reg) p, options(nostack, preserves_flags, readonly));
+    unsafe fn prefetch_vec_full(&self, id: usize) {
+        let base = self.vectors.as_ptr().add(id * self.dim);
+        // 64-byte cache lines = 16 f32 each; round up to cover the tail.
+        let lines = self.dim.div_ceil(16);
+        for l in 0..lines {
+            let p = base.add(l * 16);
+            core::arch::asm!("prfm pldl1keep, [{p}]", p = in(reg) p, options(nostack, preserves_flags, readonly));
+        }
     }
 
     fn normalize(v: &[f32]) -> Vec<f32> {
@@ -203,6 +425,7 @@ impl HnswIndex {
     ) -> Vec<(f32, usize)> {
         // Reusable thread-local epoch visited set (see `super::scratch`): O(1)
         // mark/check, allocated once per thread instead of once per layer call.
+        let q_norm_sq = self.query_norm_sq(query);
         super::scratch::with_visited(self.len(), |visited| {
             // Packed-u64 heaps (see pack_key): native integer ordering, no
             // per-comparison f32 branch. cands = min-heap on dist (Reverse),
@@ -211,7 +434,7 @@ impl HnswIndex {
             let mut window: BinaryHeap<u64> = BinaryHeap::new();
 
             for &ep in entry_points {
-                let d = Self::cosine_dist(query, self.vec(ep));
+                let d = self.dist_q(query, q_norm_sq, ep);
                 visited.visit(ep);
                 cands.push(std::cmp::Reverse(pack_key(d, ep)));
                 if !self.is_deleted(ep) && filter(ep) {
@@ -233,20 +456,30 @@ impl HnswIndex {
                 // Iterate the flat layer-0 slice (or upper-layer list) by ref —
                 // `neighbors` and `vectors` are distinct shared borrows of `self`.
                 let nbrs = self.neighbors.neighbors(c, layer);
-                // Kick off all of this node's vector loads up front so the DRAM
-                // latency overlaps the distance computations below (the loads are
-                // independent random reads; issuing them together hides the miss).
+                // Software-pipelined full-vector prefetch: prime the first few
+                // neighbours' whole vectors, then stay PF ahead inside the loop so
+                // each cold vector streams in while the previous distance computes.
+                // Two neighbours of look-ahead empirically hides the cold-vector
+                // latency across d=100…784 without flooding L1; higher PF gives
+                // only marginal high-dim gains and risks low-dim cache pressure.
                 #[cfg(target_arch = "aarch64")]
-                for &nb in nbrs {
+                const PF: usize = 2;
+                #[cfg(target_arch = "aarch64")]
+                for &nb in nbrs.iter().take(PF) {
                     // SAFETY: ids are in-bounds; prefetch is a no-effect hint.
-                    unsafe { self.prefetch_vec(nb as usize) };
+                    unsafe { self.prefetch_vec_full(nb as usize) };
                 }
-                for &nb in nbrs {
+                for (i, &nb) in nbrs.iter().enumerate() {
+                    #[cfg(target_arch = "aarch64")]
+                    if let Some(&fut) = nbrs.get(i + PF) {
+                        // SAFETY: ids are in-bounds; prefetch is a no-effect hint.
+                        unsafe { self.prefetch_vec_full(fut as usize) };
+                    }
                     let nb = nb as usize;
                     if !visited.visit(nb) {
                         continue;
                     }
-                    let d_nb = Self::cosine_dist(query, self.vec(nb));
+                    let d_nb = self.dist_q(query, q_norm_sq, nb);
                     let worst2 = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
                     if d_nb < worst2 || window.len() < ef {
                         cands.push(std::cmp::Reverse(pack_key(d_nb, nb)));
@@ -303,7 +536,7 @@ impl HnswIndex {
             let e_vec = self.vec(e);
             let diverse = result
                 .iter()
-                .all(|&r| Self::cosine_dist(e_vec, self.vec(r)) >= dist_eq);
+                .all(|&r| self.dist(e_vec, self.vec(r)) >= dist_eq);
             if diverse {
                 result.push(e);
             }
@@ -330,7 +563,7 @@ impl HnswIndex {
                     .neighbors
                     .neighbors(nb_id, lc)
                     .iter()
-                    .map(|&n| (Self::cosine_dist(&nb_vec, self.vec(n as usize)), n as usize))
+                    .map(|&n| (self.dist(&nb_vec, self.vec(n as usize)), n as usize))
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let kept: Vec<NodeId> =
@@ -344,7 +577,7 @@ impl HnswIndex {
 
     /// Insert a single vector into the index (normalised internally).
     pub fn add(&mut self, vector: &[f32]) {
-        let norm_vec = Self::normalize(vector);
+        let norm_vec = self.prep(vector);
         let node_id = self.len();
         let node_level = self.random_level();
 
@@ -352,6 +585,10 @@ impl HnswIndex {
             self.dim = norm_vec.len();
         }
         self.vectors.extend_from_slice(&norm_vec);
+        // Keep the L2 norm cache aligned with `vectors` (see `dist_q`).
+        if self.metric == Metric::L2 {
+            self.norms_sq.push(Self::dot(&norm_vec, &norm_vec));
+        }
         self.neighbors.add_node(node_level);
         self.deleted.push(false);
 
@@ -433,10 +670,12 @@ impl HnswIndex {
         self.dim = vectors.first().map(|v| v.as_ref().len()).unwrap_or(0);
         let mut flat = Vec::with_capacity(n * self.dim);
         for v in vectors {
-            flat.extend_from_slice(&Self::normalize(v.as_ref()));
+            flat.extend_from_slice(&self.prep(v.as_ref()));
         }
         self.vectors = flat;
         self.deleted = vec![false; n];
+        // Populate the L2 norm cache before any concurrent search reads it.
+        self.ensure_norms();
 
         let levels: Vec<usize> = (0..n).map(|id| Self::level_of(id, self.ml)).collect();
         // Per-node, per-layer locked adjacency lists.
@@ -525,12 +764,13 @@ impl HnswIndex {
         layer: usize,
         graph: &[Vec<RwLock<NeighborList>>],
     ) -> Vec<(f32, usize)> {
+        let q_norm_sq = self.query_norm_sq(query);
         super::scratch::with_visited(self.len(), |visited| {
             let mut cands: BinaryHeap<std::cmp::Reverse<u64>> = BinaryHeap::new();
             let mut window: BinaryHeap<u64> = BinaryHeap::new();
 
             for &ep in entry_points {
-                let d = Self::cosine_dist(query, self.vec(ep));
+                let d = self.dist_q(query, q_norm_sq, ep);
                 visited.visit(ep);
                 cands.push(std::cmp::Reverse(pack_key(d, ep)));
                 window.push(pack_key(d, ep));
@@ -555,7 +795,7 @@ impl HnswIndex {
                     if !visited.visit(nb) {
                         continue;
                     }
-                    let d_nb = Self::cosine_dist(query, self.vec(nb));
+                    let d_nb = self.dist_q(query, q_norm_sq, nb);
                     let worst2 = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
                     if d_nb < worst2 || window.len() < ef {
                         cands.push(std::cmp::Reverse(pack_key(d_nb, nb)));
@@ -616,7 +856,7 @@ impl HnswIndex {
                 let nb_vec = self.vec(nb_id);
                 let mut scored: Vec<(f32, usize)> = lock
                     .iter()
-                    .map(|&nbr| (Self::cosine_dist(nb_vec, self.vec(nbr as usize)), nbr as usize))
+                    .map(|&nbr| (self.dist(nb_vec, self.vec(nbr as usize)), nbr as usize))
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let kept = self.select_heuristic(&scored, max_m);
@@ -653,7 +893,7 @@ impl HnswIndex {
             Some(ep) => ep,
         };
         let ef = ef.max(k);
-        let q = Self::normalize(query);
+        let q = self.prep(query);
         let mut curr_ep = vec![ep];
 
         // Greedy descent to layer 1.
@@ -723,7 +963,7 @@ impl HnswIndex {
             Some(ep) => ep,
         };
         let ef = ef.max(k);
-        let q = Self::normalize(query);
+        let q = self.prep(query);
         let mut curr_ep = vec![ep];
 
         // Greedy descent through upper layers without filter (structural path-finding).
@@ -755,7 +995,9 @@ impl HnswIndex {
     /// otherwise double peak load memory.
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let reader = std::io::BufReader::new(std::fs::File::open(path)?);
-        let idx: Self = bincode::deserialize_from(reader)?;
+        let mut idx: Self = bincode::deserialize_from(reader)?;
+        // `norms_sq` is derived (serde-skipped) — rebuild it for the L2 fast path.
+        idx.ensure_norms();
         Ok(idx)
     }
 
@@ -777,8 +1019,9 @@ impl HnswIndex {
             .map(|i| self.vec(i).to_vec())
             .collect();
 
-        // Rebuild with the same construction parameters.
-        let mut new_idx = HnswIndex::new(self.m, self.ef_construction);
+        // Rebuild with the same construction parameters AND metric — otherwise an
+        // L2/IP index would silently rebuild as cosine (re-normalising vectors).
+        let mut new_idx = HnswIndex::with_metric(self.m, self.ef_construction, self.metric);
         new_idx.add_batch(&survivors);
         *self = new_idx;
         deleted_count
@@ -788,6 +1031,27 @@ impl HnswIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn simd_kernels_match_scalar_across_dims() {
+        // The 8-accumulator kernels split work into 32-lane chunks, a 16-lane
+        // remainder, then a scalar tail. Verify every awkward dimension (multiples
+        // of 32, +16 remainder, and odd scalar tails) matches a scalar reference.
+        for &d in &[1usize, 3, 4, 16, 17, 25, 31, 32, 33, 48, 49, 64, 100, 128, 200, 256, 257, 784] {
+            let a: Vec<f32> = (0..d).map(|i| (i as f32 * 0.37 - 1.1).sin() * 3.0).collect();
+            let b: Vec<f32> = (0..d).map(|i| (i as f32 * 0.21 + 0.5).cos() * 2.0).collect();
+            let dot_ref: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+            let l2_ref: f32 = a.iter().zip(&b).map(|(x, y)| (x - y) * (x - y)).sum();
+            // SAFETY: NEON is mandated on AArch64-v8.
+            let dot = unsafe { dot_f32_neon(&a, &b) };
+            let l2 = unsafe { l2_sq_neon(&a, &b) };
+            let tol = 1e-3 * (1.0 + dot_ref.abs());
+            assert!((dot - dot_ref).abs() <= tol, "dot d={d}: {dot} vs {dot_ref}");
+            let tol2 = 1e-3 * (1.0 + l2_ref.abs());
+            assert!((l2 - l2_ref).abs() <= tol2, "l2 d={d}: {l2} vs {l2_ref}");
+        }
+    }
 
     #[test]
     fn pack_key_orders_by_distance_then_id() {
@@ -803,6 +1067,26 @@ mod tests {
         assert_eq!(key_id(c), 9);
         // INFINITY sentinel must be the largest (it's the "no worst yet" value).
         assert!(pack_key(f32::INFINITY, 0) > d);
+    }
+
+    #[test]
+    fn pack_key_orders_negative_distances() {
+        // The InnerProduct metric emits negative distances (`-dot`). Packed keys
+        // must still sort ascending across the sign boundary, and round-trip exactly.
+        let keys = [
+            pack_key(-2.0, 1),
+            pack_key(-1.0, 2),
+            pack_key(-0.0, 3),
+            pack_key(0.5, 4),
+            pack_key(3.0, 5),
+        ];
+        for w in keys.windows(2) {
+            assert!(w[0] < w[1], "negative-distance ordering broken: {keys:?}");
+        }
+        assert_eq!(key_dist(pack_key(-1.5, 0)), -1.5);
+        assert_eq!(key_dist(pack_key(-0.25, 0)), -0.25);
+        // All negatives sort below any non-negative.
+        assert!(pack_key(-0.001, 9) < pack_key(0.0, 0));
     }
 
     fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
@@ -888,6 +1172,93 @@ mod tests {
         let gt = brute_force_gt(&vecs, queries, k);
         let recall = idx.recall_at_k(queries, &gt, k, 60);
         assert!(recall >= 0.80, "recall@{k} = {recall:.3} < 0.80");
+    }
+
+    /// Brute-force k-NN under squared-L2 (for the L2 metric test).
+    fn brute_force_gt_l2(vecs: &[Vec<f32>], queries: &[Vec<f32>], k: usize) -> Vec<Vec<usize>> {
+        queries
+            .iter()
+            .map(|q| {
+                let mut scored: Vec<(usize, f32)> = vecs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| (i, q.iter().zip(v).map(|(a, b)| { let d = a - b; d * d }).sum()))
+                    .collect();
+                scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                scored.into_iter().take(k).map(|(i, _)| i).collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn l2_metric_finds_euclidean_neighbours() {
+        // Raw (un-normalised) vectors — L2 must rank by actual Euclidean distance,
+        // not direction. A self-query must return itself (distance 0).
+        let vecs: Vec<Vec<f32>> = (0..300)
+            .map(|i| (0..16).map(|j| (i as f32) * 0.13 + (j as f32) * 0.7).collect())
+            .collect();
+        let mut idx = HnswIndex::with_metric(8, 64, Metric::L2);
+        idx.add_batch(&vecs);
+
+        // exact match for a stored vector
+        let r = idx.search(&vecs[42], 1, 64);
+        assert_eq!(r[0].0, 42, "L2 self-query didn't return itself");
+        assert!(r[0].1 < 1e-3, "L2 self-distance not ~0: {}", r[0].1);
+
+        let queries = &vecs[..30];
+        let k = 10;
+        let gt = brute_force_gt_l2(&vecs, queries, k);
+        let recall = idx.recall_at_k(queries, &gt, k, 120);
+        assert!(recall >= 0.90, "L2 recall@{k} = {recall:.3} < 0.90");
+    }
+
+    /// Brute-force top-k under inner product (largest dot = nearest).
+    fn brute_force_gt_ip(vecs: &[Vec<f32>], queries: &[Vec<f32>], k: usize) -> Vec<Vec<usize>> {
+        queries
+            .iter()
+            .map(|q| {
+                let mut scored: Vec<(usize, f32)> = vecs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| (i, q.iter().zip(v).map(|(a, b)| a * b).sum()))
+                    .collect();
+                // descending dot — largest inner product ranks first
+                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                scored.into_iter().take(k).map(|(i, _)| i).collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn inner_product_ranks_by_dot() {
+        // For IP, the "nearest" is the maximum dot product (no normalisation).
+        // The IP path is raw `-dot` (no normalisation) — identical to hnswlib's
+        // `InnerProductSpace`. Greedy HNSW descent over `-dot` is navigable in the
+        // similar-norm regime (where max-inner-product ≡ nearest-neighbour); it is
+        // NOT a general MIPS solver for wildly varying norms (no augmentation). The
+        // canonical similar-norm case is unit vectors, where IP-NN ≡ cosine-NN.
+        let vecs: Vec<Vec<f32>> =
+            make_vecs(400, 16).iter().map(|v| HnswIndex::normalize(v)).collect();
+        let mut idx = HnswIndex::with_metric(16, 200, Metric::InnerProduct);
+        idx.add_batch(&vecs);
+
+        // Results come back sorted by ascending distance (= descending dot): the
+        // first result must carry the largest dot the search found.
+        let q = &vecs[100];
+        let r = idx.search(q, 5, 200);
+        assert!(!r.is_empty(), "IP search returned nothing");
+        let dots: Vec<f32> =
+            r.iter().map(|&(id, _)| q.iter().zip(&vecs[id]).map(|(x, y)| x * y).sum()).collect();
+        for w in dots.windows(2) {
+            assert!(w[0] >= w[1] - 1e-3, "IP results not in descending-dot order: {dots:?}");
+        }
+
+        // On unit vectors the max-dot neighbours are recoverable at high recall.
+        let queries = &vecs[..30];
+        let k = 10;
+        let gt = brute_force_gt_ip(&vecs, queries, k);
+        let recall = idx.recall_at_k(queries, &gt, k, 200);
+        assert!(recall >= 0.85, "IP recall@{k} = {recall:.3} < 0.85");
     }
 
     #[test]
@@ -1027,5 +1398,23 @@ mod tests {
         let q = vecs[0].clone();
         let res = idx.search(&q, 1, 40);
         assert!(!res.is_empty());
+    }
+
+    #[test]
+    fn vacuum_preserves_l2_metric() {
+        // Vacuum rebuilds the graph; it must keep the original metric, not reset
+        // to cosine (which would re-normalise vectors and break L2 distances).
+        let vecs: Vec<Vec<f32>> = (0..60)
+            .map(|i| (0..16).map(|j| (i as f32) * 0.3 + (j as f32) * 1.1).collect())
+            .collect();
+        let mut idx = HnswIndex::with_metric(8, 64, Metric::L2);
+        idx.add_batch(&vecs);
+        idx.delete(55); // delete after index 20 so its id is unchanged by compaction
+        idx.vacuum();
+        // Self-distance under L2 is ~0; under a wrongly-reset cosine metric the
+        // re-normalised vectors would not give a near-zero L2-style self distance.
+        let r = idx.search(&vecs[20], 1, 64);
+        assert_eq!(r[0].0, 20, "L2 self-query after vacuum");
+        assert!(r[0].1 < 1e-3, "metric not preserved through vacuum: {}", r[0].1);
     }
 }
