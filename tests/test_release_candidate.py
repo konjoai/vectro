@@ -22,7 +22,7 @@ import pytest
 # ── constants ──────────────────────────────────────────────────────────────
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EXPECTED_VERSION = "5.13.1"
+EXPECTED_VERSION = "5.14.1"
 
 # Quality and compression floors per profile
 # (used in gate 1 and gate 2)

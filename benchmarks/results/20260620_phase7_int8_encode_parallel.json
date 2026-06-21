@@ -1,0 +1,27 @@
+{
+  "timestamp_utc": "2026-06-20",
+  "hardware": {
+    "cpu": "Apple M3",
+    "cores": 8
+  },
+  "kernel": "quantize_int8_batch (abs-max, 2-pass)",
+  "results": {
+    "64": {
+      "M_vec_per_s": 65.6,
+      "GB_s": 16.8
+    },
+    "100": {
+      "M_vec_per_s": 39.6,
+      "GB_s": 15.9
+    },
+    "256": {
+      "M_vec_per_s": 15.4,
+      "GB_s": 15.7
+    },
+    "768": {
+      "M_vec_per_s": 5.1,
+      "GB_s": 15.8
+    }
+  },
+  "note": "Phase 7: removed serial Amdahl bottlenecks (serial finite-scan + output 0-init). d=100 26->41 M/s; multi-core scaling 1.3x->4.6x. Memory-bandwidth bound thereafter."
+}

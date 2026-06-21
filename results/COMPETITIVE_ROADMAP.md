@@ -62,6 +62,15 @@ Binary-graph navigation + a near-lossless INT8 re-rank store lifts 1-bit recall 
 `search_rerank(query, k, ef, rerank_k)`. Raw: `benchmarks/results/20260620_phase4_binary_rerank.json`.
 
 ## 4. Throughput wins already banked this session
+- **INT8 batch encode parallelization fix (Phase 7):** removed two serial Amdahl
+  bottlenecks in `quantize_int8_batch` (a serial NaN/Inf scan of the whole input,
+  and the output buffer's serial zero-init). Now: parallel finite-check
+  (`first_non_finite`), the rayon kernel writes straight into an **uninitialised**
+  numpy array, and the GIL is released during compute. **d=64 44→66 M vec/s, d=100
+  26→40 M vec/s (~1.5×); multi-core scaling 1.3× → 4.6×.** Memory-bandwidth bound
+  (~16 GB/s) thereafter — the abs-max path is inherently 2-pass, so the "100 M
+  vec/s" headline is only reachable on the single-pass normalized/Mojo path (the
+  Rust normalized kernel currently underperforms — flagged follow-up).
 - Parallel batch search (rayon, GIL released): ~5× → Int8 50k QPS on 8 cores.
 - Alloc-free quantized distance: NF4 2.6×, Binary 1.9×.
 - SIMD NEON int8 dot_query: 2×.

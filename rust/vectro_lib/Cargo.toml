@@ -1,6 +1,6 @@
 [package]
 name = "vectro_lib"
-version = "8.7.1"
+version = "8.8.1"
 edition = "2021"
 authors = ["Wesley Scholl <128409641+wesleyscholl@users.noreply.github.com>"]
 description = "Core Rust library for high-performance vector quantization and search"

@@ -652,6 +652,21 @@ pub fn batch_encode_into(
     batch_encode_into_with_range(input, n, d, codes_out, scales_out, 1.0);
 }
 
+/// Parallel scan for the first non-finite (NaN/Inf) element, returning its flat
+/// index or `None` if all finite.
+///
+/// The Python batch-encode binding must reject non-finite input, but a *serial*
+/// scan of the whole `[N, D]` array was the Amdahl bottleneck that capped
+/// encode throughput (the parallel kernel barely scaled past one core). This
+/// rayon scan reads the input in parallel and reports the **first** offending
+/// index deterministically (`min` over all matches), matching the serial check.
+pub fn first_non_finite(flat: &[f32]) -> Option<usize> {
+    flat.par_iter()
+        .enumerate()
+        .filter_map(|(i, x)| if x.is_finite() { None } else { Some(i) })
+        .min()
+}
+
 /// Batch encode an N×D f32 matrix to INT8 with an explicit `range_factor`.
 ///
 /// Identical to [`batch_encode_into`] but threads `range_factor` (rf, in
