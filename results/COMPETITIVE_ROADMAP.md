@@ -131,8 +131,16 @@ the exact path for callers needing bit-reproducible builds.
    `search_rerank_batch_np` is rayon-parallel. `vacuum` rebuilds from the INT8 store so
    re-rank survives compaction; save/load preserves it.
    - *Honest caveat:* this is a **memory** win (3.5× smaller at R@0.95), not a speed win
-     — f32 HNSW still wins QPS@recall. Quant-HNSW build is also still on the older chunk
-     path (~11 s); porting Phase 3's concurrent build would cut it ~5×.
+     — f32 HNSW still wins QPS@recall.
+
+## Phase 5 — Concurrent build for quantized HNSW ✅ DONE
+Ported Phase 3's concurrent-insertion build (live graph + per-node `RwLock`s + serial
+seed) to `QuantHnswIndex`, replacing the chunked frozen-snapshot build. Build distances
+route through the exact f32 `build_vectors` (`use_f32=true`), so even a 1-bit graph is
+*built* from full-precision geometry. **glove-100, n=50k: quant-HNSW build ~11 s → ~3.5 s
+(≈3× faster)** with recall held (binary+rerank 0.949, int8 0.978). Deadlock-free,
+poison-tolerant; concurrent matches serial graph quality. Removed the now-dead chunk
+helpers + `shuffled_order`. Raw: `benchmarks/results/20260620_phase5_quant_concurrent_build.json`.
 2. **Quantized HNSW batch search for all variants** + `search_batch_np` parity (done).
 3. **Mojo/Accelerate path** for encode on Apple Silicon (AMX) — push INT8 past 100 M vec/s.
 4. **GPU build/search** (longer term) — the only axis where faiss has a categorical option vectro lacks.

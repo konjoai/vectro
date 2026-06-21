@@ -1,0 +1,30 @@
+{
+  "timestamp_utc": "2026-06-20",
+  "dataset": "glove-100-angular",
+  "n": 50000,
+  "M": 16,
+  "efC": 200,
+  "hardware": {
+    "cpu": "Apple M3",
+    "cores": 8
+  },
+  "note": "quant-HNSW concurrent-insertion build (Phase 5); prior chunk build was ~11s for binary+rerank",
+  "results": {
+    "binary": {
+      "build_s": 3.71,
+      "recall_at_10": 0.316
+    },
+    "binary+rerank": {
+      "build_s": 3.8,
+      "recall_at_10": 0.9489
+    },
+    "int8": {
+      "build_s": 3.03,
+      "recall_at_10": 0.978
+    },
+    "nf4": {
+      "build_s": 3.09,
+      "recall_at_10": 0.8618
+    }
+  }
+}
