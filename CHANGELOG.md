@@ -14,17 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   query residual. The coarse centroid cancels (`‖q−v‖² = ‖q_res−v_res‖²` within a
   cell), so the formulation is exact up to PQ quantisation — the standard
   high-recall IVF-PQ design.
-- **Exact rerank** (`enable_rerank`, `search_rerank(query, k, n_probe, k_factor)`;
-  Python `PyIvfPqIndex.enable_rerank` / `search_rerank`). Fetches `k·k_factor`
-  ADC candidates, re-scores them with the true cosine distance from an opt-in
-  normalised-vector store, returns the best `k`. Pure PQ tops out ~0.6 recall on
-  hard data (a *fundamental* PQ limit — measured identical for faiss IVFPQ at the
-  same bytes); rerank lifts it to **0.95+**.
-  - **glove-100 (100K, cosine), 25-byte PQ codes:** plain PQ 0.61 →
-    **rerank k_factor=16 / nprobe=128 → 0.979** (faiss `IVF,PQ,RFlat` = 0.970).
-    vectro is at or above faiss at every rerank setting.
-  - Rerank trades memory (the fp32 store) for recall, exactly like faiss `RFlat`;
-    an int8 rerank store for memory-bounded 100M is the documented follow-up.
+- **Exact rerank against an INT8 store** (`enable_rerank`,
+  `search_rerank(query, k, n_probe, k_factor)`; Python `PyIvfPqIndex.enable_rerank`
+  / `search_rerank`). Fetches `k·k_factor` ADC candidates, re-scores them with
+  near-exact cosine from an opt-in **abs-max int8** vector store (1 byte/dim,
+  per-vector scale so the full range is used even for small normalised
+  components), returns the best `k`. Pure PQ tops out ~0.6 recall on hard data (a
+  *fundamental* PQ limit — measured identical for faiss IVFPQ at the same bytes);
+  rerank lifts it to **0.95+** at a quarter of fp32's memory.
+  - **glove-100 (100K, cosine), 25-byte PQ codes + int8 rerank:** plain PQ 0.61 →
+    **k_factor=16 / nprobe=128 → 0.969** — matching faiss `IVF,PQ,RFlat` (0.970)
+    while the rerank store is **128 B/vec vs faiss's 512 B fp32** (at d=128).
+  - This is the 100M-on-commodity-RAM enabler: ~15 GB (PQ + int8 rerank) for 0.97
+    recall at 100M, vs ~51 GB for an fp32 rerank store.
 - **Billion-scale benchmarking** — `benchmarks/BILLION_SCALE.md` (standard >1M
   datasets: BIGANN/SIFT1B, Deep1B, MS-SPACEV/Turing, Text2Image, FB-SSNPP via
   big-ann-benchmarks; the memory math that makes 100M a *compression* problem)
