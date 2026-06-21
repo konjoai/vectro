@@ -1088,6 +1088,29 @@ impl PyIvfPqIndex {
         Ok(Self { inner })
     }
 
+    /// Enable the exact-rerank store (call before adding vectors). Trades
+    /// `N·dim·4` bytes for a large recall gain via `search_rerank`.
+    fn enable_rerank(&mut self) {
+        self.inner.enable_rerank();
+    }
+
+    /// Whether the rerank store is active.
+    fn has_rerank(&self) -> bool {
+        self.inner.has_rerank()
+    }
+
+    /// PQ candidate generation + exact rerank: fetch `k*k_factor` ADC candidates,
+    /// re-score by true cosine distance, return top-k. Needs `enable_rerank`.
+    fn search_rerank(
+        &self,
+        query: Vec<f32>,
+        k: usize,
+        n_probe: usize,
+        k_factor: usize,
+    ) -> Vec<(usize, f32)> {
+        self.inner.search_rerank(&query, k, n_probe, k_factor)
+    }
+
     fn __repr__(&self) -> String {
         format!("PyIvfPqIndex(n_lists={}, trained={})", self.inner.n_lists(), self.inner.is_trained())
     }
