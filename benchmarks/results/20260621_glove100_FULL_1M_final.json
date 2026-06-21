@@ -1,0 +1,43 @@
+{
+  "dataset": "glove-100 FULL 1.18M",
+  "build_s": 146.9,
+  "ondisk_mb": 647.0,
+  "loaded_rss_mb": 681,
+  "search": [
+    {
+      "ef": 40,
+      "recall": 0.7241,
+      "qps": 5633
+    },
+    {
+      "ef": 64,
+      "recall": 0.7804,
+      "qps": 5964
+    },
+    {
+      "ef": 100,
+      "recall": 0.8252,
+      "qps": 4116
+    },
+    {
+      "ef": 160,
+      "recall": 0.8639,
+      "qps": 3142
+    },
+    {
+      "ef": 256,
+      "recall": 0.8947,
+      "qps": 2194
+    },
+    {
+      "ef": 400,
+      "recall": 0.9193,
+      "qps": 1552
+    }
+  ],
+  "note": "flat layer-0 graph + flat u32 wire + prefetch",
+  "faiss_baseline": {
+    "build_s": 156.1,
+    "ondisk_mb": 644
+  }
+}

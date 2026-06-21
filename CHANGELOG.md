@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (HNSW memory + search at scale)
+- **Flat layer-0 graph + software prefetch** (`rust/vectro_lib/src/index/graph.rs`,
+  `hnsw.rs`) — closes the two categories the full 1.18M glove-100 benchmark showed
+  vectro losing/tying vs faiss. The graph was `Vec<Vec<SmallVec<[u32;32]>>>`: each
+  list reserved 128 B inline regardless of fill, plus per-node `Vec` headers — a
+  ~286 MB graph vs faiss's flat ~171 MB. New `Graph` stores layer 0 (≈99 % of
+  nodes) as a single **flat fixed-slot `u32` array** + `u8` fill counts (FAISS's
+  layout), with a compact `u32` on-disk wire (was `u64`-per-link) that
+  deserialises straight into the flat store. Plus **prefetch-all-upfront** of a
+  node's neighbour vectors before the distance loop, hiding DRAM latency once the
+  473 MB vector buffer dwarfs cache.
+  - **Memory (1M): on-disk 647 vs faiss 644 MB, RSS 612 vs ~625 MB — was 759 MB
+    (+18 % loss) → now parity/slight win.**
+  - **Search (1M, high recall): vectro beats faiss +19 % to +51 %** (ef=160
+    3,142 vs 2,079 QPS; ef=400 1,552 vs 1,169). Prefetch alone: +9–11 % at 200k.
+  - Build ~13 % faster than faiss; recall and save/load identical.
+  Tests: `graph::tests` (flat store, from_layered, serde round-trip). Raw:
+  `benchmarks/results/20260621_glove100_FULL_1M_final.json`.
+
+
 ### Performance (fp16 → INT8 encode — 6.6× faster)
 - **Fused f16→INT8 encode** (`rust/vectro_lib/src/quant/int8.rs`,
   `rust/vectro_py/src/lib.rs`) — `quantize_int8_batch_from_f16` had every

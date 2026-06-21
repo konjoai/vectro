@@ -16,7 +16,8 @@ use simsimd::SpatialSimilarity;
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::{PoisonError, RwLock};
 
-use super::neighbor_store::{neighbors_serde, NeighborList, NodeId};
+use super::graph::{graph_serde, Graph};
+use super::neighbor_store::{NeighborList, NodeId};
 use super::{key_dist, key_id, pack_key};
 
 /// Inlined NEON f32 dot product — `Σ a[i]*b[i]` — for the HNSW search hot loop.
@@ -70,10 +71,9 @@ pub struct HnswIndex {
     /// Vector dimensionality (0 until the first insert).
     #[serde(default)]
     dim: usize,
-    /// `neighbors[node][layer] = [node_id, ...]`; `u32` ids in inline-capable
-    /// lists (see [`super::neighbor_store`]).
-    #[serde(with = "neighbors_serde")]
-    neighbors: Vec<Vec<NeighborList>>,
+    /// Graph adjacency in the compact flat-layer-0 store (see [`super::graph`]).
+    #[serde(with = "graph_serde")]
+    neighbors: Graph,
     entry_point: Option<usize>,
     max_level: usize,
     /// Soft-deletion tombstones; index aligns with `vectors`.
@@ -98,7 +98,7 @@ impl HnswIndex {
             ml,
             vectors: Vec::new(),
             dim: 0,
-            neighbors: Vec::new(),
+            neighbors: Graph::new(2 * m),
             entry_point: None,
             max_level: 0,
             deleted: Vec::new(),
@@ -141,6 +141,16 @@ impl HnswIndex {
         #[cfg(not(target_arch = "aarch64"))]
         let dot = <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0) as f32;
         (1.0 - dot).max(0.0)
+    }
+
+    /// Software-prefetch a stored vector into L1, hiding the ~100 ns DRAM miss
+    /// that dominates beam search once the vector buffer (473 MB at 1M × d=100)
+    /// dwarfs cache. A pure hint — no correctness or aliasing effect.
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    unsafe fn prefetch_vec(&self, id: usize) {
+        let p = self.vectors.as_ptr().add(id * self.dim);
+        core::arch::asm!("prfm pldl1keep, [{p}]", p = in(reg) p, options(nostack, preserves_flags, readonly));
     }
 
     fn normalize(v: &[f32]) -> Vec<f32> {
@@ -217,12 +227,21 @@ impl HnswIndex {
                 }
                 let c = key_id(ck);
 
-                if layer >= self.neighbors[c].len() {
+                if layer >= self.neighbors.num_layers(c) {
                     continue;
                 }
-                // Iterate adjacency by reference — `neighbors` and `vectors` are
-                // distinct shared borrows of `self`, so no clone is needed here.
-                for &nb in &self.neighbors[c][layer] {
+                // Iterate the flat layer-0 slice (or upper-layer list) by ref —
+                // `neighbors` and `vectors` are distinct shared borrows of `self`.
+                let nbrs = self.neighbors.neighbors(c, layer);
+                // Kick off all of this node's vector loads up front so the DRAM
+                // latency overlaps the distance computations below (the loads are
+                // independent random reads; issuing them together hides the miss).
+                #[cfg(target_arch = "aarch64")]
+                for &nb in nbrs {
+                    // SAFETY: ids are in-bounds; prefetch is a no-effect hint.
+                    unsafe { self.prefetch_vec(nb as usize) };
+                }
+                for &nb in nbrs {
                     let nb = nb as usize;
                     if !visited.visit(nb) {
                         continue;
@@ -297,22 +316,26 @@ impl HnswIndex {
     /// heuristic when a neighbour's list grows past `max_m`.
     fn connect(&mut self, node_id: usize, lc: usize, max_m: usize, candidates: &[(f32, usize)]) {
         let nbrs = self.select_heuristic(candidates, max_m);
-        self.neighbors[node_id][lc] = nbrs.iter().map(|&id| id as NodeId).collect();
+        let fwd: Vec<NodeId> = nbrs.iter().map(|&id| id as NodeId).collect();
+        self.neighbors.set(node_id, lc, &fwd);
 
         for &nb_id in &nbrs {
-            if lc >= self.neighbors[nb_id].len() {
+            if lc >= self.neighbors.num_layers(nb_id) {
                 continue;
             }
-            self.neighbors[nb_id][lc].push(node_id as NodeId);
-            if self.neighbors[nb_id][lc].len() > max_m {
+            self.neighbors.push(nb_id, lc, node_id as NodeId);
+            if self.neighbors.len_at(nb_id, lc) > max_m {
                 let nb_vec = self.vec(nb_id).to_vec();
-                let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
+                let mut scored: Vec<(f32, usize)> = self
+                    .neighbors
+                    .neighbors(nb_id, lc)
                     .iter()
                     .map(|&n| (Self::cosine_dist(&nb_vec, self.vec(n as usize)), n as usize))
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-                let kept = self.select_heuristic(&scored, max_m);
-                self.neighbors[nb_id][lc] = kept.iter().map(|&id| id as NodeId).collect();
+                let kept: Vec<NodeId> =
+                    self.select_heuristic(&scored, max_m).iter().map(|&id| id as NodeId).collect();
+                self.neighbors.set(nb_id, lc, &kept);
             }
         }
     }
@@ -329,7 +352,7 @@ impl HnswIndex {
             self.dim = norm_vec.len();
         }
         self.vectors.extend_from_slice(&norm_vec);
-        self.neighbors.push(vec![NeighborList::new(); node_level + 1]);
+        self.neighbors.add_node(node_level);
         self.deleted.push(false);
 
         match self.entry_point {
@@ -438,8 +461,8 @@ impl HnswIndex {
             .into_par_iter()
             .for_each(|id| self.insert_concurrent(id, levels[id], &graph, &ep_state));
 
-        // Drain the locks into the flat neighbour store.
-        self.neighbors = graph
+        // Drain the locks into the compact flat-layer-0 store.
+        let layered: Vec<Vec<NeighborList>> = graph
             .into_iter()
             .map(|node| {
                 node.into_iter()
@@ -447,6 +470,7 @@ impl HnswIndex {
                     .collect()
             })
             .collect();
+        self.neighbors = Graph::from_layered(layered, self.m0);
         let (ep, max_level) = ep_state.into_inner().unwrap_or_else(PoisonError::into_inner);
         self.entry_point = Some(ep);
         self.max_level = max_level;
@@ -725,9 +749,13 @@ impl HnswIndex {
     }
 
     /// Load an index previously saved with [`HnswIndex::save`].
+    ///
+    /// Streams from a buffered reader rather than slurping the whole file into a
+    /// `Vec<u8>` first — at 1M× d=100 the index is ~650 MB, so the buffer would
+    /// otherwise double peak load memory.
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
-        let bytes = std::fs::read(path)?;
-        let idx: Self = bincode::deserialize(&bytes)?;
+        let reader = std::io::BufReader::new(std::fs::File::open(path)?);
+        let idx: Self = bincode::deserialize_from(reader)?;
         Ok(idx)
     }
 
@@ -895,9 +923,9 @@ mod tests {
         for attempt in 0..8 {
             let mut idx = HnswIndex::new(8, 64);
             idx.add_batch(&vecs);
-            for (node, layers) in idx.neighbors.iter().enumerate() {
-                for layer in layers {
-                    for &nb in layer {
+            for node in 0..idx.len() {
+                for layer in 0..idx.neighbors.num_layers(node) {
+                    for &nb in idx.neighbors.neighbors(node, layer) {
                         let nb = nb as usize;
                         assert!(nb < n, "neighbour id {nb} out of bounds (n={n})");
                         assert_ne!(nb, node, "self-loop at node {node} (attempt {attempt})");

@@ -2,6 +2,7 @@
 //! and Okapi BM25 full-text search.
 
 pub mod bm25;
+pub(crate) mod graph;
 pub mod hnsw;
 pub mod ivf;
 pub mod ivf_pq;
