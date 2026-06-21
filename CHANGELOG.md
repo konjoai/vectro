@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (fp16 → INT8 encode — 6.6× faster)
+- **Fused f16→INT8 encode** (`rust/vectro_lib/src/quant/int8.rs`,
+  `rust/vectro_py/src/lib.rs`) — `quantize_int8_batch_from_f16` had every
+  bottleneck the f32 path shed in Phases 7–8 (a serial widen, a serial
+  `ensure_finite`, an output 0-init, GIL held). New
+  `batch_encode_f16_checked_into` widens, validates, and abs-max encodes in **one
+  fused parallel pass** (each rayon task widens its block into reused f32 scratch,
+  then validates+encodes per row), writing into an uninitialised numpy output
+  with the GIL released. On an M3: **d=64 18 → 117 M vec/s, d=100 12 → 77 M vec/s
+  (~6.6×)**. Bit-identical to widening then calling the f32 path; NaN/Inf rejected
+  at the exact (row, col). Removed the now-dead `ensure_finite`. Test:
+  `f16_checked_encode_matches_f32_and_detects_nonfinite`.
+
 ### Performance (PQ training + encode — now 2.2× faster than faiss)
 - **Tolerance early-stop + fused SIMD argmin** (`rust/vectro_lib/src/quant/pq.rs`)
   — two algorithmic wins that take PQ k-means training from parity to a decisive

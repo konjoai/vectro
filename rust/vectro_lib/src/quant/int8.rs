@@ -888,6 +888,50 @@ pub fn batch_encode_normalized_checked_into(
     }
 }
 
+/// Fused **f16 → INT8** batch encode: widen, validate, and abs-max encode in a
+/// single parallel pass. Each rayon task widens its block of rows into a small
+/// reused f32 scratch (kept in L1/L2), validates and encodes per row — so the
+/// whole `[N,D]` f16 array is read **once**, with no separate full-array widen,
+/// NaN/Inf scan, or output 0-init. Returns the first non-finite flat index (the
+/// f16 value's NaN/Inf widens to f32 NaN/Inf), or `None`.
+pub fn batch_encode_f16_checked_into(
+    input: &[half::f16],
+    _n: usize,
+    d: usize,
+    codes_out: &mut [i8],
+    scales_out: &mut [f32],
+) -> Option<usize> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let block_rows = d * RAYON_BLOCK;
+    let first_bad = AtomicUsize::new(usize::MAX);
+    input
+        .par_chunks(block_rows)
+        .zip(codes_out.par_chunks_mut(block_rows))
+        .zip(scales_out.par_chunks_mut(RAYON_BLOCK))
+        .enumerate()
+        .for_each(|(chunk_idx, ((rows16, codes), scales))| {
+            let chunk_base = chunk_idx * block_rows;
+            let n_rows = rows16.len() / d;
+            // Widen this block to f32 once into reused scratch (≤ 64×d floats).
+            let mut wbuf = vec![0.0f32; rows16.len()];
+            for (o, &h) in rows16.iter().enumerate() {
+                wbuf[o] = h.to_f32();
+            }
+            for i in 0..n_rows {
+                let row = &wbuf[i * d..(i + 1) * d];
+                if let Some(c) = first_non_finite_row(row) {
+                    first_bad.fetch_min(chunk_base + i * d + c, Ordering::Relaxed);
+                }
+                let scale = encode_fast_into(row, &mut codes[i * d..(i + 1) * d], 1.0);
+                scales[i] = scale / 127.0;
+            }
+        });
+    match first_bad.load(Ordering::Relaxed) {
+        usize::MAX => None,
+        b => Some(b),
+    }
+}
+
 /// Constant scale for L2-normalised inputs: `(1.0_f32) / 127.0`.
 pub const NORMALIZED_INV_SCALE: f32 = 1.0_f32 / 127.0_f32;
 
@@ -1384,6 +1428,38 @@ mod tests {
             assert_eq!(ref_enc.scale / 127.0, got_scale, "scale mismatch at row={row}");
             assert_eq!(ref_enc.codes.as_slice(), got_codes, "codes mismatch at row={row}");
         }
+    }
+
+    #[test]
+    fn f16_checked_encode_matches_f32_and_detects_nonfinite() {
+        let (n, d) = (150usize, 64usize);
+        // f16 input and its exact f32 widening.
+        let f16_in: Vec<half::f16> = (0..n * d)
+            .map(|i| half::f16::from_f32(((i as f32 * 0.05) - 3.0).sin()))
+            .collect();
+        let f32_in: Vec<f32> = f16_in.iter().map(|h| h.to_f32()).collect();
+
+        let mut c16 = vec![0i8; n * d];
+        let mut s16 = vec![0.0f32; n];
+        let bad = batch_encode_f16_checked_into(&f16_in, n, d, &mut c16, &mut s16);
+        assert_eq!(bad, None);
+
+        // Must equal encoding the widened f32 directly.
+        let mut c32 = vec![0i8; n * d];
+        let mut s32 = vec![0.0f32; n];
+        batch_encode_into(&f32_in, n, d, &mut c32, &mut s32);
+        assert_eq!(c16, c32, "f16 codes differ from widened-f32 codes");
+        assert_eq!(s16, s32, "f16 scales differ");
+
+        // f16 NaN widens to f32 NaN and is reported at the right index.
+        let mut bad_in = f16_in.clone();
+        bad_in[42 * d + 5] = half::f16::NAN;
+        let mut c = vec![0i8; n * d];
+        let mut s = vec![0.0f32; n];
+        assert_eq!(
+            batch_encode_f16_checked_into(&bad_in, n, d, &mut c, &mut s),
+            Some(42 * d + 5)
+        );
     }
 
     #[test]

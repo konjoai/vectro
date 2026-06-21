@@ -1302,22 +1302,6 @@ fn encode_nf4_fast(vec: Vec<f32>) -> PyResult<(Vec<u8>, f32, usize)> {
     Ok((q.packed, q.scale, q.dim))
 }
 
-/// Reject non-finite (NaN/Inf) input at the encode boundary.
-///
-/// INT8 abs-max quantisation silently corrupts on non-finite input: an `Inf`
-/// poisons a row's scale so every code saturates to 0, and `NaN` casts to 0.
-/// Failing fast with a precise location beats shipping masked overflow.
-fn ensure_finite(flat: &[f32], d: usize) -> PyResult<()> {
-    if let Some(pos) = flat.iter().position(|x| !x.is_finite()) {
-        let (row, col) = if d > 0 { (pos / d, pos % d) } else { (0, pos) };
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "input contains a non-finite value (NaN or Inf) at row {row}, col {col}; \
-             quantization requires finite float32 input"
-        )));
-    }
-    Ok(())
-}
-
 /// Batch encode a 2-D float32 numpy array [N, D] to INT8 using rayon-parallel
 /// abs-max quantisation with zero per-row heap allocation.
 ///
@@ -1451,36 +1435,39 @@ fn quantize_int8_batch_from_f16<'py>(
     let arr = vectors.as_array();
     let (n, d) = (arr.nrows(), arr.ncols());
 
-    // Widen to f32 in a single contiguous buffer.  This is unavoidable —
-    // none of the SIMD encode kernels accept f16 input directly on stable
-    // Rust 1.78 (no portable_simd::f16 yet).  However, the widen pass is
-    // O(n*d) memory-bandwidth-bound and overlaps cleanly with the encode
-    // since the f32 buffer stays in L2.
-    let mut buf = vec![0.0f32; n * d];
-    match arr.as_slice() {
-        Some(slice) => {
-            for (i, &x) in slice.iter().enumerate() {
-                buf[i] = x.to_f32();
-            }
-        }
-        None => {
-            for (i, x) in arr.iter().enumerate() {
-                buf[i] = x.to_f32();
-            }
-        }
+    // Own a contiguous f16 copy only when the input isn't already row-major.
+    let owned: Option<Vec<half::f16>> = match arr.as_slice() {
+        Some(_) => None,
+        None => Some(arr.iter().copied().collect()),
+    };
+    let f16_flat: &[half::f16] = match (&owned, arr.as_slice()) {
+        (Some(v), _) => v,
+        (None, Some(s)) => s,
+        (None, None) => unreachable!("non-contiguous arrays were copied above"),
+    };
+
+    // Widen + validate + abs-max encode in ONE fused parallel pass (see
+    // `batch_encode_f16_checked_into`) — no separate serial widen / finite-scan /
+    // 0-init. Output written straight into uninitialised numpy arrays.
+    let codes_arr = unsafe { PyArray2::<i8>::new(py, [n, d], false) };
+    let scales_arr = unsafe { PyArray1::<f32>::new(py, [n], false) };
+    let bad = {
+        let codes_slice = unsafe { codes_arr.as_slice_mut()? };
+        let scales_slice = unsafe { scales_arr.as_slice_mut()? };
+        py.allow_threads(|| {
+            vectro_lib::quant::int8::batch_encode_f16_checked_into(
+                f16_flat, n, d, codes_slice, scales_slice,
+            )
+        })
+    };
+    if let Some(pos) = bad {
+        let (row, col) = if d > 0 { (pos / d, pos % d) } else { (0, pos) };
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "input contains a non-finite value (NaN or Inf) at row {row}, col {col}; \
+             quantization requires finite float input"
+        )));
     }
-
-    // Validate after widening so f16 NaN/Inf (which widen to f32 NaN/Inf) are
-    // caught with the same contract as the f32 entry points.
-    ensure_finite(&buf, d)?;
-
-    let mut codes_flat = vec![0i8; n * d];
-    let mut scales = vec![0.0f32; n];
-    vectro_lib::quant::int8::batch_encode_into(&buf, n, d, &mut codes_flat, &mut scales);
-
-    let codes_arr = Array2::from_shape_vec((n, d), codes_flat)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok((codes_arr.into_pyarray(py), Array1::from(scales).into_pyarray(py)))
+    Ok((codes_arr, scales_arr))
 }
 
 /// Batch dequantize INT8 codes back to float32.
