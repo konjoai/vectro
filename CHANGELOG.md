@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (HNSW distance metrics — L2 + inner product)
+- **`Metric::{Cosine, L2, InnerProduct}` for `HnswIndex`** (`rust/vectro_lib/src/index/hnsw.rs`,
+  `HnswIndex::with_metric`; Python `PyHnswIndex(m, ef, metric)` accepting
+  `"cosine"`/`"l2"`/`"ip"` and aliases). Cosine stores unit-normalised vectors;
+  L2 and IP store vectors raw. L2 uses a new 8-accumulator NEON `‖a−b‖²` kernel.
+  Closes a metric-coverage gap vs faiss: vectro could previously only search
+  cosine, so Euclidean datasets (SIFT, GIST, fashion-mnist) had no correct path.
+  - **L2 validated on fashion-mnist-784-euclidean** (60k×784, single-thread):
+    recall ceiling 0.9993 (faiss 0.9996); build **5.5 s vs faiss 16.9 s (3× faster)**.
+  - IP is raw `-dot` (matches hnswlib's `InnerProductSpace`): navigable in the
+    similar-norm regime (unit vectors: recall@10 ≥ 0.85), **not** a general MIPS
+    solver for wildly varying norms (no augmentation — documented in the test).
+  Tests: `l2_metric_finds_euclidean_neighbours`, `inner_product_ranks_by_dot`.
+
+### Fixed (packed-heap ordering for negative distances)
+- **`pack_key`/`key_dist` now order *all* finite floats** (`rust/vectro_lib/src/index/mod.rs`)
+  via the standard radix-sort float key (flip all bits for negatives, sign bit
+  for non-negatives). The previous packing relied on raw IEEE-754 bits being
+  monotonic — true only for non-negative floats — so the `InnerProduct` metric's
+  negative `-dot` distances silently **inverted the beam heap** (IP recall 0.000).
+  Non-negative ordering is byte-identical, so Cosine/L2 are unaffected.
+  Test: `pack_key_orders_negative_distances`.
+
+### Performance (high-dim search — 8-accumulator SIMD)
+- **`dot_f32_neon` / `l2_sq_neon` widened from 4 to 8 f32x4 accumulators**
+  (32 lanes/iter; `rust/vectro_lib/src/index/hnsw.rs`). M3 Firestorm issues 4 FP
+  ops/cycle at ~3–4-cycle FMA latency, so 4 accumulator chains stall the pipes at
+  ~25 % of peak; 8 independent chains saturate them. The cosine/L2 distance kernel
+  dominates search cost at high dimension, where vectro had been losing to faiss.
+  - **fashion-mnist-784 L2, single-thread, same harness: +66 % search QPS**
+    (Q@.85 10,172 → 16,914; Q@.95 6,762 → 11,365; Q@.99 4,238 → 7,247). Narrows
+    the faiss gap at d=784 from 2.75× to 1.67×; closes further as ef grows (1.21×
+    at ef=320). At matched ef, recall is identical — the residual is pure kernel
+    throughput. **Honest status: faiss still leads raw search QPS at d≥256**
+    (nytimes-256-angular: vectro ~3.5k vs faiss ~4.4k QPS @ R0.85), while vectro
+    wins build time 3–4× and ties recall. Verified across d∈{1…784} by
+    `simd_kernels_match_scalar_across_dims`. Raw:
+    `benchmarks/results/headtohead_*.json`.
+
 ### Performance (HNSW memory + search at scale)
 - **Flat layer-0 graph + software prefetch** (`rust/vectro_lib/src/index/graph.rs`,
   `hnsw.rs`) — closes the two categories the full 1.18M glove-100 benchmark showed

@@ -615,9 +615,21 @@ struct PyHnswIndex {
 
 #[pymethods]
 impl PyHnswIndex {
+    /// `metric`: `"cosine"` (default), `"l2"`/`"euclidean"`, or `"ip"`/`"inner_product"`.
     #[new]
-    fn new(m: usize, ef_construction: usize) -> Self {
-        Self { inner: HnswIndex::new(m, ef_construction) }
+    #[pyo3(signature = (m, ef_construction, metric = "cosine"))]
+    fn new(m: usize, ef_construction: usize, metric: &str) -> PyResult<Self> {
+        let metric = match metric.to_ascii_lowercase().as_str() {
+            "cosine" | "angular" => vectro_lib::index::hnsw::Metric::Cosine,
+            "l2" | "euclidean" => vectro_lib::index::hnsw::Metric::L2,
+            "ip" | "inner_product" | "dot" => vectro_lib::index::hnsw::Metric::InnerProduct,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown metric '{other}' (expected cosine, l2/euclidean, or ip)"
+                )))
+            }
+        };
+        Ok(Self { inner: HnswIndex::with_metric(m, ef_construction, metric) })
     }
 
     fn add(&mut self, vector: Vec<f32>) {
@@ -694,7 +706,7 @@ impl PyHnswIndex {
         ef: usize,
     ) -> Vec<Vec<(usize, f32)>> {
         let arr = queries.as_array();
-        let (q, d) = (arr.nrows(), arr.ncols());
+        let d = arr.ncols();
         if let Some(flat) = arr.as_slice() {
             py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, ef))
         } else {
