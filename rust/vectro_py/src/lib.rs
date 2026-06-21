@@ -1359,29 +1359,28 @@ fn quantize_int8_batch<'py>(
         (None, None) => unreachable!("non-contiguous arrays were copied above"),
     };
 
-    // Parallel finite-check (the old serial scan was the Amdahl bottleneck).
-    if let Some(pos) = vectro_lib::quant::int8::first_non_finite(flat) {
+    // Allocate the outputs **uninitialised** and let the rayon kernel fill every
+    // element — skipping the serial 0-init of an intermediate `Vec`. The NaN/Inf
+    // validation is folded into the same parallel pass (no separate streaming
+    // scan — that was the dominant cost). SAFETY: the kernel writes all `n*d`
+    // codes and `n` scales before we read them back.
+    let codes_arr = unsafe { PyArray2::<i8>::new(py, [n, d], false) };
+    let scales_arr = unsafe { PyArray1::<f32>::new(py, [n], false) };
+    let bad = {
+        let codes_slice = unsafe { codes_arr.as_slice_mut()? };
+        let scales_slice = unsafe { scales_arr.as_slice_mut()? };
+        py.allow_threads(|| {
+            vectro_lib::quant::int8::batch_encode_checked_into_with_range(
+                flat, n, d, codes_slice, scales_slice, range_factor,
+            )
+        })
+    };
+    if let Some(pos) = bad {
         let (row, col) = if d > 0 { (pos / d, pos % d) } else { (0, pos) };
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "input contains a non-finite value (NaN or Inf) at row {row}, col {col}; \
              quantization requires finite float32 input"
         )));
-    }
-
-    // Allocate the outputs **uninitialised** and let the rayon kernel fill every
-    // element — skipping the serial 0-init of an intermediate `Vec` (the other
-    // half of the bottleneck). SAFETY: `batch_encode_into_with_range` writes all
-    // `n*d` codes and all `n` scales before we read them back.
-    let codes_arr = unsafe { PyArray2::<i8>::new(py, [n, d], false) };
-    let scales_arr = unsafe { PyArray1::<f32>::new(py, [n], false) };
-    {
-        let codes_slice = unsafe { codes_arr.as_slice_mut()? };
-        let scales_slice = unsafe { scales_arr.as_slice_mut()? };
-        py.allow_threads(|| {
-            vectro_lib::quant::int8::batch_encode_into_with_range(
-                flat, n, d, codes_slice, scales_slice, range_factor,
-            );
-        });
     }
     Ok((codes_arr, scales_arr))
 }
@@ -1414,26 +1413,26 @@ fn quantize_int8_batch_normalized<'py>(
         (None, None) => unreachable!("non-contiguous arrays were copied above"),
     };
 
-    if let Some(pos) = vectro_lib::quant::int8::first_non_finite(flat) {
+    // Uninitialised outputs filled by the rayon kernel, with the NaN/Inf check
+    // folded into the same pass (see `quantize_int8_batch`). SAFETY: the kernel
+    // writes all `n*d` codes and `n` scales before we read them back.
+    let codes_arr = unsafe { PyArray2::<i8>::new(py, [n, d], false) };
+    let scales_arr = unsafe { PyArray1::<f32>::new(py, [n], false) };
+    let bad = {
+        let codes_slice = unsafe { codes_arr.as_slice_mut()? };
+        let scales_slice = unsafe { scales_arr.as_slice_mut()? };
+        py.allow_threads(|| {
+            vectro_lib::quant::int8::batch_encode_normalized_checked_into(
+                flat, n, d, codes_slice, scales_slice,
+            )
+        })
+    };
+    if let Some(pos) = bad {
         let (row, col) = if d > 0 { (pos / d, pos % d) } else { (0, pos) };
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "input contains a non-finite value (NaN or Inf) at row {row}, col {col}; \
              quantization requires finite float32 input"
         )));
-    }
-
-    // Uninitialised outputs filled by the rayon kernel (see `quantize_int8_batch`).
-    // SAFETY: `batch_encode_normalized_into` writes all `n*d` codes and `n` scales.
-    let codes_arr = unsafe { PyArray2::<i8>::new(py, [n, d], false) };
-    let scales_arr = unsafe { PyArray1::<f32>::new(py, [n], false) };
-    {
-        let codes_slice = unsafe { codes_arr.as_slice_mut()? };
-        let scales_slice = unsafe { scales_arr.as_slice_mut()? };
-        py.allow_threads(|| {
-            vectro_lib::quant::int8::batch_encode_normalized_into(
-                flat, n, d, codes_slice, scales_slice,
-            );
-        });
     }
     Ok((codes_arr, scales_arr))
 }
