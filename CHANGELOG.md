@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (high-dim search — full-vector prefetch flips the d≥256 loss)
+- **Software-pipelined full-vector prefetch** (`rust/vectro_lib/src/index/hnsw.rs`,
+  `prefetch_vec_full`). Diagnosed via a feature-gated distance-eval counter
+  (`--features distcount`): at matched `ef`, **vectro already does ≤ faiss's
+  distance evaluations at ≥ faiss's recall** (nytimes-256: 0.80× the evals,
+  *higher* recall) — so its graph and beam search are not the problem. A kernel
+  micro-benchmark showed the distance kernel runs at ~22 M dist/s in isolation
+  but only ~3.4 M/s in-search: the high-dim cost is **cold-memory latency**, not
+  compute. The old prefetch primed only the *first* cache line of each neighbour,
+  so the distance loop then stalled demand-loading the other ~`dim/16` lines.
+  Prefetching the **whole vector span**, pipelined two neighbours ahead, hides
+  that latency. Single-thread, same harness:
+  - **nytimes-256-angular (d=256, cosine): 3,589 → 6,532 QPS @ R0.85 — now beats
+    faiss 4,433 by +47 %** (was a 19 % loss).
+  - **fashion-mnist-784 (d=784, L2): 18,010 → 26,908 (+49 %)** — faiss gap
+    1.67× → 1.1×, tied at high recall (Q@.99 11,238 vs 11,828).
+  - **glove-100 (d=100, 1.18M): 4,778 vs faiss 3,242 — +47 %** (no low-dim
+    regression; build 124 s vs 501 s). Recall and memory unchanged.
+  - **sift-128-euclidean (d=128, 1M, L2): +19 % → +37 %** across recall levels
+    (Q@.85 28,799 vs 24,266; Q@.99 5,564 vs 4,061; build 65 s vs 281 s) — the
+    win grows with recall, confirming the fix holds at 1M scale.
+  Net: vectro now beats faiss search QPS at d=100/128/256 and ties at d=784
+  (high recall), while building 3–4× faster at equal recall and memory.
+  Raw: `benchmarks/results/headtohead_*.json`.
+- **L2 distance reformulated as `‖q‖² + ‖v‖² − 2⟨q,v⟩`** with a per-vector
+  `‖v‖²` cache (`norms_sq`, serde-skipped, rebuilt on load), so each L2 eval is a
+  single dot product (matches faiss's `IndexFlatL2`).
+- Diagnostic `distcount` feature (vectro_lib + vectro_py) exposing
+  `dist_evals_reset`/`dist_evals_get` to Python. Off by default — never shipped.
+
+### Fixed (vacuum dropped the metric)
+- **`HnswIndex::vacuum` now preserves the index's [`Metric`]** — it rebuilt via
+  `HnswIndex::new` (always cosine), silently re-normalising an L2/IP index's
+  vectors. Test: `vacuum_preserves_l2_metric`.
+
 ### Added (HNSW distance metrics — L2 + inner product)
 - **`Metric::{Cosine, L2, InnerProduct}` for `HnswIndex`** (`rust/vectro_lib/src/index/hnsw.rs`,
   `HnswIndex::with_metric`; Python `PyHnswIndex(m, ef, metric)` accepting

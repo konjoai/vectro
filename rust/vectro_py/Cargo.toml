@@ -17,6 +17,8 @@ half = "2.4"
 default = []
 # Pass-through to vectro_lib's Accelerate / AMX (Wave 3d, macOS only).
 vectro_lib_accelerate = ["vectro_lib/vectro_lib_accelerate"]
+# Diagnostic distance-eval counter pass-through (see vectro_lib). Never ship.
+distcount = ["vectro_lib/distcount"]
 
 [lib]
 name = "vectro_py"

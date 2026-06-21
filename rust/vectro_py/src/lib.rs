@@ -1700,6 +1700,20 @@ fn hybrid_search_py(
 }
 
 /// Main Python module
+/// Diagnostic: reset the global distance-eval counter (feature `distcount`).
+#[cfg(feature = "distcount")]
+#[pyfunction]
+fn dist_evals_reset() {
+    vectro_lib::index::hnsw::dist_evals_reset();
+}
+
+/// Diagnostic: read the global distance-eval counter (feature `distcount`).
+#[cfg(feature = "distcount")]
+#[pyfunction]
+fn dist_evals_get() -> u64 {
+    vectro_lib::index::hnsw::dist_evals_get()
+}
+
 #[pymodule]
 fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyEmbedding>()?;
@@ -1734,6 +1748,11 @@ fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // BM25 + hybrid search (v6.0.0)
     m.add_class::<PyBM25Index>()?;
     m.add_function(wrap_pyfunction!(hybrid_search_py, m)?)?;
+    #[cfg(feature = "distcount")]
+    {
+        m.add_function(wrap_pyfunction!(dist_evals_reset, m)?)?;
+        m.add_function(wrap_pyfunction!(dist_evals_get, m)?)?;
+    }
 
     // Add version info
     m.add("__version__", "4.10.0")?;

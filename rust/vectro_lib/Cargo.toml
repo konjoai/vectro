@@ -23,6 +23,10 @@ tracing = "0.1"
 
 [features]
 default = []
+# Diagnostic: count distance evaluations per search (global atomic). Off by
+# default — adds a relaxed increment to the distance hot path. Used to compare
+# vectro's ndis/query against faiss's hnsw_stats.ndis. Never enable in release.
+distcount = []
 # Wave 3d — route the INT8 encode multiply through Apple's Accelerate
 # framework so vDSP can dispatch large workloads through the AMX
 # coprocessor on M1 / M2 / M3.  Off by default; macOS only.  When
