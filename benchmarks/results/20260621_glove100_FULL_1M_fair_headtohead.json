@@ -1,0 +1,48 @@
+{
+  "dataset": "glove-100 FULL 1.18M",
+  "methodology": "single-thread, recall-matched, back-to-back same session idle",
+  "rows": [
+    {
+      "ef": 40,
+      "recall": 0.725,
+      "vectro_qps": 9118,
+      "faiss_qps": 8645,
+      "edge_pct": 5
+    },
+    {
+      "ef": 64,
+      "recall": 0.781,
+      "vectro_qps": 6464,
+      "faiss_qps": 5436,
+      "edge_pct": 19
+    },
+    {
+      "ef": 100,
+      "recall": 0.825,
+      "vectro_qps": 4397,
+      "faiss_qps": 4374,
+      "edge_pct": 1
+    },
+    {
+      "ef": 160,
+      "recall": 0.8631,
+      "vectro_qps": 3227,
+      "faiss_qps": 2940,
+      "edge_pct": 10
+    },
+    {
+      "ef": 256,
+      "recall": 0.8951,
+      "vectro_qps": 2219,
+      "faiss_qps": 1884,
+      "edge_pct": 18
+    },
+    {
+      "ef": 400,
+      "recall": 0.9202,
+      "vectro_qps": 1512,
+      "faiss_qps": 669,
+      "edge_pct": 126
+    }
+  ]
+}

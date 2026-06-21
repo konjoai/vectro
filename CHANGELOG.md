@@ -7,6 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (high-dim search — full-vector prefetch flips the d≥256 loss)
+- **Software-pipelined full-vector prefetch** (`rust/vectro_lib/src/index/hnsw.rs`,
+  `prefetch_vec_full`). Diagnosed via a feature-gated distance-eval counter
+  (`--features distcount`): at matched `ef`, **vectro already does ≤ faiss's
+  distance evaluations at ≥ faiss's recall** (nytimes-256: 0.80× the evals,
+  *higher* recall) — so its graph and beam search are not the problem. A kernel
+  micro-benchmark showed the distance kernel runs at ~22 M dist/s in isolation
+  but only ~3.4 M/s in-search: the high-dim cost is **cold-memory latency**, not
+  compute. The old prefetch primed only the *first* cache line of each neighbour,
+  so the distance loop then stalled demand-loading the other ~`dim/16` lines.
+  Prefetching the **whole vector span**, pipelined two neighbours ahead, hides
+  that latency. Single-thread, same harness:
+  - **nytimes-256-angular (d=256, cosine): 3,589 → 6,532 QPS @ R0.85 — now beats
+    faiss 4,433 by +47 %** (was a 19 % loss).
+  - **fashion-mnist-784 (d=784, L2): 18,010 → 26,908 (+49 %)** — faiss gap
+    1.67× → 1.1×, tied at high recall (Q@.99 11,238 vs 11,828).
+  - **glove-100 (d=100, 1.18M): 4,778 vs faiss 3,242 — +47 %** (no low-dim
+    regression; build 124 s vs 501 s). Recall and memory unchanged.
+  - **sift-128-euclidean (d=128, 1M, L2): +19 % → +37 %** across recall levels
+    (Q@.85 28,799 vs 24,266; Q@.99 5,564 vs 4,061; build 65 s vs 281 s) — the
+    win grows with recall, confirming the fix holds at 1M scale.
+  Net: vectro now beats faiss search QPS at d=100/128/256 and ties at d=784
+  (high recall), while building 3–4× faster at equal recall and memory.
+  Raw: `benchmarks/results/headtohead_*.json`.
+- **L2 distance reformulated as `‖q‖² + ‖v‖² − 2⟨q,v⟩`** with a per-vector
+  `‖v‖²` cache (`norms_sq`, serde-skipped, rebuilt on load), so each L2 eval is a
+  single dot product (matches faiss's `IndexFlatL2`).
+- Diagnostic `distcount` feature (vectro_lib + vectro_py) exposing
+  `dist_evals_reset`/`dist_evals_get` to Python. Off by default — never shipped.
+
+### Fixed (vacuum dropped the metric)
+- **`HnswIndex::vacuum` now preserves the index's [`Metric`]** — it rebuilt via
+  `HnswIndex::new` (always cosine), silently re-normalising an L2/IP index's
+  vectors. Test: `vacuum_preserves_l2_metric`.
+
+### Added (HNSW distance metrics — L2 + inner product)
+- **`Metric::{Cosine, L2, InnerProduct}` for `HnswIndex`** (`rust/vectro_lib/src/index/hnsw.rs`,
+  `HnswIndex::with_metric`; Python `PyHnswIndex(m, ef, metric)` accepting
+  `"cosine"`/`"l2"`/`"ip"` and aliases). Cosine stores unit-normalised vectors;
+  L2 and IP store vectors raw. L2 uses a new 8-accumulator NEON `‖a−b‖²` kernel.
+  Closes a metric-coverage gap vs faiss: vectro could previously only search
+  cosine, so Euclidean datasets (SIFT, GIST, fashion-mnist) had no correct path.
+  - **L2 validated on fashion-mnist-784-euclidean** (60k×784, single-thread):
+    recall ceiling 0.9993 (faiss 0.9996); build **5.5 s vs faiss 16.9 s (3× faster)**.
+  - IP is raw `-dot` (matches hnswlib's `InnerProductSpace`): navigable in the
+    similar-norm regime (unit vectors: recall@10 ≥ 0.85), **not** a general MIPS
+    solver for wildly varying norms (no augmentation — documented in the test).
+  Tests: `l2_metric_finds_euclidean_neighbours`, `inner_product_ranks_by_dot`.
+
+### Fixed (packed-heap ordering for negative distances)
+- **`pack_key`/`key_dist` now order *all* finite floats** (`rust/vectro_lib/src/index/mod.rs`)
+  via the standard radix-sort float key (flip all bits for negatives, sign bit
+  for non-negatives). The previous packing relied on raw IEEE-754 bits being
+  monotonic — true only for non-negative floats — so the `InnerProduct` metric's
+  negative `-dot` distances silently **inverted the beam heap** (IP recall 0.000).
+  Non-negative ordering is byte-identical, so Cosine/L2 are unaffected.
+  Test: `pack_key_orders_negative_distances`.
+
+### Performance (high-dim search — 8-accumulator SIMD)
+- **`dot_f32_neon` / `l2_sq_neon` widened from 4 to 8 f32x4 accumulators**
+  (32 lanes/iter; `rust/vectro_lib/src/index/hnsw.rs`). M3 Firestorm issues 4 FP
+  ops/cycle at ~3–4-cycle FMA latency, so 4 accumulator chains stall the pipes at
+  ~25 % of peak; 8 independent chains saturate them. The cosine/L2 distance kernel
+  dominates search cost at high dimension, where vectro had been losing to faiss.
+  - **fashion-mnist-784 L2, single-thread, same harness: +66 % search QPS**
+    (Q@.85 10,172 → 16,914; Q@.95 6,762 → 11,365; Q@.99 4,238 → 7,247). Narrows
+    the faiss gap at d=784 from 2.75× to 1.67×; closes further as ef grows (1.21×
+    at ef=320). At matched ef, recall is identical — the residual is pure kernel
+    throughput. **Honest status: faiss still leads raw search QPS at d≥256**
+    (nytimes-256-angular: vectro ~3.5k vs faiss ~4.4k QPS @ R0.85), while vectro
+    wins build time 3–4× and ties recall. Verified across d∈{1…784} by
+    `simd_kernels_match_scalar_across_dims`. Raw:
+    `benchmarks/results/headtohead_*.json`.
+
+### Performance (HNSW memory + search at scale)
+- **Flat layer-0 graph + software prefetch** (`rust/vectro_lib/src/index/graph.rs`,
+  `hnsw.rs`) — closes the two categories the full 1.18M glove-100 benchmark showed
+  vectro losing/tying vs faiss. The graph was `Vec<Vec<SmallVec<[u32;32]>>>`: each
+  list reserved 128 B inline regardless of fill, plus per-node `Vec` headers — a
+  ~286 MB graph vs faiss's flat ~171 MB. New `Graph` stores layer 0 (≈99 % of
+  nodes) as a single **flat fixed-slot `u32` array** + `u8` fill counts (FAISS's
+  layout), with a compact `u32` on-disk wire (was `u64`-per-link) that
+  deserialises straight into the flat store. Plus **prefetch-all-upfront** of a
+  node's neighbour vectors before the distance loop, hiding DRAM latency once the
+  473 MB vector buffer dwarfs cache.
+  - **Memory (1M): on-disk 647 vs faiss 644 MB, RSS 612 vs ~625 MB — was 759 MB
+    (+18 % loss) → now parity/slight win.**
+  - **Search (1M, high recall): vectro beats faiss +19 % to +51 %** (ef=160
+    3,142 vs 2,079 QPS; ef=400 1,552 vs 1,169). Prefetch alone: +9–11 % at 200k.
+  - Build ~13 % faster than faiss; recall and save/load identical.
+  Tests: `graph::tests` (flat store, from_layered, serde round-trip). Raw:
+  `benchmarks/results/20260621_glove100_FULL_1M_final.json`.
+
+
 ### Performance (fp16 → INT8 encode — 6.6× faster)
 - **Fused f16→INT8 encode** (`rust/vectro_lib/src/quant/int8.rs`,
   `rust/vectro_py/src/lib.rs`) — `quantize_int8_batch_from_f16` had every

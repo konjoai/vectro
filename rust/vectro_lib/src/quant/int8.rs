@@ -267,7 +267,9 @@ unsafe fn encode_neon(v: &[f32]) -> Int8Vector {
         vst1q_s8(out_ptr.add(base), vcombine_s8(b0, b1));
     }
 
-    // scalar tail for the remainder (< 16 elements)
+    // scalar tail for the remainder (< 16 elements). Indexed: writes go through a
+    // raw `out_ptr`, so there is no output slice to iterate.
+    #[allow(clippy::needless_range_loop)]
     for i in chunks16 * 16..n {
         *out_ptr.add(i) = (v[i] * inv).round().clamp(-127.0, 127.0) as i8;
     }
@@ -375,8 +377,9 @@ unsafe fn encode_neon_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 
         vst1q_s8(out_ptr.add(base), vcombine_s8(b0, b1));
     }
 
-    // scalar tail (< 16 elements)
+    // scalar tail (< 16 elements). Indexed: raw-pointer output, no slice to iterate.
     let tail_start = after_32 + chunks16_extra * 16;
+    #[allow(clippy::needless_range_loop)]
     for i in tail_start..n {
         *out_ptr.add(i) = (v[i] * inv).round().clamp(-127.0, 127.0) as i8;
     }
@@ -457,6 +460,8 @@ unsafe fn encode_avx2_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 
 /// profiles.  The returned scale is the effective scale (`abs_max / rf`), so
 /// the caller's `scale / 127.0` yields `abs_max / (127 · rf)` — exactly the
 /// NumPy baseline's per-row scale.
+// Used only on non-aarch64 targets without AVX2/AVX-512; dead on aarch64.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 #[inline(always)]
 pub(crate) fn encode_scalar_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 {
     debug_assert_eq!(v.len(), out.len());
@@ -968,6 +973,8 @@ pub fn encode_normalized_into(v: &[f32], out: &mut [i8]) -> f32 {
 }
 
 /// Portable scalar single-pass quantise for L2-normalised inputs.
+// Used only on non-aarch64 targets (x86 without AVX2, or other arches); dead on aarch64.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 #[inline(always)]
 pub(crate) fn encode_normalized_scalar(v: &[f32], out: &mut [i8]) {
     const M: f32 = 127.0;
@@ -1026,6 +1033,7 @@ unsafe fn encode_normalized_neon(v: &[f32], out: &mut [i8]) {
 
     // scalar tail (< 16 elements)
     let tail_start = after_32 + chunks16 * 16;
+    #[allow(clippy::needless_range_loop)]
     for i in tail_start..n {
         *out_ptr.add(i) = (v[i] * 127.0_f32).round().clamp(-127.0, 127.0) as i8;
     }
@@ -1150,6 +1158,7 @@ unsafe fn encode_neon_fused_into(v: &[f32], out: &mut [i8]) -> f32 {
         let s23 = vcombine_s16(vmovn_s32(vcvtq_s32_f32(r2)), vmovn_s32(vcvtq_s32_f32(r3)));
         vst1q_s8(out_ptr.add(base), vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)));
     }
+    #[allow(clippy::needless_range_loop)]
     for i in chunks16 * 16..n {
         *out_ptr.add(i) = (buf[i] * inv).round().clamp(-127.0, 127.0) as i8;
     }
@@ -1228,6 +1237,9 @@ unsafe fn encode_avx2_fused_into(v: &[f32], out: &mut [i8]) -> f32 {
 /// callers who can guarantee the row fits in L1.  Falls back to the
 /// standard `encode_fast_into` on platforms without a fused
 /// implementation.
+// The early `return`s are structural: each arch path is cfg-gated, so on any
+// single target one of them is the function's last statement.
+#[allow(clippy::needless_return)]
 #[inline(always)]
 pub fn encode_fast_fused_into(v: &[f32], out: &mut [i8]) -> f32 {
     debug_assert_eq!(v.len(), out.len());
