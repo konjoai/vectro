@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (IVF-PQ — k-means++ init was O(n·k²·d), now O(n·k·d))
+- `rust/vectro_lib/src/index/ivf_pq.rs` — `kmeans_pp_init` recomputed each
+  point's distance to **every** already-chosen centroid on every round (and ran
+  serially), making IVF training scale as O(n·k²·d). Rewrote it to the standard
+  running-minimum form (update against only the new centroid each round, in
+  parallel), matching the already-correct `ivf.rs` / `pq.rs`. **IVF-PQ training
+  100.1s → 2.4s (42×) at 512 lists on glove-100 (50K train sample, M=50)** —
+  now faster than FAISS `IndexIVFPQ` (2.9s) at matched recall (0.848 vs 0.859).
+
+### Added (IVF-PQ at-scale benchmark — the "fits the machine" story)
+- `benchmarks/benchmark_ivfpq_scale.py` — builds vectro IVF-PQ at a
+  parametrised scale and reports build time, **measured RSS**, the analytic
+  footprint vs float32-flat / HNSW-float32, recall@k vs exact brute-force GT,
+  a QPS `n_probe` sweep, a 100M/1B memory projection, and an optional FAISS
+  `IndexIVFPQ` comparison. Demonstrates the regime where vectro structurally
+  wins: **100M×768 is ~307 GB as float32 but ~10.5 GB as IVF-PQ codes (29×)**,
+  turning an impossible single-machine workload into a routine one, at recall
+  competitive with FAISS (~95%). Plus `tests/test_benchmark_ivfpq_scale.py`.
+- Known follow-ups surfaced by the benchmark: IVF Lloyd assignment is ~3.5×
+  FAISS at high `n_lists` (scalar `cosine_dist`), and IVF-PQ search lacks a
+  batched/parallel binding + PQ fast-scan (single-query Python loop today).
+
 ### Performance (HNSW search — x86_64 reaches parity with the aarch64 hot path)
 - **AVX2+FMA dot kernel** (`rust/vectro_lib/src/index/hnsw.rs`, `dot_f32_avx2`) —
   the search distance hot loop had a hand-rolled NEON dot on aarch64 but fell
