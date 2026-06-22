@@ -352,6 +352,27 @@ impl IvfPqIndex {
         candidates.into_iter().map(|(d, id)| (id, d)).collect()
     }
 
+    /// Batch search over a flat `[q * dim]` query buffer, parallelised across
+    /// queries (rayon). `search_with_probe` is `&self`/read-only, so this is
+    /// lock-free. Returns one `(id, dist)` result list per query row — the
+    /// throughput path that avoids per-query Python/FFI call overhead.
+    pub fn search_batch_flat(
+        &self,
+        flat: &[f32],
+        dim: usize,
+        k: usize,
+        n_probe: usize,
+    ) -> Vec<Vec<(usize, f32)>> {
+        if dim == 0 {
+            return Vec::new();
+        }
+        let q = flat.len() / dim;
+        (0..q)
+            .into_par_iter()
+            .map(|i| self.search_with_probe(&flat[i * dim..(i + 1) * dim], k, n_probe))
+            .collect()
+    }
+
     /// Soft-delete a vector by global id.  Out-of-bounds ids are ignored.
     pub fn delete(&mut self, id: usize) {
         if id < self.deleted.len() {
