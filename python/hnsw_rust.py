@@ -101,6 +101,24 @@ class RustHnswBackend:
             res = self._idx.search_filtered_np(q, k, ef, allowed)
         return [(int(nid), float(dist)) for nid, dist in res]
 
+    def search_batch(
+        self,
+        q_norm: np.ndarray,
+        k: int,
+        ef: int,
+    ) -> List[List[Tuple[int, float]]]:
+        """Batch search: one ``[(node_id, distance), …]`` list per query row.
+
+        Delegates to the native ``search_batch_np``, which parallelises across
+        queries with rayon and releases the GIL — far higher throughput than a
+        per-query Python loop. Filtering is not supported on this path (the
+        native batch entry takes no allow-list); callers needing a metadata
+        filter fall back to per-query :meth:`search`.
+        """
+        q = np.ascontiguousarray(q_norm, dtype=np.float32)
+        batch = self._idx.search_batch_np(q, k, ef)
+        return [[(int(nid), float(dist)) for nid, dist in row] for row in batch]
+
     def rebuild(self, normalized_vectors: List[np.ndarray], deleted: "set[int]") -> None:
         """Rebuild the graph from scratch, then re-apply tombstones.
 

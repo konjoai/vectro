@@ -161,7 +161,7 @@ from .quantization_audit import (
     RecallResult,
 )
 
-__version__ = "5.19.0"
+__version__ = "5.20.0"
 __author__ = "Wesley Scholl"
 __license__ = "MIT"
 __description__ = "Ultra-High-Performance LLM Embedding Compressor"
