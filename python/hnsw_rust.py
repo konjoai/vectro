@@ -101,6 +101,21 @@ class RustHnswBackend:
             res = self._idx.search_filtered_np(q, k, ef, allowed)
         return [(int(nid), float(dist)) for nid, dist in res]
 
+    def search_arrays(
+        self,
+        q_norm: np.ndarray,
+        k: int,
+        ef: int,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Single-query search returning ``(ids int64, distances float32)`` numpy
+        arrays directly from the native core, with the GIL released.
+
+        Skips the per-query Python list-of-tuples allocation that bottlenecks the
+        single-query hot path.
+        """
+        q = np.ascontiguousarray(q_norm, dtype=np.float32)
+        return self._idx.search_arrays_np(q, k, ef)
+
     def search_batch(
         self,
         q_norm: np.ndarray,

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (HNSW search — x86_64 reaches parity with the aarch64 hot path)
+- **AVX2+FMA dot kernel** (`rust/vectro_lib/src/index/hnsw.rs`, `dot_f32_avx2`) —
+  the search distance hot loop had a hand-rolled NEON dot on aarch64 but fell
+  back to **SimSIMD per-call dispatch on x86_64**, whose indirection dominates at
+  the low dims typical of ANN search (d≈100). Adds the x86 analogue of the NEON
+  kernel (4× `f32x8` FMA accumulators), runtime-detected via
+  `is_x86_feature_detected!`.
+- **x86_64 software prefetch** (`prefetch_vec_full`) — the two-neighbour-ahead
+  full-vector prefetch in the beam loop was aarch64-only; added the `_mm_prefetch`
+  equivalent so cold neighbour vectors stream in while the current distance
+  computes.
+- **Pre-sized candidate heaps** — the beam-search `cands`/`window` heaps now
+  reserve `ef` up front, removing per-query heap-growth reallocations.
+- Net on glove-100 (50K×100, ef=100): **batch search 20,250 → 22,718 QPS (+12%)**
+  at identical recall (~0.918), narrowing the gap to hnswlib/faiss to ~1.4×.
+
+### Added (HNSW — zero-copy single-query results + GIL release)
+- `PyHnswIndex.search_arrays_np` returns `(int64 ids, float32 distances)` numpy
+  arrays directly with the **GIL released** during the search, and
+  `HNSWIndex.search` uses it on the unfiltered rust hot path. Avoids the
+  per-query list-of-tuples allocation and lets multiple Python threads search
+  concurrently: single-query serving scales **4,890 → 8,578 QPS at 4 threads
+  (~1.75×)**. (Single-threaded single-query remains bound by Python per-call
+  overhead — use `search_batch` for maximum throughput.)
+
 ### Added (HNSW — batched Python search closes the single-query gap)
 - `HNSWIndex.search_batch(queries, k, ef, filter=None)` (`python/hnsw_api.py`) —
   a high-throughput multi-query entry point. On a rust-backed cosine index with
