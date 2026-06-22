@@ -199,7 +199,12 @@ def _build_hnswlib(
 
 def _query_hnswlib(idx: Any, queries: np.ndarray, k: int, ef_search: int) -> np.ndarray:
     idx.set_ef(ef_search)
-    labels, _ = idx.knn_query(queries, num_threads=1, k=k)
+    # Use hnswlib's default (all-core) threading to match how the other indexes
+    # are measured: Vectro's ``search_batch_np`` is rayon-parallel across queries
+    # (GIL released) and usearch's batch ``search`` is multi-threaded too.
+    # Pinning only hnswlib to a single thread would understate it and flatter
+    # Vectro — honest measurement requires the same threading model for all.
+    labels, _ = idx.knn_query(queries, k=k)
     return np.array(labels, dtype=np.int64)
 
 
