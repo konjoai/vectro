@@ -176,17 +176,16 @@ def run_vectro(
     peak = peak_rss_gb()
 
     sweep = []
-    qlist = [list(map(float, queries_u[i])) for i in range(len(queries_u))]
+    qc = np.ascontiguousarray(queries_u, dtype=np.float32)
     for npb in probes:
-        # warmup
-        for qq in qlist[: min(50, len(qlist))]:
-            idx.search_with_probe(qq, k, npb)
+        idx.search_batch_np(qc, k, npb)  # warmup
         times = []
+        preds = None
         for _ in range(reps):
             t0 = time.perf_counter()
-            preds = [idx.search_with_probe(qq, k, npb) for qq in qlist]
+            preds = idx.search_batch_np(qc, k, npb)
             times.append(time.perf_counter() - t0)
-        qps = len(qlist) / statistics.median(times)
+        qps = len(qc) / statistics.median(times)
         rec = None
         if gt is not None:
             pred = np.array(

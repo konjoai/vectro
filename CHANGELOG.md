@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (IVF-PQ — batched, parallel, GIL-free search)
+- `IvfPqIndex::search_batch_flat` (`rust/vectro_lib/src/index/ivf_pq.rs`) and the
+  `PyIvfPqIndex.search_batch_np(queries, k, n_probe)` binding
+  (`rust/vectro_py/src/lib.rs`): batch IVF-PQ search parallelised across queries
+  with rayon and the **GIL released**, mirroring the HNSW `search_batch_np` path.
+  Replaces the per-query Python loop (a PyO3 call + Python overhead per query) —
+  the throughput path for at-scale serving. `benchmark_ivfpq_scale.py` now drives
+  vectro through this batch entry for an apples-to-apples comparison with FAISS's
+  batched `search`.
+
 ### Fixed (IVF-PQ — k-means++ init was O(n·k²·d), now O(n·k·d))
 - `rust/vectro_lib/src/index/ivf_pq.rs` — `kmeans_pp_init` recomputed each
   point's distance to **every** already-chosen centroid on every round (and ran

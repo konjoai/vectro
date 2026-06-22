@@ -1096,6 +1096,28 @@ impl PyIvfPqIndex {
         self.inner.search_for_recall(&query, k, target_recall)
     }
 
+    /// Batch search over a 2-D numpy query array [Q, D], parallelised across
+    /// queries (rayon) with the GIL released. Returns one (id, dist) list per
+    /// row — the throughput path that avoids the per-query Python call overhead
+    /// of looping `search_with_probe` from Python.
+    fn search_batch_np(
+        &self,
+        py: Python<'_>,
+        queries: PyReadonlyArray2<f32>,
+        k: usize,
+        n_probe: usize,
+    ) -> Vec<Vec<(usize, f32)>> {
+        let arr = queries.as_array();
+        let (_q, d) = (arr.nrows(), arr.ncols());
+        match arr.as_slice() {
+            Some(flat) => py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, n_probe)),
+            None => {
+                let owned: Vec<f32> = arr.iter().copied().collect();
+                py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, n_probe))
+            }
+        }
+    }
+
     /// Persist to file (bincode).
     fn save(&self, path: &str) -> PyResult<()> {
         self.inner.save(path).map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
