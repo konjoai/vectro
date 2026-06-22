@@ -34,47 +34,58 @@ fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// K-means++ initialisation — returns `k` centroids from `data`.
+///
+/// Maintains a running per-point squared distance to the *nearest chosen*
+/// centroid, updated against only the newly added centroid each round
+/// (parallel). This is the standard O(n·k·d) algorithm; the previous version
+/// recomputed distances to *all* chosen centroids every round — O(n·k²·d) and
+/// serial — which dominated IVF training time (≈k/2 = hundreds× more work at
+/// k=512).
 fn kmeans_pp_init(data: &[Vec<f32>], k: usize, d: usize, seed: u64) -> Vec<f32> {
     let n = data.len();
     let mut rng = seed;
     let mut centroids = Vec::with_capacity(k * d);
 
-    // First centroid: random pick
+    // First centroid: random pick.
     rng = lcg_next(rng);
     let first = (rng as usize) % n;
     centroids.extend_from_slice(&data[first]);
 
-    for c_idx in 1..k {
-        let chosen_centroids = &centroids[..c_idx * d];
+    // Running squared distance from each point to its nearest chosen centroid.
+    let mut min_d2: Vec<f32> = data
+        .par_iter()
+        .map(|v| {
+            let dd = cosine_dist(v, &data[first]);
+            dd * dd
+        })
+        .collect();
 
-        // Compute D² distances from each point to its nearest chosen centroid
-        let dists: Vec<f32> = data
-            .iter()
-            .map(|v| {
-                let mut best = f32::MAX;
-                for ci in 0..c_idx {
-                    let cent = &chosen_centroids[ci * d..(ci + 1) * d];
-                    let dist = cosine_dist(v, cent);
-                    if dist < best {
-                        best = dist;
-                    }
-                }
-                best * best
-            })
-            .collect();
-
-        let total: f32 = dists.iter().sum();
+    for _ in 1..k {
+        let total: f32 = min_d2.iter().sum();
         rng = lcg_next(rng);
         let mut target = (rng as f64 / u64::MAX as f64) as f32 * total;
         let mut picked = n - 1;
-        for (i, &d2) in dists.iter().enumerate() {
+        for (i, &d2) in min_d2.iter().enumerate() {
             target -= d2;
             if target <= 0.0 {
                 picked = i;
                 break;
             }
         }
-        centroids.extend_from_slice(&data[picked]);
+        let new_cent = data[picked].clone();
+        centroids.extend_from_slice(&new_cent);
+
+        // Refresh the running minimum against only the new centroid (parallel).
+        min_d2
+            .par_iter_mut()
+            .zip(data.par_iter())
+            .for_each(|(m, v)| {
+                let dd = cosine_dist(v, &new_cent);
+                let d2 = dd * dd;
+                if d2 < *m {
+                    *m = d2;
+                }
+            });
     }
     centroids
 }
@@ -559,6 +570,27 @@ mod tests {
             idx.add(v);
         }
         assert_eq!(idx.pq_codes.len(), 200);
+    }
+
+    #[test]
+    fn kmeans_pp_init_picks_k_distinct_data_points() {
+        // Regression guard for the O(n·k·d) running-min rewrite: init must return
+        // exactly k centroids, each an actual data row (k-means++ seeds from the
+        // data), with no duplicate picks for well-separated points.
+        let data = random_unit_vecs(500, 8, 3);
+        let (k, d) = (32usize, 8usize);
+        let cents = kmeans_pp_init(&data, k, d, 11);
+        assert_eq!(cents.len(), k * d);
+        let mut picks = Vec::new();
+        for ci in 0..k {
+            let c = &cents[ci * d..(ci + 1) * d];
+            let found = data.iter().position(|v| v.as_slice() == c);
+            assert!(found.is_some(), "centroid {ci} is not a data row");
+            picks.push(found.unwrap());
+        }
+        picks.sort_unstable();
+        picks.dedup();
+        assert_eq!(picks.len(), k, "k-means++ picked duplicate seeds");
     }
 
     #[test]
