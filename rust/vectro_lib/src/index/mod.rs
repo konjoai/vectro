@@ -9,6 +9,7 @@ pub mod ivf_pq;
 pub(crate) mod neighbor_store;
 pub mod quant_hnsw;
 pub(crate) mod scratch;
+pub(crate) mod simd;
 
 pub use bm25::BM25Index;
 

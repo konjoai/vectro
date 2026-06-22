@@ -14,7 +14,6 @@
 use crate::quant::pq::{pq_distance_table, train_pq_codebook, PQCodebook};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use simsimd::SpatialSimilarity;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -29,8 +28,10 @@ fn lcg_next(state: u64) -> u64 {
 /// Cosine distance (1 − cosine similarity) using SimSIMD.
 #[inline]
 fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f64 = <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0);
-    (1.0 - dot as f32).max(0.0)
+    // Unit-norm vectors → cosine distance is 1 − dot. The shared SIMD kernel
+    // avoids SimSIMD's per-call dispatch, which dominated the coarse-quantiser
+    // scan (called over every centroid, per query) and k-means assignment.
+    (1.0 - super::simd::dot_f32(a, b)).max(0.0)
 }
 
 /// K-means++ initialisation — returns `k` centroids from `data`.
