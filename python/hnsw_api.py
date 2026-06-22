@@ -639,18 +639,20 @@ class HNSWIndex:
         # and is handled below.
         if self._rust is not None and not trace:
             self._rust_rebuild_if_dirty()
-            allowed: Optional[List[int]] = None
-            if filter:
-                allowed = [
-                    nid
-                    for nid in range(len(self._vectors))
-                    if nid not in self._deleted and self._metadata_passes(nid, filter)
-                ]
-                if not allowed:
-                    return (
-                        np.array([], dtype=np.int64),
-                        np.array([], dtype=np.float32),
-                    )
+            if not filter:
+                # Zero-copy hot path: native returns int64/float32 numpy arrays
+                # directly with the GIL released — no per-query list-of-tuples.
+                return self._rust.search_arrays(q, k, ef_actual)
+            allowed = [
+                nid
+                for nid in range(len(self._vectors))
+                if nid not in self._deleted and self._metadata_passes(nid, filter)
+            ]
+            if not allowed:
+                return (
+                    np.array([], dtype=np.int64),
+                    np.array([], dtype=np.float32),
+                )
             res = self._rust.search(q, k, ef_actual, allowed)
             indices = np.array([r[0] for r in res], dtype=np.int64)
             distances = np.array([r[1] for r in res], dtype=np.float32)

@@ -143,6 +143,57 @@ unsafe fn l2_sq_neon(a: &[f32], b: &[f32]) -> f32 {
     total
 }
 
+/// Inlined AVX2+FMA f32 dot product — `Σ a[i]*b[i]` — the x86_64 analogue of
+/// [`dot_f32_neon`]. SimSIMD resolves its kernel through a per-call dispatch
+/// indirection that dominates at the low dimensions typical of HNSW search
+/// (d≈100); a directly-`target_feature`-compiled kernel removes that overhead.
+/// Four independent `f32x8` accumulators (32 lanes/iter) break the reduction
+/// dependency chain.
+///
+/// # Safety
+/// Requires AVX2 + FMA (the caller runtime-detects). Reads only `min(a, b)` lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn dot_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let ap = a.as_ptr();
+    let bp = b.as_ptr();
+    let mut acc0 = _mm256_setzero_ps();
+    let mut acc1 = _mm256_setzero_ps();
+    let mut acc2 = _mm256_setzero_ps();
+    let mut acc3 = _mm256_setzero_ps();
+    let chunks = n / 32;
+    for i in 0..chunks {
+        let o = i * 32;
+        acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(ap.add(o)), _mm256_loadu_ps(bp.add(o)), acc0);
+        acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(ap.add(o + 8)), _mm256_loadu_ps(bp.add(o + 8)), acc1);
+        acc2 =
+            _mm256_fmadd_ps(_mm256_loadu_ps(ap.add(o + 16)), _mm256_loadu_ps(bp.add(o + 16)), acc2);
+        acc3 =
+            _mm256_fmadd_ps(_mm256_loadu_ps(ap.add(o + 24)), _mm256_loadu_ps(bp.add(o + 24)), acc3);
+    }
+    let mut o = chunks * 32;
+    // 8-lane remainder steps before the scalar tail.
+    while o + 8 <= n {
+        acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(ap.add(o)), _mm256_loadu_ps(bp.add(o)), acc0);
+        o += 8;
+    }
+    // Horizontal sum of the four accumulators down to a scalar.
+    let sum = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+    let lo = _mm256_castps256_ps128(sum);
+    let hi = _mm256_extractf128_ps::<1>(sum);
+    let mut s = _mm_add_ps(lo, hi);
+    s = _mm_hadd_ps(s, s);
+    s = _mm_hadd_ps(s, s);
+    let mut total = _mm_cvtss_f32(s);
+    for i in o..n {
+        total += a[i] * b[i];
+    }
+    total
+}
+
 /// Diagnostic counter of distance evaluations (compile with `--features
 /// distcount`). Compared against faiss `hnsw_stats.ndis` to attribute the
 /// high-dim search gap to kernel throughput vs node-visit count.
@@ -277,7 +328,17 @@ impl HnswIndex {
         {
             unsafe { dot_f32_neon(a, b) }
         }
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(target_arch = "x86_64")]
+        {
+            // `is_x86_feature_detected!` caches its result, so the hot-loop cost
+            // is a cached load — far cheaper than SimSIMD's per-call dispatch.
+            if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                // SAFETY: gated by the runtime detection above; reads in-bounds lanes.
+                return unsafe { dot_f32_avx2(a, b) };
+            }
+            <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0) as f32
+        }
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
         {
             <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0) as f32
         }
@@ -375,6 +436,22 @@ impl HnswIndex {
         }
     }
 
+    /// x86_64 analogue of the aarch64 [`prefetch_vec_full`]: issue an
+    /// `_mm_prefetch` (T0, into L1) for every cache line spanning vector `id`,
+    /// software-pipelined a couple of neighbours ahead in the beam loop so the
+    /// cold vector streams in while the current distance computes.
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    unsafe fn prefetch_vec_full(&self, id: usize) {
+        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+        let base = self.vectors.as_ptr().add(id * self.dim);
+        // 64-byte cache lines = 16 f32 each; round up to cover the tail.
+        let lines = self.dim.div_ceil(16);
+        for l in 0..lines {
+            _mm_prefetch::<_MM_HINT_T0>(base.add(l * 16) as *const i8);
+        }
+    }
+
     fn normalize(v: &[f32]) -> Vec<f32> {
         let sq: f32 = v.iter().map(|x| x * x).sum();
         if sq == 0.0 {
@@ -430,8 +507,10 @@ impl HnswIndex {
             // Packed-u64 heaps (see pack_key): native integer ordering, no
             // per-comparison f32 branch. cands = min-heap on dist (Reverse),
             // window = max-heap on dist (pop worst to keep size <= ef).
-            let mut cands: BinaryHeap<std::cmp::Reverse<u64>> = BinaryHeap::new();
-            let mut window: BinaryHeap<u64> = BinaryHeap::new();
+            // Pre-size to `ef` so the hot loop never pays heap-growth reallocs
+            // (the window is bounded by ef; cands rarely exceeds it materially).
+            let mut cands: BinaryHeap<std::cmp::Reverse<u64>> = BinaryHeap::with_capacity(ef + 1);
+            let mut window: BinaryHeap<u64> = BinaryHeap::with_capacity(ef + 1);
 
             for &ep in entry_points {
                 let d = self.dist_q(query, q_norm_sq, ep);
@@ -462,15 +541,15 @@ impl HnswIndex {
                 // Two neighbours of look-ahead empirically hides the cold-vector
                 // latency across d=100…784 without flooding L1; higher PF gives
                 // only marginal high-dim gains and risks low-dim cache pressure.
-                #[cfg(target_arch = "aarch64")]
+                #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
                 const PF: usize = 2;
-                #[cfg(target_arch = "aarch64")]
+                #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
                 for &nb in nbrs.iter().take(PF) {
                     // SAFETY: ids are in-bounds; prefetch is a no-effect hint.
                     unsafe { self.prefetch_vec_full(nb as usize) };
                 }
                 for (i, &nb) in nbrs.iter().enumerate() {
-                    #[cfg(target_arch = "aarch64")]
+                    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
                     if let Some(&fut) = nbrs.get(i + PF) {
                         // SAFETY: ids are in-bounds; prefetch is a no-effect hint.
                         unsafe { self.prefetch_vec_full(fut as usize) };

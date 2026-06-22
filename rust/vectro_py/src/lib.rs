@@ -672,6 +672,27 @@ impl PyHnswIndex {
         self.inner.search(&query, k, ef)
     }
 
+    /// Single-query search returning two numpy arrays directly — node IDs
+    /// (`int64`) and distances (`float32`) — with the GIL released during the
+    /// search. Avoids the Python list-of-tuples allocation that bottlenecks the
+    /// per-query hot path, cutting single-query latency well below the
+    /// `search_np` → list → `np.array(...)` round-trip.
+    fn search_arrays_np<'py>(
+        &self,
+        py: Python<'py>,
+        query: PyReadonlyArray1<f32>,
+        k: usize,
+        ef: usize,
+    ) -> (&'py PyArray1<i64>, &'py PyArray1<f32>) {
+        // Copy the (tiny) query out before releasing the GIL so the pure-Rust
+        // search holds no Python borrow.
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        let res = py.allow_threads(|| self.inner.search(&owned, k, ef));
+        let ids: Vec<i64> = res.iter().map(|&(id, _)| id as i64).collect();
+        let dists: Vec<f32> = res.iter().map(|&(_, d)| d).collect();
+        (Array1::from(ids).into_pyarray(py), Array1::from(dists).into_pyarray(py))
+    }
+
     /// Search with an allow-list of node IDs.
     ///
     /// Only nodes whose ID is in `allowed_ids` are eligible for the result set.
