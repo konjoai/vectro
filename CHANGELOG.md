@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (IVF-PQ — SIMD coarse scan via a shared distance module)
+- New `rust/vectro_lib/src/index/simd.rs` — a single source of truth for the
+  SIMD f32 `dot_f32` / `l2_sq` kernels (NEON on aarch64, AVX2+FMA on x86_64
+  runtime-detected, SimSIMD fallback). HNSW's private kernels are removed and it
+  now delegates here (dedup, no behaviour change), and **IVF / IVF-PQ's
+  `cosine_dist` now uses it instead of per-call SimSIMD dispatch** — paid over
+  every centroid in the coarse-quantiser scan and on every k-means assignment.
+  Benefits **IVF training / k-means** (assignment is `n_sample·n_lists·d`).
+- **Honest measurement:** this does *not* move IVF-PQ *search* QPS (glove-200K:
+  4,623 vs 4,502 at n_probe=8, within noise). The coarse scan is ~6% of search;
+  the bottleneck is the **ADC table-lookup loop** (memory-bound at K=256). HNSW
+  recall/QPS are unchanged (kernels relocated verbatim, validated by the suite).
+  Net value of this change is the shared-module **dedup** + the **training**
+  speedup; the ADC loop is the dedicated next lever for search throughput.
+
 ### Added (IVF-PQ — batched, parallel, GIL-free search)
 - `IvfPqIndex::search_batch_flat` (`rust/vectro_lib/src/index/ivf_pq.rs`) and the
   `PyIvfPqIndex.search_batch_np(queries, k, n_probe)` binding
