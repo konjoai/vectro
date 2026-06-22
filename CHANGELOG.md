@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (HNSW — batched Python search closes the single-query gap)
+- `HNSWIndex.search_batch(queries, k, ef, filter=None)` (`python/hnsw_api.py`) —
+  a high-throughput multi-query entry point. On a rust-backed cosine index with
+  no metadata filter it delegates to the native `search_batch_np` (rayon-parallel
+  across queries, GIL released), avoiding the per-query Python call overhead that
+  bottlenecks a `search()` loop: **~3.7× higher QPS** measured on glove-100 (50K,
+  ef=100: 5,331 → 19,502 QPS). With a `filter`, or on the pure-Python backend, it
+  falls back to per-query `search` (same results, no batch speedup). Returns
+  `(q, k)` int64 indices / float32 distances, `-1`/`inf`-padded for short rows.
+  Backed by a new `RustHnswBackend.search_batch` wrapper and 5 parity tests.
+
 ### Performance (PQ encode — AVX2+FMA nearest-centroid on x86_64)
 - **AVX2+FMA nearest-centroid kernel** (`rust/vectro_lib/src/quant/pq.rs`,
   `assign_argmin_avx2`). The PQ assignment hot loop (`pq_encode_into` →
