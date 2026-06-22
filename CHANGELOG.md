@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (PQ encode — AVX2+FMA nearest-centroid on x86_64)
+- **AVX2+FMA nearest-centroid kernel** (`rust/vectro_lib/src/quant/pq.rs`,
+  `assign_argmin_avx2`). The PQ assignment hot loop (`pq_encode_into` →
+  `assign_nearest`, also k-means training) had a fused NEON kernel for aarch64
+  but fell back to **portable scalar on x86_64** — leaving ~5× on the table vs
+  FAISS's SIMD encoder on Intel/AMD. Mirrors the NEON kernel: computes
+  `dist = ‖c_k‖² − 2·v·c_k` over the transposed centroid LUT, tracking the
+  running argmin in 256-bit registers (8 centroids/step), runtime-detected via
+  `is_x86_feature_detected!`. PQ-96 encode (50K×768, K=256) **40K → 124K vec/s
+  (3.1×), now 0.88× FAISS** (was ~0.2×). Scalar path retained as the
+  correctness baseline; a new `assign_nearest_simd_matches_portable` test
+  asserts distance parity (indices may differ only on genuine FMA-rounding ties).
+
 ### Performance (high-dim search — full-vector prefetch flips the d≥256 loss)
 - **Software-pipelined full-vector prefetch** (`rust/vectro_lib/src/index/hnsw.rs`,
   `prefetch_vec_full`). Diagnosed via a feature-gated distance-eval counter
