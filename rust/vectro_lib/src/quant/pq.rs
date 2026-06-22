@@ -281,37 +281,49 @@ fn build_subspace_lut(table: &[f32], k: usize, sub_dim: usize) -> SubspaceLut {
 }
 
 /// `argmin_k (norms[k] − 2·v·c_k)` over the transposed LUT — the nearest
-/// centroid index for sub-vector `v`. Vectorized across the K axis on aarch64.
+/// centroid index for sub-vector `v`. Vectorized across the K axis with NEON on
+/// aarch64 and AVX2+FMA on x86_64 (runtime-detected); scalar fallback otherwise.
 #[inline]
 fn assign_nearest(v: &[f32], lut: &SubspaceLut, k: usize, sub_dim: usize) -> u8 {
     debug_assert!(k <= MAX_K);
     #[cfg(target_arch = "aarch64")]
-    // SAFETY: NEON is mandated on AArch64-v8; all indices below stay < k ≤ MAX_K.
-    unsafe {
-        assign_argmin_neon(v, &lut.ct, &lut.norms, k, sub_dim)
+    {
+        // SAFETY: NEON is mandated on AArch64-v8; all indices below stay < k ≤ MAX_K.
+        unsafe { assign_argmin_neon(v, &lut.ct, &lut.norms, k, sub_dim) }
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        // Portable reformulation: dist[ki] = ‖c_ki‖² − 2·(v·c_ki).
-        let mut dist = [0.0f32; MAX_K];
-        dist[..k].copy_from_slice(&lut.norms[..k]);
-        for j in 0..sub_dim {
-            let vj = v[j];
-            let row = &lut.ct[j * k..j * k + k];
-            for (ki, &cjk) in row.iter().enumerate() {
-                dist[ki] -= 2.0 * vj * cjk;
-            }
+        #[cfg(target_arch = "x86_64")]
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            // SAFETY: gated by the runtime feature detection above; all indices
+            // stay < k ≤ MAX_K and within the `ct`/`norms` slices.
+            return unsafe { assign_argmin_avx2(v, &lut.ct, &lut.norms, k, sub_dim) };
         }
-        let mut best = 0usize;
-        let mut best_d = dist[0];
-        for (ki, &d) in dist[1..k].iter().enumerate() {
-            if d < best_d {
-                best_d = d;
-                best = ki + 1;
-            }
-        }
-        best as u8
+        assign_argmin_portable(v, lut, k, sub_dim)
     }
+}
+
+/// Portable scalar `argmin_k (norms[k] − 2·v·c_k)` over the transposed LUT — the
+/// correctness baseline the NEON / AVX2 kernels must match.
+#[cfg(not(target_arch = "aarch64"))]
+fn assign_argmin_portable(v: &[f32], lut: &SubspaceLut, k: usize, sub_dim: usize) -> u8 {
+    let mut dist = [0.0f32; MAX_K];
+    dist[..k].copy_from_slice(&lut.norms[..k]);
+    for (j, &vj) in v[..sub_dim].iter().enumerate() {
+        let row = &lut.ct[j * k..j * k + k];
+        for (ki, &cjk) in row.iter().enumerate() {
+            dist[ki] -= 2.0 * vj * cjk;
+        }
+    }
+    let mut best = 0usize;
+    let mut best_d = dist[0];
+    for (ki, &d) in dist[1..k].iter().enumerate() {
+        if d < best_d {
+            best_d = d;
+            best = ki + 1;
+        }
+    }
+    best as u8
 }
 
 /// Fused NEON nearest-centroid: computes `dist = norms − 2·v·cᵀ` and tracks the
@@ -382,6 +394,74 @@ unsafe fn assign_argmin_neon(v: &[f32], ct: &[f32], norms: &[f32], k: usize, sub
     best as u8
 }
 
+
+/// Fused AVX2+FMA nearest-centroid: computes `dist = norms − 2·v·cᵀ` and tracks
+/// the running minimum **in registers**, 8 centroids at a time (256-bit lanes) —
+/// no per-point `dist` buffer. Mirrors [`assign_argmin_neon`]. Lane `l` holds
+/// centroids `ki+l`; ties pick the lower index (strict `<`), matching the scalar
+/// baseline modulo exactly-equidistant centroids (effectively never on f32).
+///
+/// # Safety
+/// Requires AVX2 + FMA. `ct.len() >= sub_dim*k`, `norms.len() >= k`,
+/// `v.len() >= sub_dim`, `k <= MAX_K`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn assign_argmin_avx2(v: &[f32], ct: &[f32], norms: &[f32], k: usize, sub_dim: usize) -> u8 {
+    use std::arch::x86_64::*;
+    let two = _mm256_set1_ps(2.0);
+    let mut min_vals = _mm256_set1_ps(f32::INFINITY);
+    let mut min_idx = _mm256_setzero_si256();
+    let mut cur_idx = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+    let eight = _mm256_set1_epi32(8);
+
+    let kc = k & !7;
+    let mut ki = 0;
+    while ki < kc {
+        let mut acc = _mm256_setzero_ps();
+        for j in 0..sub_dim {
+            let vj = _mm256_set1_ps(*v.get_unchecked(j));
+            let cj = _mm256_loadu_ps(ct.as_ptr().add(j * k + ki));
+            acc = _mm256_fmadd_ps(vj, cj, acc);
+        }
+        let nrm = _mm256_loadu_ps(norms.as_ptr().add(ki));
+        // d = norms − 2·acc  =  −(two·acc) + norms
+        let d = _mm256_fnmadd_ps(two, acc, nrm);
+        let mask = _mm256_cmp_ps::<_CMP_LT_OQ>(d, min_vals); // d < running min ?
+        min_vals = _mm256_blendv_ps(min_vals, d, mask);
+        min_idx = _mm256_blendv_epi8(min_idx, cur_idx, _mm256_castps_si256(mask));
+        cur_idx = _mm256_add_epi32(cur_idx, eight);
+        ki += 8;
+    }
+
+    // Reduce the 8 SIMD lanes to a scalar (value, index).
+    let mut vals = [0.0f32; 8];
+    let mut idxs = [0i32; 8];
+    _mm256_storeu_ps(vals.as_mut_ptr(), min_vals);
+    _mm256_storeu_si256(idxs.as_mut_ptr() as *mut __m256i, min_idx);
+    let mut best = idxs[0] as u32;
+    let mut best_d = vals[0];
+    for l in 1..8 {
+        if vals[l] < best_d {
+            best_d = vals[l];
+            best = idxs[l] as u32;
+        }
+    }
+
+    // Scalar tail (< 8 centroids).
+    while ki < k {
+        let mut dot = 0.0f32;
+        for j in 0..sub_dim {
+            dot += *v.get_unchecked(j) * *ct.get_unchecked(j * k + ki);
+        }
+        let d = *norms.get_unchecked(ki) - 2.0 * dot;
+        if d < best_d {
+            best_d = d;
+            best = ki as u32;
+        }
+        ki += 1;
+    }
+    best as u8
+}
 
 /// Encode a batch of f32 vectors to PQ codes (u8 per sub-space).
 ///
@@ -634,6 +714,33 @@ mod tests {
                 (got_d - best_d).abs() <= 1e-4,
                 "assign {got} (d={got_d}) vs brute {best} (d={best_d})"
             );
+        }
+    }
+
+    #[test]
+    fn assign_nearest_simd_matches_portable() {
+        // The host-arch SIMD kernel (NEON / AVX2) must select a centroid whose
+        // distance matches the portable scalar baseline's pick within fp
+        // tolerance. Indices may differ only on genuine ties (FMA vs non-FMA
+        // rounding tips the argmin), so compare the resulting distance — that is
+        // what determines PQ quality. k=253 exercises the non-power-of-2 tail.
+        #[cfg(not(target_arch = "aarch64"))]
+        for &k in &[7usize, 8, 31, 200, 253, 256] {
+            let sub_dim = 8usize;
+            let vecs = make_vecs(k + 40, sub_dim);
+            let table: Vec<f32> = vecs[..k].iter().flatten().copied().collect();
+            let lut = build_subspace_lut(&table, k, sub_dim);
+            let d2 = |q: &[f32], idx: usize| l2_sq(q, &table[idx * sub_dim..(idx + 1) * sub_dim]);
+            for q in &vecs {
+                let simd = assign_nearest(q, &lut, k, sub_dim) as usize;
+                let scalar = assign_argmin_portable(q, &lut, k, sub_dim) as usize;
+                assert!(
+                    (d2(q, simd) - d2(q, scalar)).abs() <= 1e-4,
+                    "k={k}: SIMD idx {simd} (d={}) vs scalar idx {scalar} (d={})",
+                    d2(q, simd),
+                    d2(q, scalar),
+                );
+            }
         }
     }
 
