@@ -12,6 +12,7 @@
 //! ```
 
 use crate::quant::pq::{pq_distance_table, train_pq_codebook, PQCodebook};
+use ndarray::{Array2, ArrayView2};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,27 @@ fn lcg_next(state: u64) -> u64 {
     state
         .wrapping_mul(6_364_136_223_846_793_005)
         .wrapping_add(1_442_695_040_888_963_407)
+}
+
+/// Indices of the `n_probe` centroids with the highest cosine similarity in a
+/// query's coarse-scan row. Mirrors `top_coarse` (closest centroids first) but
+/// reads pre-computed similarities from the batched GEMM. Uses
+/// `select_nth_unstable` so the selection is O(n_lists) rather than a full sort.
+fn top_probe_from_sims(sims: &[f32], n_probe: usize) -> Vec<usize> {
+    let n = sims.len();
+    let take = n_probe.min(n);
+    if take == 0 {
+        return Vec::new();
+    }
+    let mut idx: Vec<usize> = (0..n).collect();
+    if take < n {
+        // Partition so the `take` highest similarities sit first (descending).
+        idx.select_nth_unstable_by(take - 1, |&a, &b| {
+            sims[b].partial_cmp(&sims[a]).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        idx.truncate(take);
+    }
+    idx
 }
 
 /// Cosine distance (1 − cosine similarity) using SimSIMD.
@@ -334,18 +356,27 @@ impl IvfPqIndex {
         let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
         let q_norm: Vec<f32> = query.iter().map(|x| x / norm).collect();
 
-        // Find top-n_probe coarse centroids
+        // Find top-n_probe coarse centroids, then ADC-rank the vectors they hold.
         let probe_lists = self.top_coarse(&q_norm, n_probe);
+        self.adc_rank(&q_norm, &probe_lists, k)
+    }
 
-        // Build ADC table once
-        let dist_table = pq_distance_table(&q_norm, &self.codebook);
+    /// ADC-rank the vectors in `probe_lists` against a normalised query, returning
+    /// the top-`k` `(id, distance)` pairs ascending. Shared by the single-query
+    /// (`search_with_probe`) and batch (`search_batch_flat`) paths so both compute
+    /// distances identically — only how `probe_lists` is chosen differs.
+    fn adc_rank(&self, q_norm: &[f32], probe_lists: &[usize], k: usize) -> Vec<(usize, f32)> {
+        if k == 0 {
+            return Vec::new();
+        }
+        // Build ADC table once for this query.
+        let dist_table = pq_distance_table(q_norm, &self.codebook);
         let m = self.codebook.n_subspaces;
         let kc = self.codebook.n_centroids;
 
-        // Scan posting lists — collect (dist, id) pairs
+        // Scan posting lists — collect (dist, id) pairs.
         let mut candidates: Vec<(f32, usize)> = Vec::new();
-
-        for &list_id in &probe_lists {
+        for &list_id in probe_lists {
             for &gid in &self.posting_lists[list_id] {
                 if self.deleted[gid] {
                     continue;
@@ -358,12 +389,8 @@ impl IvfPqIndex {
             }
         }
 
-        if k == 0 {
-            return Vec::new();
-        }
-
         // Top-k by ADC distance. Each vector belongs to exactly one posting list
-        // and `top_coarse` returns distinct lists, so a gid appears at most once —
+        // and `probe_lists` is a distinct set, so a gid appears at most once —
         // no dedup needed. `select_nth_unstable_by` partitions the k smallest in
         // O(C) instead of fully sorting all C candidates (O(C log C)); only the
         // retained k are then sorted.
@@ -392,10 +419,59 @@ impl IvfPqIndex {
             return Vec::new();
         }
         let q = flat.len() / dim;
-        (0..q)
-            .into_par_iter()
-            .map(|i| self.search_with_probe(&flat[i * dim..(i + 1) * dim], k, n_probe))
-            .collect()
+        if !self.trained || self.pq_codes.is_empty() {
+            return vec![Vec::new(); q];
+        }
+        assert_eq!(dim, self.dim, "query dim mismatch");
+        if q == 0 {
+            return Vec::new();
+        }
+
+        // ── Batched coarse scan as one matrix multiply ──────────────────────────
+        // Per query the coarse step compares the query to every centroid — at
+        // d=768 those `q × n_lists` full-dim dots dominate the search. Computing
+        // them as `Q · Cᵀ` (pure-Rust matrixmultiply via ndarray) reuses the
+        // centroid matrix across all queries instead of re-streaming it per query,
+        // the way FAISS routes its coarse quantiser through GEMM. Both queries and
+        // centroids are unit-norm, so the dot product *is* cosine similarity.
+        let mut qnorm = vec![0.0f32; q * dim];
+        for i in 0..q {
+            let row = &flat[i * dim..(i + 1) * dim];
+            let norm = row.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+            let inv = 1.0 / norm;
+            for (j, &x) in row.iter().enumerate() {
+                qnorm[i * dim + j] = x * inv;
+            }
+        }
+        let cmat = ArrayView2::from_shape((self.n_lists, dim), &self.coarse_centroids)
+            .expect("centroid shape");
+
+        // ── Tile queries; each tile runs its own coarse GEMM + ADC in parallel ──
+        // A whole-batch single GEMM would be cache-efficient but single-threaded,
+        // surrendering the per-query rayon parallelism. Tiling keeps both: each
+        // worker computes `Q_tile · Cᵀ` (centroid matrix reused across the tile)
+        // and then ADC-ranks the tile's queries. CHUNK is sized so a tile's sim
+        // block stays cache-resident.
+        const CHUNK: usize = 32;
+        let mut results: Vec<Vec<(usize, f32)>> = vec![Vec::new(); q];
+        results
+            .par_chunks_mut(CHUNK)
+            .enumerate()
+            .for_each(|(c, out)| {
+                let lo = c * CHUNK;
+                let rows = out.len();
+                let qtile = ArrayView2::from_shape((rows, dim), &qnorm[lo * dim..(lo + rows) * dim])
+                    .expect("query tile shape");
+                let sims: Array2<f32> = qtile.dot(&cmat.t()); // (rows, n_lists)
+                for (r, slot) in out.iter_mut().enumerate() {
+                    let srow = sims.row(r);
+                    let probe_lists =
+                        top_probe_from_sims(srow.as_slice().expect("contig row"), n_probe);
+                    let qi = lo + r;
+                    *slot = self.adc_rank(&qnorm[qi * dim..(qi + 1) * dim], &probe_lists, k);
+                }
+            });
+        results
     }
 
     /// Soft-delete a vector by global id.  Out-of-bounds ids are ignored.
@@ -694,6 +770,46 @@ mod tests {
             let want: Vec<usize> = all.into_iter().take(5).map(|(_, id)| id).collect();
             assert_eq!(got, want, "top-k selection diverged from full sort");
         }
+    }
+
+    #[test]
+    fn search_batch_matches_single_query() {
+        // The batched GEMM coarse scan must agree with the per-query path. Both
+        // pick the n_probe highest-similarity centroids and ADC-rank identically;
+        // f32 summation order differs between matrixmultiply and the SIMD dot, so
+        // a handful of queries may break a centroid tie differently. Require
+        // top-1 identical and ≥ k-1 of k overlap — looser than bit-equality, but
+        // it catches any real divergence in the coarse selection or ADC path.
+        let data = random_unit_vecs(2_000, 64, 21);
+        let mut idx = IvfPqIndex::new(64, 8);
+        idx.train(&data, 8, 64, 12, 21).unwrap();
+        for v in &data {
+            idx.add(v);
+        }
+        let k = 10;
+        let flat: Vec<f32> = data.iter().take(50).flatten().copied().collect();
+        let batch = idx.search_batch_flat(&flat, 64, k, 8);
+        for (i, brow) in batch.iter().enumerate() {
+            let single = idx.search_with_probe(&data[i], k, 8);
+            assert_eq!(brow.len(), single.len(), "row {i} length differs");
+            assert_eq!(brow[0].0, single[0].0, "row {i} top-1 differs");
+            let bset: std::collections::HashSet<usize> = brow.iter().map(|&(id, _)| id).collect();
+            let overlap = single.iter().filter(|&&(id, _)| bset.contains(&id)).count();
+            assert!(
+                overlap >= k - 1,
+                "row {i}: batch/single overlap {overlap}/{k} too low"
+            );
+        }
+    }
+
+    #[test]
+    fn search_batch_empty_and_untrained() {
+        // Untrained index → one empty result per query, never a panic.
+        let idx = IvfPqIndex::new(8, 4);
+        let flat = vec![0.0f32; 3 * 16];
+        let res = idx.search_batch_flat(&flat, 16, 5, 4);
+        assert_eq!(res.len(), 3);
+        assert!(res.iter().all(|r| r.is_empty()));
     }
 
     #[test]
