@@ -221,9 +221,9 @@ class VectroBatchProcessor:
             scales = np.where(max_abs == 0, 1.0, max_abs / (127.0 * range_factor)).astype(
                 np.float32
             )
-            quantized_matrix = np.clip(
-                np.round(vectors / scales[:, np.newaxis]), -127, 127
-            ).astype(np.int8)
+            quantized_matrix = np.clip(np.round(vectors / scales[:, np.newaxis]), -127, 127).astype(
+                np.int8
+            )
         quantized_vectors = list(quantized_matrix)
 
         # Calculate compression metrics
@@ -375,13 +375,14 @@ class BatchCompressionAnalyzer:
             original = vectors
             reconstructed = batch_result.reconstruct_batch()
 
-            # Cosine similarity
-            cos_sim = np.mean(
-                [
-                    np.dot(original[i], reconstructed[i])
-                    / (np.linalg.norm(original[i]) * np.linalg.norm(reconstructed[i]))
-                    for i in range(len(original))
-                ]
+            # Cosine similarity — vectorized over all rows (row-wise dot / norms)
+            # instead of a Python loop. Guard zero-norm rows to avoid 0/0 → NaN.
+            orig = np.asarray(original, dtype=np.float64)
+            recon = np.asarray(reconstructed, dtype=np.float64)
+            dots = np.einsum("ij,ij->i", orig, recon)
+            denom = np.linalg.norm(orig, axis=1) * np.linalg.norm(recon, axis=1)
+            cos_sim = float(
+                np.mean(np.divide(dots, denom, out=np.zeros_like(dots), where=denom > 0))
             )
 
             # Mean absolute error
