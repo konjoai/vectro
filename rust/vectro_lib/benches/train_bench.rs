@@ -12,6 +12,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use vectro_lib::index::hnsw::HnswIndex;
+use vectro_lib::index::ivf_pq::IvfPqIndex;
 use vectro_lib::quant::int8;
 use vectro_lib::quant::pq::{train_pq_codebook, PQCodebook};
 use vectro_lib::quant::rq::{rq_decode_flat, rq_encode_flat, train_rq_codebook, RQCodebook};
@@ -143,6 +144,39 @@ fn bench_hnsw_insert(c: &mut Criterion) {
     group.finish();
 }
 
+/// IVF-PQ search throughput — the query-time ADC scan path.
+///
+/// Exercises the flat `pq_codes` layout + bounded top-k selection. The dataset is
+/// large enough (per-list ≈ N/n_lists, scanned over n_probe lists) that the ADC
+/// gather and the top-k step both dominate, so a regression here flags either the
+/// cache-locality or the selection change.
+fn bench_ivfpq_search(c: &mut Criterion) {
+    const N: usize = 20_000;
+    const D: usize = 128;
+    const N_LISTS: usize = 256;
+    const N_PROBE: usize = 16;
+    let vecs = make_vecs(N, D);
+
+    let mut idx = IvfPqIndex::new(N_LISTS, N_PROBE);
+    idx.train(&vecs, 8, 256, 10, 42).expect("ivfpq train failed");
+    for v in &vecs {
+        idx.add(v);
+    }
+    // A fixed batch of queries drawn from the dataset (deterministic).
+    let queries: Vec<&Vec<f32>> = (0..64).map(|i| &vecs[i * 137 % N]).collect();
+
+    let mut group = c.benchmark_group("ivfpq_search");
+    group.throughput(Throughput::Elements(queries.len() as u64));
+    group.bench_function("search_n20k_d128_lists256_probe16_k10", |b| {
+        b.iter(|| {
+            for q in &queries {
+                black_box(idx.search_with_probe(black_box(q), 10, N_PROBE));
+            }
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_pq_train,
@@ -151,6 +185,7 @@ criterion_group!(
     bench_rq_encode,
     bench_pq_encode,
     bench_int8_decode,
-    bench_hnsw_insert
+    bench_hnsw_insert,
+    bench_ivfpq_search
 );
 criterion_main!(benches);

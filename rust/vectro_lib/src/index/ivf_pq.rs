@@ -176,8 +176,12 @@ pub struct IvfPqIndex {
     posting_lists: Vec<Vec<usize>>,
     /// Trained PQ codebook.
     codebook: PQCodebook,
-    /// PQ codes keyed by global id, length M each.
-    pq_codes: Vec<Vec<u8>>,
+    /// PQ codes for every vector, stored flat and row-major as `[n_vectors * M]`
+    /// (`M = codebook.n_subspaces`). A single contiguous buffer — rather than one
+    /// heap `Vec<u8>` per vector — keeps a candidate's codes on one cache line and
+    /// lets the ADC scan stream sequentially instead of pointer-chasing scattered
+    /// allocations. The number of stored vectors is tracked by `deleted.len()`.
+    pq_codes: Vec<u8>,
     /// Soft-deletion tombstones.
     #[serde(default)]
     deleted: Vec<bool>,
@@ -294,11 +298,19 @@ impl IvfPqIndex {
         // PQ-encode (encode_batch expects a slice of vecs)
         let codes = self.pq_encode_single(&v_norm);
 
-        let global_id = self.pq_codes.len();
-        self.pq_codes.push(codes);
+        let global_id = self.deleted.len();
+        self.pq_codes.extend_from_slice(&codes);
         self.deleted.push(false);
         self.posting_lists[list_id].push(global_id);
         global_id
+    }
+
+    /// The PQ code row for global id `gid`: a contiguous `M`-byte slice into the
+    /// flat `pq_codes` buffer.
+    #[inline]
+    fn code_row(&self, gid: usize) -> &[u8] {
+        let m = self.codebook.n_subspaces;
+        &self.pq_codes[gid * m..gid * m + m]
     }
 
     /// Search for the `k` nearest neighbours using ADC scoring.
@@ -338,7 +350,7 @@ impl IvfPqIndex {
                 if self.deleted[gid] {
                     continue;
                 }
-                let codes = &self.pq_codes[gid];
+                let codes = self.code_row(gid);
                 let adc_dist: f32 = (0..m)
                     .map(|mi| dist_table[mi * kc + codes[mi] as usize])
                     .sum();
@@ -346,10 +358,22 @@ impl IvfPqIndex {
             }
         }
 
-        // Sort ascending by ADC distance, deduplicate, take top-k
+        if k == 0 {
+            return Vec::new();
+        }
+
+        // Top-k by ADC distance. Each vector belongs to exactly one posting list
+        // and `top_coarse` returns distinct lists, so a gid appears at most once —
+        // no dedup needed. `select_nth_unstable_by` partitions the k smallest in
+        // O(C) instead of fully sorting all C candidates (O(C log C)); only the
+        // retained k are then sorted.
+        if candidates.len() > k {
+            candidates.select_nth_unstable_by(k - 1, |a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            candidates.truncate(k);
+        }
         candidates.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        candidates.dedup_by_key(|(_, id)| *id);
-        candidates.truncate(k);
         candidates.into_iter().map(|(d, id)| (id, d)).collect()
     }
 
@@ -436,7 +460,7 @@ impl IvfPqIndex {
         }
 
         // Build old_id → new_id mapping.
-        let mut mapping: Vec<Option<usize>> = Vec::with_capacity(self.pq_codes.len());
+        let mut mapping: Vec<Option<usize>> = Vec::with_capacity(self.deleted.len());
         let mut new_id = 0usize;
         for &del in &self.deleted {
             if del {
@@ -447,14 +471,14 @@ impl IvfPqIndex {
             }
         }
 
-        // Compact PQ codes.
-        let new_codes: Vec<Vec<u8>> = self
-            .pq_codes
-            .iter()
-            .zip(self.deleted.iter())
-            .filter(|(_, &d)| !d)
-            .map(|(c, _)| c.clone())
-            .collect();
+        // Compact the flat PQ-code buffer, copying surviving rows contiguously.
+        let m = self.codebook.n_subspaces;
+        let mut new_codes: Vec<u8> = Vec::with_capacity(new_id * m);
+        for (gid, &del) in self.deleted.iter().enumerate() {
+            if !del {
+                new_codes.extend_from_slice(&self.pq_codes[gid * m..gid * m + m]);
+            }
+        }
 
         // Remap posting lists.
         for list in &mut self.posting_lists {
@@ -462,7 +486,7 @@ impl IvfPqIndex {
         }
 
         self.pq_codes = new_codes;
-        self.deleted = vec![false; self.pq_codes.len()];
+        self.deleted = vec![false; new_id];
         deleted_count
     }
 
@@ -591,7 +615,8 @@ mod tests {
         for v in &data {
             idx.add(v);
         }
-        assert_eq!(idx.pq_codes.len(), 200);
+        assert_eq!(idx.deleted.len(), 200); // 200 vectors stored
+        assert_eq!(idx.pq_codes.len(), 200 * idx.codebook.n_subspaces);
     }
 
     #[test]
@@ -623,6 +648,52 @@ mod tests {
         // No vectors added → search must return empty
         let res = idx.search(&data[0], 5);
         assert!(res.is_empty());
+    }
+
+    #[test]
+    fn search_k_zero_returns_empty() {
+        // Guard the bounded top-k path: k == 0 must yield no results, not the
+        // full candidate set (the select_nth_unstable fast path only runs k > 0).
+        let data = random_unit_vecs(100, 32, 9);
+        let mut idx = IvfPqIndex::new(4, 4);
+        idx.train(&data, 4, 8, 5, 9).unwrap();
+        for v in &data {
+            idx.add(v);
+        }
+        assert!(idx.search(&data[0], 0).is_empty());
+    }
+
+    #[test]
+    fn search_topk_matches_full_sort() {
+        // The select_nth_unstable top-k must return exactly the same ids/order as
+        // a full sort of every candidate's ADC distance (quality-neutral change).
+        let data = random_unit_vecs(300, 32, 11);
+        let mut idx = IvfPqIndex::new(8, 8); // full probe → deterministic candidate set
+        idx.train(&data, 4, 16, 10, 11).unwrap();
+        for v in &data {
+            idx.add(v);
+        }
+        for v in data.iter().take(10) {
+            let got: Vec<usize> = idx.search(v, 5).into_iter().map(|(id, _)| id).collect();
+            // Reference: brute-force ADC over all vectors, full sort, take 5.
+            let q_norm = {
+                let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+                v.iter().map(|x| x / n).collect::<Vec<f32>>()
+            };
+            let table = pq_distance_table(&q_norm, &idx.codebook);
+            let m = idx.codebook.n_subspaces;
+            let kc = idx.codebook.n_centroids;
+            let mut all: Vec<(f32, usize)> = (0..data.len())
+                .map(|gid| {
+                    let codes = idx.code_row(gid);
+                    let d: f32 = (0..m).map(|mi| table[mi * kc + codes[mi] as usize]).sum();
+                    (d, gid)
+                })
+                .collect();
+            all.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let want: Vec<usize> = all.into_iter().take(5).map(|(_, id)| id).collect();
+            assert_eq!(got, want, "top-k selection diverged from full sort");
+        }
     }
 
     #[test]
