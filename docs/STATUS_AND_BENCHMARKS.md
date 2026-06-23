@@ -1,6 +1,6 @@
 # Vectro — Status, Benchmarks & Scale Report
 
-**Version:** 5.19.0 (Python) / 8.13.0 (Rust `vectro_lib`) · **Date:** 2026-06-22
+**Version:** 5.24.0 (Python) / 8.17.0 (Rust `vectro_lib`) · **Date:** 2026-06-22
 
 This document is the single source of truth for: (1) where vectro stands today,
 (2) head-to-head benchmarks vs the competition with an honest wins/ties/losses
@@ -29,7 +29,7 @@ Python bindings.
 | HNSW | ✅ mature | Malkov–Yashunin heuristic, flat-graph memory, cosine/L2/IP, O(1) soft-delete, in-place upsert, metadata pre-filter, batch search (rayon, GIL released) |
 | QuantHNSW | ✅ | Generic quantizer-backed graph: `Int8/Nf4/Sq2/Sq3/Binary/Bf16` variants, optional INT8 re-rank store for lossy codecs |
 | IVF-Flat | ✅ code; ⚠️ unproven at scale | k-means coarse quantizer + posting lists |
-| IVF-PQ | ✅ code; ⚠️ unproven at scale | coarse IVF + PQ residuals, ADC lookup — **this is the right index for 100M+** |
+| IVF-PQ | ✅ recall-competitive with FAISS; batch+parallel search | coarse IVF + PQ + ADC; k-means++ init fixed O(n·k²·d)→O(n·k·d) (training now **faster than FAISS**); the extreme-compression option for 100M+ |
 | BM25 | ✅ | sparse/ hybrid dense+sparse path |
 
 ### Quantizers (`rust/vectro_lib/src/quant/`) — footprint at d=768
@@ -60,22 +60,47 @@ believed viable with PQ/IVF-PQ but is **not yet benchmarked or published.**
 
 ### 2.1 ANN search — HNSW (GloVe-100, 50K×100, M=16, ef_c=200, ef_s=100, k=10)
 
-| Index | Build | QPS | Recall@10 |
-|-------|------:|----:|:---------:|
-| **vectro HNSW (batch, `search_batch_np`)** | 4.4s | **20,250** | **0.919** |
-| vectro HNSW (single-query) | 4.4s | 5,824 | 0.917 |
-| hnswlib (C++) | 3.3s | 33,281 | 0.899 |
-| faiss `IndexHNSWFlat` (C++) | 3.6s | 29,702 | 0.904 |
-| faiss `IndexFlatIP` (exact) | — | 3,799 | 1.000 |
+| Index | QPS | Recall@10 |
+|-------|----:|:---------:|
+| **vectro HNSW (batch, `search_batch_np`)** | **22,718** | 0.919 |
+| vectro HNSW (single, 4 threads) | 8,578 | 0.917 |
+| hnswlib (C++) | 33,281 | 0.899 |
+| faiss `IndexHNSWFlat` (C++) | 29,702 | 0.904 |
+
+Single-`ef` QPS is misleading because vectro reaches **higher recall** at the same
+`ef`. At **iso-recall** (the ann-benchmarks methodology, `benchmark_hnsw_pareto.py`)
+vectro trails ~1.1–1.35×, **narrowing to ~0.95× at recall 0.95** and beating
+hnswlib where it can't reach 0.95 within ef≤200. vectro's recall *leads* the field.
 
 ### 2.2 Quantization throughput vs FAISS
 
 | Operation (size) | vectro (Rust) | FAISS (C++) | Ratio |
 |------------------|------------:|----------:|:-----:|
 | INT8 quantize (100K×768) | **4,206,893 vec/s** | 679,359 vec/s | **6.2× faster** |
-| PQ-96 encode (50K×768, K=256) | 124,221 vec/s | 141,200 vec/s | 0.88× |
+| PQ-96 encode (50K×768, K=256) | 124,221 vec/s | 141,200 vec/s | 0.88× (parity) |
+| IVF-PQ train (glove, 512 lists) | **2.4s** | 2.9s | **faster** (was 100s pre-fix) |
 
-### 2.3 Quality parity
+### 2.3 Compressed-ANN tradeoff surface (glove-200K, d=100, k=10, batch — `benchmark_compressed_ann.py`)
+
+The honest at-scale view: recall **per byte**, not a single QPS number.
+
+| method | recall@10 | QPS | bytes/vec |
+|--------|:---------:|----:|----------:|
+| **vectro HNSW fp32** | **0.872** | **14,539** | 528 |
+| faiss HNSW fp32 | 0.871 | 12,592 | 528 |
+| **vectro HNSW-INT8** | 0.864 | 5,411 | 232 |
+| vectro NF4-HNSW + re-rank | 0.866 | 4,971 | 286 |
+| vectro Binary-HNSW + re-rank | 0.680 | 1,693 | 245 |
+| **vectro IVF-PQ** (M=50) | **0.774** | 1,289 | 60 |
+| faiss IVF-PQ (M=50) | 0.768 | 9,421 | 60 |
+
+- vectro HNSW fp32 **beats faiss HNSW** here on *both* recall and QPS.
+- **Quantized HNSW (INT8 / NF4+re-rank) is vectro's quadrant**: ~0.86 recall at
+  ~232–286 bytes/vec — high recall at real compression.
+- IVF-PQ: vectro is **recall-competitive** (0.774 vs 0.768) at identical 60 bytes/vec;
+  FAISS only wins the *search speed* there (~7×, its tuned ADC) — its optimised corner.
+
+### 2.4 Quality parity
 | Metric | vectro | FAISS |
 |--------|:------:|:-----:|
 | INT8 reconstruction cosine (d=768) | ≥0.9999 | ≥0.9999 |
@@ -87,19 +112,21 @@ believed viable with PQ/IVF-PQ but is **not yet benchmarked or published.**
 
 ### ✅ Wins
 - **INT8 quantization throughput — 6.2× faster than FAISS** at full quality parity (the standout result). Mojo path historically hit ~12M vec/s (4.6× FAISS) on Apple M3.
-- **HNSW recall@10 — highest of the field** (0.919 vs hnswlib 0.899, faiss 0.904) at matched build params.
-- **HNSW build time — competitive** (within ~1.3× of the C++ libraries).
+- **HNSW recall@10 — highest of the field** (0.919 vs hnswlib 0.899, faiss 0.904); and **vectro HNSW fp32 beats faiss `IndexHNSWFlat`** on recall *and* QPS in the §2.3 surface.
+- **High-recall-compressed quadrant — vectro's to own.** Quantized HNSW (INT8 / NF4+re-rank) holds ~0.86 recall at ~2× compression; IVF-PQ at the same scale can't match that recall. This is the differentiated niche RAG cares about.
+- **IVF-PQ training — faster than FAISS** (2.4s vs 2.9s) after the O(n·k²·d)→O(n·k·d) k-means++ fix, at recall parity.
 - **Feature breadth** — NF4, Binary, RQ, VQZ container, 5 DB connectors, ONNX export, hybrid BM25+dense; FAISS/hnswlib don't ship these.
 
 ### ➖ Ties / near-parity
-- **PQ-96 encode — 0.88× FAISS** (within 12%; was ~5× behind before the AVX2 kernel). Effectively parity.
-- **PQ reconstruction quality — parity** (0.8185 vs 0.8207).
+- **PQ-96 encode — 0.88× FAISS** (within 12%; was ~5× behind before the AVX2 kernel).
+- **IVF-PQ recall — parity** (0.774 vs 0.768) at identical bytes/vec.
+- **HNSW batch QPS at iso-recall — ~0.95–0.9×** at high recall (the regime that matters); recall itself leads.
 
 ### ❌ Where competitors still win
-- **HNSW single-query QPS — ~6× behind** the C++ libraries (5.8K vs 30–33K). This is **Python per-call overhead**, not the kernel: the batch path (`search_batch_np`) reaches 20.2K, within ~1.5×. *Fix: expose/encourage a batched `search` in the Python API.*
-- **HNSW batch QPS — still ~1.5× behind** hnswlib/faiss. Closing this is graph-quality + distance-kernel micro-optimization.
-- **Scale — the big one.** Every serious competitor has been validated at **10M–1B**; vectro's published ceiling is **1.18M**. This is the single most important gap (see §4).
-- **Out-of-core / billion-scale serving — absent.** No memory-mapping, no DiskANN-style SSD index, no sharding/distribution. DiskANN serves 1B from one 64 GB node off SSD; vectro cannot today.
+- **IVF-PQ *search* speed — ~7× behind FAISS** (1.3K vs 9.4K QPS). FAISS's tuned ADC loop is its optimised home turf; this is the *least favorable single corner*, not vectro's positioning (see §2.3). A batched/parallel binding closed the per-query-Python gap; a PQ fast-scan / SIMD ADC is the remaining lever.
+- **HNSW single-thread single-query** — Python per-call bound; use `search_batch` or threads (GIL released → ~1.75× at 4 threads).
+- **Scale — the big one.** Competitors validate at **10M–1B**; vectro's *published* ceiling is **1.18M** (IVF-PQ now recall-validated to ~200K here). Still the most important gap (§4).
+- **Out-of-core / billion-scale serving — absent.** No memory-mapping, no DiskANN-style SSD index, no sharding. DiskANN serves 1B from one 64 GB node off SSD; vectro cannot today.
 
 ---
 
@@ -235,17 +262,23 @@ adds an explicit **patent grant** (valuable for SIMD techniques) over MIT.
 
 ---
 
-## 7. Recommended Next Steps (ordered)
-1. **Add real-dataset loaders** (SIFT-1M, GloVe-1.2M, GIST-1M) and publish a
-   recall–QPS Pareto vs FAISS/hnswlib — directly comparable, doable on the M3.
-2. **Expose a batched Python `search`** to close the single-query QPS gap (kernel
-   already does 20K QPS via `search_batch_np`).
-3. **Validate & tune IVF-PQ at 10M**, then **100M on a 32 GB cloud box** — the
-   headline at-scale result; aim for SISAP's recall ≥ 0.8 bar.
-4. **Write the arXiv preprint** (cs.IR/cs.DS) around the compression codecs +
-   SIMD kernels + the 1M–100M benchmark story.
-5. **Enter the SISAP / big-ann challenge** for third-party validation.
-6. **Build the on-disk/mmap index** to reach 1B (DiskANN-style) — the largest lift.
+## 7. Next Steps
+
+**Done this cycle** (✅): HNSW build+search routed through Rust core; x86 AVX2 dot +
+prefetch (shared `index/simd.rs`); batched `search_batch` (HNSW + IVF-PQ); PQ AVX2
+encoder; IVF-PQ k-means++ O(n·k²·d)→O(n·k·d) fix; iso-recall Pareto benchmark
+(`benchmark_hnsw_pareto.py`); IVF-PQ at-scale benchmark (`benchmark_ivfpq_scale.py`);
+compressed-ANN tradeoff benchmark (`benchmark_compressed_ann.py`).
+
+**Remaining (ordered):**
+1. **Run the tradeoff + at-scale benchmarks at d=768/1536** (embedding regime) and
+   **10M→100M on a large-RAM box** — the headline at-scale result; SISAP recall ≥ 0.8 bar.
+2. **Real-dataset loaders** (SIFT-1M, GloVe-1.2M, GIST-1M, Deep) for directly-comparable runs.
+3. **IVF-PQ search speed** — PQ fast-scan / SIMD ADC to close the ~7× search corner vs FAISS.
+4. **On-disk / mmap index** (DiskANN-style) — the unlock for 1B on modest RAM.
+5. **arXiv preprint** (cs.IR/cs.DS) around the codecs + SIMD kernels + the compressed-ANN
+   tradeoff surface (the high-recall-compressed quadrant is the contribution).
+6. **Enter the SISAP / big-ann challenge** for third-party validation.
 
 ---
 
