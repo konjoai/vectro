@@ -35,8 +35,9 @@ impl Int8Vector {
     ///
     /// Dispatch priority:
     ///  1. AArch64 — NEON (compile-time; mandated by ARMv8).
-    ///  2. x86-64 + AVX2 — AVX2 path via runtime `is_x86_feature_detected!`.
-    ///  3. All other targets — portable scalar `encode`.
+    ///  2. x86-64 + AVX-512F — 16-wide path via runtime `is_x86_feature_detected!`.
+    ///  3. x86-64 + AVX2 — 8-wide path via runtime `is_x86_feature_detected!`.
+    ///  4. All other targets — portable scalar `encode`.
     #[inline]
     pub fn encode_fast(v: &[f32]) -> Self {
         #[cfg(target_arch = "aarch64")]
@@ -44,9 +45,15 @@ impl Int8Vector {
         return unsafe { encode_neon(v) };
 
         #[cfg(target_arch = "x86_64")]
-        if is_x86_feature_detected!("avx2") {
-            // SAFETY: guarded by runtime AVX2 feature detection.
-            return unsafe { encode_avx2(v) };
+        {
+            if is_x86_feature_detected!("avx512f") {
+                // SAFETY: guarded by runtime AVX-512F feature detection.
+                return unsafe { encode_avx512(v) };
+            }
+            if is_x86_feature_detected!("avx2") {
+                // SAFETY: guarded by runtime AVX2 feature detection.
+                return unsafe { encode_avx2(v) };
+            }
         }
 
         #[cfg(not(target_arch = "aarch64"))]
@@ -502,26 +509,83 @@ unsafe fn encode_sme_into(_v: &[f32], _out: &mut [i8], _range_factor: f32) -> f3
 }
 
 /// AVX-512-VNNI entry point — wired but uses the AVX2 fallback for now.
-/// `vpdpbssd` (VNNI) is most useful for *dot-product* on already-quantised
-/// INT8 vectors, but a fused encode path can use VNNI's signed/unsigned
-/// byte multiply-add to skip the f32→i32 narrow on AVX-512 hosts.  Until
-/// that kernel is implemented and benchmarked, this routes to AVX2.
+/// AVX-512 in-place INT8 encode — 16 floats per iteration (2× the AVX2 width).
+///
+/// Needs only AVX-512F: abs is `max(a, −a)` (no `vandnps`/AVX-512DQ), and the
+/// f32→i8 narrow is a single saturating `vpmovsdb` (`_mm512_cvtsepi32_epi8`)
+/// instead of AVX2's two-step `packs_epi32`→`packs_epi16`. Output is bit-for-bit
+/// identical to [`encode_avx2_into`] and [`encode_scalar_into`]: same abs-max
+/// (max is order-independent), same round-to-nearest `cvtps_epi32`, same
+/// [-128, 127] saturation, same scalar tail. (`vpdpbssd`/VNNI would help a
+/// *fused dot* at search time, not this encode, so it is intentionally unused.)
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+#[target_feature(enable = "avx512f")]
 #[inline]
-unsafe fn encode_avx512_vnni_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 {
-    // Wave 3 placeholder — re-uses the AVX2 path to keep the dispatch
-    // surface live.  Hardware availability gates implementation: with a
-    // Sapphire Rapids / Granite Rapids host in CI, replace this body
-    // with a VPDPBSSD-driven fused encode.
-    encode_avx2_into(v, out, range_factor)
+unsafe fn encode_avx512_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 {
+    use std::arch::x86_64::*;
+
+    let n = v.len();
+    if n == 0 {
+        return 1.0;
+    }
+    let ptr = v.as_ptr();
+    let out_ptr = out.as_mut_ptr();
+
+    // ── Pass 1: abs-max reduction (16 floats per iteration) ──────────────────
+    let zero = _mm512_setzero_ps();
+    let mut vmax = _mm512_setzero_ps();
+    let chunks16 = n / 16;
+    for i in 0..chunks16 {
+        let a = _mm512_loadu_ps(ptr.add(i * 16));
+        let abs_a = _mm512_max_ps(a, _mm512_sub_ps(zero, a)); // |a| = max(a, −a)
+        vmax = _mm512_max_ps(vmax, abs_a);
+    }
+    let mut abs_max = _mm512_reduce_max_ps(vmax);
+    for &x in &v[chunks16 * 16..] {
+        let ax = x.abs();
+        if ax > abs_max {
+            abs_max = ax;
+        }
+    }
+
+    let scale = if abs_max == 0.0 { 1.0_f32 } else { abs_max / range_factor };
+    let inv = 127.0_f32 / scale;
+    let vinv = _mm512_set1_ps(inv);
+
+    // ── Pass 2: quantise f32 → i8 (16 per iteration) ─────────────────────────
+    for i in 0..chunks16 {
+        let base = i * 16;
+        let x = _mm512_loadu_ps(ptr.add(base));
+        // Round-to-nearest (current MXCSR mode; default = nearest-even).
+        let i32s = _mm512_cvtps_epi32(_mm512_mul_ps(x, vinv));
+        // Saturating i32 → i8 narrow: 16 lanes in one VPMOVSDB.
+        let i8s = _mm512_cvtsepi32_epi8(i32s);
+        _mm_storeu_si128(out_ptr.add(base) as *mut __m128i, i8s);
+    }
+    // Scalar tail
+    for (i, &val) in v.iter().enumerate().skip(chunks16 * 16) {
+        *out_ptr.add(i) = (val * inv).round().clamp(-127.0, 127.0) as i8;
+    }
+
+    scale
+}
+
+/// AVX-512 allocating INT8 encode (abs-max, `range_factor = 1.0`) for
+/// [`Int8Vector::encode_fast`]. Thin wrapper over [`encode_avx512_into`].
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[inline]
+unsafe fn encode_avx512(v: &[f32]) -> Int8Vector {
+    let mut codes = vec![0i8; v.len()];
+    let scale = encode_avx512_into(v, &mut codes, 1.0);
+    Int8Vector { codes, scale }
 }
 
 /// Dispatch to the best in-place INT8 encode kernel for the current host.
 ///
 /// Priority order (Wave 3):
 ///   AArch64:  SME2 (M4)  →  Accelerate AMX (M1-M3, feature-gated)  →  NEON 32-wide
-///   x86-64:   AVX-512 + VNNI                          →  AVX2  →  scalar
+///   x86-64:   AVX-512F (16-wide)                      →  AVX2  →  scalar
 ///   other:    scalar
 ///
 /// Writes quantised codes into `out` without any heap allocation and
@@ -566,12 +630,9 @@ pub(crate) fn encode_fast_into(v: &[f32], out: &mut [i8], range_factor: f32) -> 
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f")
-            && is_x86_feature_detected!("avx512bw")
-            && is_x86_feature_detected!("avx512vnni")
-        {
-            // SAFETY: guarded by runtime probe of all three features.
-            return unsafe { encode_avx512_vnni_into(v, out, range_factor) };
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: guarded by runtime AVX-512F feature detection.
+            return unsafe { encode_avx512_into(v, out, range_factor) };
         }
         if is_x86_feature_detected!("avx2") {
             // SAFETY: guarded by runtime AVX2 feature detection.
@@ -1385,6 +1446,38 @@ mod tests {
             let avx2   = unsafe { encode_avx2(&v) };
             assert_eq!(scalar.scale, avx2.scale, "scale mismatch at len={len}");
             assert_eq!(scalar.codes, avx2.codes, "codes mismatch at len={len}");
+        }
+    }
+
+    /// AVX-512 parity test (only run on x86-64 hosts that advertise AVX-512F).
+    /// The 16-wide kernel must be bit-for-bit identical to the scalar baseline —
+    /// same abs-max, rounding, saturation, and tail — including non-multiples of
+    /// 16 and the adversarial 1e6-magnitude range the CLAUDE.md SIMD contract
+    /// requires. Both the allocating and in-place (range_factor) paths are checked.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn encode_avx512_matches_scalar() {
+        if !is_x86_feature_detected!("avx512f") {
+            return; // skip on CPUs without AVX-512F
+        }
+        for &len in &[0usize, 1, 3, 7, 15, 16, 17, 31, 32, 33, 64, 128, 256, 768] {
+            let v: Vec<f32> = (0..len)
+                .map(|i| ((i as f32 * 0.13) - 2.5).cos() * 1e6)
+                .collect();
+            let scalar = Int8Vector::encode(&v);
+            // SAFETY: guarded by the avx512f feature check above.
+            let avx512 = unsafe { encode_avx512(&v) };
+            assert_eq!(scalar.scale, avx512.scale, "scale mismatch at len={len}");
+            assert_eq!(scalar.codes, avx512.codes, "codes mismatch at len={len}");
+
+            // In-place path with a sub-unit range factor (profile headroom).
+            let mut out_simd = vec![0i8; len];
+            let mut out_scalar = vec![0i8; len];
+            let scalar_rf = encode_scalar_into(&v, &mut out_scalar, 0.9);
+            // SAFETY: guarded by the avx512f feature check above.
+            let scale_rf = unsafe { encode_avx512_into(&v, &mut out_simd, 0.9) };
+            assert_eq!(scalar_rf, scale_rf, "rf scale mismatch at len={len}");
+            assert_eq!(out_scalar, out_simd, "rf codes mismatch at len={len}");
         }
     }
 
