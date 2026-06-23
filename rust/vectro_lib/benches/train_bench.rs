@@ -177,6 +177,37 @@ fn bench_ivfpq_search(c: &mut Criterion) {
     group.finish();
 }
 
+/// IVF-PQ batch search throughput — the `search_batch_flat` path used by the
+/// Python/FFI batch API. Exercises the batched coarse scan + parallel ADC. d=768
+/// so the coarse-quantizer dots (q × n_lists full-dim) dominate, matching the
+/// realistic embedding regime where the GEMM coarse scan pays off.
+fn bench_ivfpq_search_batch(c: &mut Criterion) {
+    const N: usize = 20_000;
+    const D: usize = 768;
+    const N_LISTS: usize = 1024;
+    const N_PROBE: usize = 32;
+    const Q: usize = 256;
+    let vecs = make_vecs(N, D);
+
+    let mut idx = IvfPqIndex::new(N_LISTS, N_PROBE);
+    idx.train(&vecs, 64, 256, 10, 42).expect("ivfpq train failed");
+    for v in &vecs {
+        idx.add(v);
+    }
+    // Flat query buffer drawn deterministically from the dataset.
+    let mut flat: Vec<f32> = Vec::with_capacity(Q * D);
+    for i in 0..Q {
+        flat.extend_from_slice(&vecs[i * 137 % N]);
+    }
+
+    let mut group = c.benchmark_group("ivfpq_search_batch");
+    group.throughput(Throughput::Elements(Q as u64));
+    group.bench_function("batch_q256_n20k_d768_lists1024_probe32_k10", |b| {
+        b.iter(|| black_box(idx.search_batch_flat(black_box(&flat), D, 10, N_PROBE)))
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_pq_train,
@@ -186,6 +217,7 @@ criterion_group!(
     bench_pq_encode,
     bench_int8_decode,
     bench_hnsw_insert,
-    bench_ivfpq_search
+    bench_ivfpq_search,
+    bench_ivfpq_search_batch
 );
 criterion_main!(benches);
