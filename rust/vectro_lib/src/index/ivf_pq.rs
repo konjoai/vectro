@@ -30,7 +30,7 @@ fn lcg_next(state: u64) -> u64 {
 /// query's coarse-scan row. Mirrors `top_coarse` (closest centroids first) but
 /// reads pre-computed similarities from the batched GEMM. Uses
 /// `select_nth_unstable` so the selection is O(n_lists) rather than a full sort.
-fn top_probe_from_sims(sims: &[f32], n_probe: usize) -> Vec<usize> {
+pub(crate) fn top_probe_from_sims(sims: &[f32], n_probe: usize) -> Vec<usize> {
     let n = sims.len();
     let take = n_probe.min(n);
     if take == 0 {
