@@ -1430,6 +1430,55 @@ fn encode_nf4_fast(vec: Vec<f32>) -> PyResult<(Vec<u8>, f32, usize)> {
     Ok((q.packed, q.scale, q.dim))
 }
 
+/// Batch encode a 2-D float32 numpy array `[N, D]` to packed NF4 with zero
+/// per-row FFI crossings or boxed-float marshalling — the NF4 analogue of
+/// [`quantize_int8_batch`]. Replaces the per-row `row.tolist()` Python loop
+/// (N FFI calls + N·D boxed floats) with a single borrow + rayon-parallel pass.
+///
+/// Returns `(packed, scales)` where `packed` is shape `[N, ceil(D/2)]` dtype
+/// `uint8` (low nibble = even dim, high nibble = odd dim) and `scales` is shape
+/// `[N]` dtype `float32` (per-row abs-max).
+#[pyfunction]
+fn quantize_nf4_batch<'py>(
+    py: Python<'py>,
+    vectors: PyReadonlyArray2<f32>,
+) -> PyResult<(&'py PyArray2<u8>, &'py PyArray1<f32>)> {
+    let arr = vectors.as_array();
+    let (n, d) = (arr.nrows(), arr.ncols());
+
+    // Borrow the contiguous slice; own a copy only if the input isn't row-major.
+    let owned: Option<Vec<f32>> = match arr.as_slice() {
+        Some(_) => None,
+        None => Some(arr.iter().copied().collect()),
+    };
+    let flat: &[f32] = match (&owned, arr.as_slice()) {
+        (Some(v), _) => v,
+        (None, Some(s)) => s,
+        (None, None) => unreachable!("non-contiguous arrays were copied above"),
+    };
+
+    let bpv = d.div_ceil(2);
+    // Uninitialised outputs filled entirely by the rayon kernel (no 0-init).
+    // SAFETY: `batch_encode_packed_into` writes all `n*bpv` bytes and `n` scales
+    // before we hand the arrays back to Python.
+    let packed_arr = unsafe { PyArray2::<u8>::new(py, [n, bpv], false) };
+    let scales_arr = unsafe { PyArray1::<f32>::new(py, [n], false) };
+    {
+        let packed_slice = unsafe { packed_arr.as_slice_mut()? };
+        let scales_slice = unsafe { scales_arr.as_slice_mut()? };
+        py.allow_threads(|| {
+            vectro_lib::quant::nf4::batch_encode_packed_into(
+                flat,
+                n,
+                d,
+                packed_slice,
+                scales_slice,
+            )
+        });
+    }
+    Ok((packed_arr, scales_arr))
+}
+
 /// Batch encode a 2-D float32 numpy array [N, D] to INT8 using rayon-parallel
 /// abs-max quantisation with zero per-row heap allocation.
 ///
@@ -1856,6 +1905,7 @@ fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(benchmark_search_performance, m)?)?;
     m.add_function(wrap_pyfunction!(encode_int8_fast, m)?)?;
     m.add_function(wrap_pyfunction!(encode_nf4_fast, m)?)?;
+    m.add_function(wrap_pyfunction!(quantize_nf4_batch, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_int8_batch, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_int8_batch_normalized, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_int8_batch_from_f16, m)?)?;
