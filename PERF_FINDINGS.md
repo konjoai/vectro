@@ -10,6 +10,49 @@ glibc malloc, `target-cpu=x86-64-v3`, `--release` (fat LTO, codegen-units=1).
 
 ---
 
+## ❌ IVF-PQ4 HNSW coarse quantiser — recall-neutral but no batch QPS gain vs the GEMM coarse (reverted)
+
+**Opportunity:** at fine partitioning (large `n_lists` → small posting lists →
+cheap PQ4 scan) the coarse step — finding the `n_probe` nearest cells — was
+expected to dominate, since a brute-force scan over every centroid scales with
+`n_lists`. Idea: an HNSW over the coarse centroids so the nearest cells are
+found in ~`O(log n_lists)` hops, decoupling coarse cost from `n_lists`.
+
+**Implementation:** added `coarse_hnsw: Option<HnswIndex>` to `IvfPq4Index`,
+built over the unit-norm centroids; single-query and per-query-batch coarse
+probe routed through the graph walk; `coarse_ef = max(2·n_probe, 64)`.
+
+**Benchmark** (200k × d=768, `n_lists=4096`, batch of 2000, **clustered** data so
+recall is meaningful — `rand_unit` at d=768 is near-orthogonal and gives ~0
+recall for *any* method):
+
+| n_probe | GEMM coarse | HNSW coarse | recall@10 (GEMM / HNSW) |
+|---|---|---|---|
+| 32 | 20 859 qps | 20 149 qps | 0.0200 / 0.0200 |
+| 48 | 20 214 qps | 14 990 qps | 0.0170 / 0.0175 |
+| 64 | 15 639 qps | 9 873 qps | 0.0125 / 0.0120 |
+
+Recall is **identical** (HNSW coarse is recall-neutral), but the **batched GEMM
+coarse is as-fast-or-faster** at every `n_probe` (tied at 32, 1.3–1.6× ahead at
+48/64).
+
+**Why it didn't work:** the batch coarse GEMM tiles 32 queries and **reuses the
+centroid matrix across the whole tile** (cache-resident, compute-bound,
+matrixmultiply-blocked). The HNSW walk is **per-query** with random access to
+centroids and no cross-query reuse, so it can't beat the amortised GEMM for the
+*batch* path. (An earlier `rand_unit` run showed HNSW "winning" — an artifact:
+on near-orthogonal data the degenerate graph terminates early returning garbage,
+so it looked fast.) The coarse HNSW also costs ~`n_lists·d·4` bytes (the
+`HnswIndex` duplicates the centroids — 12.6 MB at `n_lists=4096`).
+
+**Resolution:** reverted. The batch QPS goal was already met by the batched GEMM
+coarse alone (PR #94): at `n_lists=4096` it reaches **20 859 qps vs faiss-IVF-PQ
+11 828 (1.76×)**, recall-neutral. The coarse HNSW added no batch benefit and a
+real memory cost. **When to revisit:** single-query *latency* (not batch
+throughput) — there the per-query GEMM has no amortisation and a graph walk
+would beat the serial O(`n_lists`) scan; worth it only if single-query serving
+becomes the bottleneck and the +12.6 MB is acceptable.
+
 ## ❌ Quant-HNSW `apply_center` → `Cow` (drop the no-center query copy) — unmeasurable here (reverted)
 
 **Opportunity (campaign 3):** `QuantHnswIndex::search` does
