@@ -10,6 +10,36 @@ glibc malloc, `target-cpu=x86-64-v3`, `--release` (fat LTO, codegen-units=1).
 
 ---
 
+## ❌ `dequantize_int8_batch` uninit-output + GIL release — single-thread neutral (reverted)
+
+**Opportunity:** the batch INT8 decode allocates `vec![0.0f32; n*d]` (serial
+zero-init), fills it, then `into_pyarray` copies it again into Python-owned
+memory — two passes + a zero-init, all under the GIL. Rewrite to decode straight
+into an **uninitialised** `PyArray2` under `py.allow_threads`, mirroring
+`quantize_int8_batch`. Estimated ~2×.
+
+**Benchmark** (built extension, single thread, 50k×768 i8 decode, repeated runs):
+
+| | time |
+|---|------|
+| current (zero-init Vec + `into_pyarray` copy) | 49 ms |
+| uninit PyArray + `allow_threads` | 50–57 ms |
+
+Within run-to-run noise — **no single-thread win** (d=384 likewise flat).
+
+**Why it didn't work:** the decode is memory-bandwidth-bound. Removing the
+zero-init memset and the `into_pyarray` copy is offset by **first-touch page
+faults** on the freshly-allocated numpy buffer taken during the rayon-parallel
+write (the old `vec![0.0; n*d]` pre-faults all pages serially up front, then the
+`into_pyarray` copy is a fast sequential memcpy). Net wash.
+
+**Resolution:** reverted. The GIL-release half *would* help concurrent decode
+across threads, but that benefit can't be cleanly demonstrated on this 4-core
+host and single-thread is neutral, so the change wasn't shipped (no machinery
+without a measured payoff). Revisit with a many-thread concurrent-decode metric.
+
+---
+
 ## ❌ SQ2 / SQ3 stored norms — no measurable win (not shipped)
 
 **Opportunity:** `sq2_dot_norm` / `sq3_dot_norm` compute the query-independent

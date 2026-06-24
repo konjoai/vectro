@@ -362,6 +362,66 @@ pub fn encode_batch(vectors: &[Vec<f32>]) -> Vec<Nf4Vector> {
     vectors.par_iter().map(|v| Nf4Vector::encode_fast(v)).collect()
 }
 
+/// Encode one vector's NF4 nibbles directly into `packed_out` (length
+/// `ceil(d/2)`), returning the abs-max scale. No per-vector heap allocation —
+/// the packing trick of [`Nf4Vector::encode_with_absmax`] writing straight into
+/// a caller-owned slice, for the zero-copy batch FFI path.
+#[inline]
+pub fn encode_packed_into(v: &[f32], packed_out: &mut [u8]) -> f32 {
+    let dim = v.len();
+    #[cfg(target_arch = "x86_64")]
+    let abs_max = if is_x86_feature_detected!("avx2") {
+        // SAFETY: avx2 runtime-detected.
+        unsafe { avx2_abs_max(v) }
+    } else {
+        v.iter().map(|x| x.abs()).fold(0.0f32, f32::max)
+    };
+    #[cfg(not(target_arch = "x86_64"))]
+    let abs_max = v.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+
+    let scale = if abs_max == 0.0 { 1.0 } else { abs_max };
+    let inv = 1.0 / scale;
+    let mut i = 0;
+    while i + 1 < dim {
+        let lo = nearest_nf4((v[i] * inv).clamp(-1.0, 1.0));
+        let hi = nearest_nf4((v[i + 1] * inv).clamp(-1.0, 1.0));
+        packed_out[i / 2] = lo | (hi << 4);
+        i += 2;
+    }
+    if dim % 2 == 1 {
+        let lo = nearest_nf4((v[dim - 1] * inv).clamp(-1.0, 1.0));
+        packed_out[dim / 2] = lo;
+    }
+    scale
+}
+
+/// Encode a flat `[n, d]` row-major f32 batch to NF4 directly into caller-owned
+/// strided buffers — `packed_out` is `[n, ceil(d/2)]` row-major u8, `scales_out`
+/// is `[n]` f32. Parallel over rows; no per-row allocation. Backs the zero-copy
+/// `quantize_nf4_batch` PyO3 entry (replaces the per-row `row.tolist()` FFI
+/// loop). Every output byte/scale is written, so the caller may pass
+/// uninitialised buffers.
+pub fn batch_encode_packed_into(
+    flat: &[f32],
+    n: usize,
+    d: usize,
+    packed_out: &mut [u8],
+    scales_out: &mut [f32],
+) {
+    if d == 0 || n == 0 {
+        scales_out.iter_mut().for_each(|s| *s = 1.0);
+        return;
+    }
+    let bpv = d.div_ceil(2);
+    packed_out
+        .par_chunks_mut(bpv)
+        .zip(scales_out.par_iter_mut())
+        .enumerate()
+        .for_each(|(i, (prow, srow))| {
+            *srow = encode_packed_into(&flat[i * d..i * d + d], prow);
+        });
+}
+
 /// Decode a batch of NF4 vectors back to f32 in parallel.
 pub fn decode_batch(encoded: &[Nf4Vector]) -> Vec<Vec<f32>> {
     encoded.par_iter().map(|e| e.decode()).collect()
@@ -370,6 +430,27 @@ pub fn decode_batch(encoded: &[Nf4Vector]) -> Vec<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The flat zero-copy batch encode must produce byte-identical packing and
+    /// scales to the per-vector `encode_fast`, across even and odd dims.
+    #[test]
+    fn batch_encode_packed_matches_per_vector() {
+        for d in [1usize, 2, 15, 16, 31, 64, 127, 768, 769] {
+            let n = 5;
+            let flat: Vec<f32> = (0..n * d)
+                .map(|i| ((i as f32 * 0.013) - 0.5).sin() * ((i % 7) as f32 + 1.0))
+                .collect();
+            let bpv = d.div_ceil(2);
+            let mut packed = vec![0u8; n * bpv];
+            let mut scales = vec![0.0f32; n];
+            batch_encode_packed_into(&flat, n, d, &mut packed, &mut scales);
+            for r in 0..n {
+                let enc = Nf4Vector::encode_fast(&flat[r * d..r * d + d]);
+                assert_eq!(&packed[r * bpv..r * bpv + bpv], &enc.packed[..], "d={d} row={r}");
+                assert_eq!(scales[r], enc.scale, "d={d} row={r} scale");
+            }
+        }
+    }
 
     /// The AVX2 LUT distance must match the scalar reference across the SIMD
     /// stride boundary (32 dims), partial blocks, and the odd-dim tail.
