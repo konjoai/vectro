@@ -337,6 +337,25 @@ mod tests {
             .collect()
     }
 
+    /// Clustered unit vectors (centers + jitter) — realistic recall structure,
+    /// unlike near-orthogonal `rand_unit`. Used by the coarse-quantiser A/B.
+    fn clustered(n: usize, d: usize, n_centers: usize, jitter: f32, seed: u64) -> Vec<Vec<f32>> {
+        let mut s = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut next = move || {
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (s >> 33) as f32 / (1u64 << 31) as f32 - 1.0
+        };
+        let centers: Vec<Vec<f32>> =
+            (0..n_centers).map(|_| (0..d).map(|_| next()).collect()).collect();
+        (0..n)
+            .map(|i| {
+                let c = &centers[i % n_centers];
+                let v: Vec<f32> = c.iter().map(|&x| x + jitter * next()).collect();
+                normalize(&v)
+            })
+            .collect()
+    }
+
     #[test]
     fn build_validates() {
         let data = rand_unit(64, 16, 1);
@@ -379,8 +398,10 @@ mod tests {
         use std::time::Instant;
         let (n, d, n_lists) = (200_000usize, 768usize, 4096usize);
         let k = 10usize;
-        let data = rand_unit(n, d, 1);
-        let queries = rand_unit(2000, d, 99);
+        // Clustered data so coarse recall is meaningful (rand_unit is near-
+        // orthogonal at d=768 → ~0 recall for any method, GEMM or HNSW).
+        let data = clustered(n, d, 256, 0.30, 1);
+        let queries = clustered(2000, d, 256, 0.30, 99);
         let flat: Vec<f32> = queries.iter().flatten().copied().collect();
 
         // Exact cosine ground truth for the first 200 queries.
