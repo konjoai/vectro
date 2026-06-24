@@ -19,6 +19,10 @@
 use clap::{Parser, Subcommand};
 use vectro_cli::{compress_stream, compress_pq, compress_nf4, compress_rq, compress_auto};
 
+// Sharded per-thread allocator for the alloc-heavy HNSW build/search paths.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use serde_json::Value;
 
 pub mod server;

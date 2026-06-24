@@ -5,6 +5,13 @@
 #![allow(unknown_lints)]
 #![allow(non_local_definitions)]
 
+// Route all Rust-side allocations in the extension through mimalloc's sharded
+// per-thread heaps — cuts glibc arena-lock contention on the alloc-heavy HNSW
+// concurrent-build and multi-thread query paths (the GIL is released there, so
+// rayon workers contend the allocator). See vectro_lib examples/alloc_bench.rs.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
 use numpy::{
