@@ -741,6 +741,52 @@ impl PyHnswIndex {
         }
     }
 
+    /// Batch search returning two packed `[Q, k]` arrays — `ids` (int64) and
+    /// `dists` (float32) — instead of a list-of-lists-of-tuples. Short rows are
+    /// padded with id `-1` / dist `+inf`. Avoids `2·Q·k` boxed Python objects in
+    /// the FFI return (and the matching Python-side reconstruction).
+    fn search_batch_arrays_np<'py>(
+        &self,
+        py: Python<'py>,
+        queries: PyReadonlyArray2<f32>,
+        k: usize,
+        ef: usize,
+    ) -> PyResult<(&'py PyArray2<i64>, &'py PyArray2<f32>)> {
+        let arr = queries.as_array();
+        let (q, d) = (arr.nrows(), arr.ncols());
+        let results = if let Some(flat) = arr.as_slice() {
+            py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, ef))
+        } else {
+            let owned: Vec<f32> = arr.iter().copied().collect();
+            py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, ef))
+        };
+        // Pack into uninitialised [Q, k] outputs; every cell is written (padding
+        // fills the short tail). SAFETY: the loop covers all `q*k` cells.
+        let ids = unsafe { PyArray2::<i64>::new(py, [q, k], false) };
+        let dists = unsafe { PyArray2::<f32>::new(py, [q, k], false) };
+        {
+            let ids_s = unsafe { ids.as_slice_mut()? };
+            let dists_s = unsafe { dists.as_slice_mut()? };
+            for r in 0..q {
+                let row = results.get(r);
+                for c in 0..k {
+                    let idx = r * k + c;
+                    match row.and_then(|rw| rw.get(c)) {
+                        Some(&(id, dist)) => {
+                            ids_s[idx] = id as i64;
+                            dists_s[idx] = dist;
+                        }
+                        None => {
+                            ids_s[idx] = -1;
+                            dists_s[idx] = f32::INFINITY;
+                        }
+                    }
+                }
+            }
+        }
+        Ok((ids, dists))
+    }
+
     /// Soft-delete a vector by ID.
     fn delete(&mut self, id: usize) {
         self.inner.delete(id);
@@ -1344,6 +1390,54 @@ macro_rules! quant_hnsw_pyclass {
                     let owned: Vec<f32> = arr.iter().copied().collect();
                     py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, ef))
                 }
+            }
+
+            /// Batch search returning two packed `[Q, k]` arrays — `ids` (int64)
+            /// and `dists` (float32) — instead of a list-of-lists-of-tuples.
+            /// Short rows (fewer than `k` results) are padded with id `-1` /
+            /// dist `+inf`. Avoids allocating `2·Q·k` boxed Python objects in the
+            /// FFI return (and the matching reconstruction in Python).
+            fn search_batch_arrays_np<'py>(
+                &self,
+                py: Python<'py>,
+                queries: PyReadonlyArray2<f32>,
+                k: usize,
+                ef: usize,
+            ) -> PyResult<(&'py PyArray2<i64>, &'py PyArray2<f32>)> {
+                let arr = queries.as_array();
+                let (q, d) = (arr.nrows(), arr.ncols());
+                let results = if let Some(flat) = arr.as_slice() {
+                    py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, ef))
+                } else {
+                    let owned: Vec<f32> = arr.iter().copied().collect();
+                    py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, ef))
+                };
+                // Pack into uninitialised [Q, k] outputs; every cell is written
+                // (padding fills the short tail). SAFETY: the loop covers all
+                // `q*k` cells before the arrays are returned to Python.
+                let ids = unsafe { PyArray2::<i64>::new(py, [q, k], false) };
+                let dists = unsafe { PyArray2::<f32>::new(py, [q, k], false) };
+                {
+                    let ids_s = unsafe { ids.as_slice_mut()? };
+                    let dists_s = unsafe { dists.as_slice_mut()? };
+                    for r in 0..q {
+                        let row = results.get(r);
+                        for c in 0..k {
+                            let idx = r * k + c;
+                            match row.and_then(|rw| rw.get(c)) {
+                                Some(&(id, dist)) => {
+                                    ids_s[idx] = id as i64;
+                                    dists_s[idx] = dist;
+                                }
+                                None => {
+                                    ids_s[idx] = -1;
+                                    dists_s[idx] = f32::INFINITY;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok((ids, dists))
             }
 
             /// Search with an allow-list of node IDs.

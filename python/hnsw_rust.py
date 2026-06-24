@@ -134,6 +134,34 @@ class RustHnswBackend:
         batch = self._idx.search_batch_np(q, k, ef)
         return [[(int(nid), float(dist)) for nid, dist in row] for row in batch]
 
+    def search_batch_arrays(
+        self,
+        q_norm: np.ndarray,
+        k: int,
+        ef: int,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Batch search returning packed ``(ids, dists)`` arrays of shape ``[Q, k]``.
+
+        The fast path for large batches: the native ``search_batch_arrays_np``
+        returns two contiguous numpy arrays (int64 ids, float32 dists) instead of
+        a list-of-lists-of-tuples, avoiding ``2*Q*k`` boxed Python objects on both
+        sides of the FFI. Short rows are padded with id ``-1`` / dist ``+inf``.
+        Falls back to reconstructing from :meth:`search_batch` for older
+        extensions that predate the native entry.
+        """
+        q = np.ascontiguousarray(q_norm, dtype=np.float32)
+        if hasattr(self._idx, "search_batch_arrays_np"):
+            return self._idx.search_batch_arrays_np(q, k, ef)
+        batch = self._idx.search_batch_np(q, k, ef)
+        n = q.shape[0]
+        ids = np.full((n, k), -1, dtype=np.int64)
+        dists = np.full((n, k), np.inf, dtype=np.float32)
+        for r, row in enumerate(batch):
+            for c, (nid, dist) in enumerate(row):
+                ids[r, c] = nid
+                dists[r, c] = dist
+        return ids, dists
+
     def rebuild(self, normalized_vectors: List[np.ndarray], deleted: "set[int]") -> None:
         """Rebuild the graph from scratch, then re-apply tombstones.
 
