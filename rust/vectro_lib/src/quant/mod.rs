@@ -118,7 +118,7 @@ pub struct BinaryQuantizer;
 
 impl Quantizer for BinaryQuantizer {
     type Encoded = binary::BinaryVector;
-    fn encode(v: &[f32]) -> Self::Encoded { binary::BinaryVector::encode(v, true) }
+    fn encode(v: &[f32]) -> Self::Encoded { binary::BinaryVector::encode_fast(v, true) }
     fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
         // Sign bits → asymmetric cosine, directly from the packed bits.
