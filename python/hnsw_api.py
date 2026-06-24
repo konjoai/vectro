@@ -749,9 +749,16 @@ class HNSWIndex:
         # Native batched path: only when rust-backed and unfiltered.
         if self._rust is not None and not filter:
             self._rust_rebuild_if_dirty()
-            q_norm = np.ascontiguousarray(
-                [self._normalize(q_arr[i]) for i in range(nq)], dtype=np.float32
-            )
+            # Vectorized batch normalization — one norm reduction + fused divide
+            # over [nq, d] instead of nq separate Python _normalize calls.
+            # Identical to per-row _normalize: a zero-norm row divides by 1.0
+            # (left unchanged), matching the scalar guard.
+            if self.space == "cosine":
+                norms = np.linalg.norm(q_arr, axis=1, keepdims=True)
+                norms[norms == 0.0] = 1.0
+                q_norm = np.ascontiguousarray(q_arr / norms, dtype=np.float32)
+            else:
+                q_norm = np.ascontiguousarray(q_arr, dtype=np.float32)
             batch = self._rust.search_batch(q_norm, k, ef_actual)
             for i, row in enumerate(batch):
                 for j, (nid, dist) in enumerate(row[:k]):
