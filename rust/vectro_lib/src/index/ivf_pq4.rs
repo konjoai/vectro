@@ -14,9 +14,11 @@
 //! This is a **build-once** index (train + populate in [`IvfPq4Index::build`]);
 //! incremental `add`, nibble-packing, and a PyO3 binding are tracked follow-ups.
 
-use super::ivf_pq::{cosine_dist, kmeans_lloyd};
+use super::ivf_pq::{cosine_dist, kmeans_lloyd, top_probe_from_sims};
 use super::pq4::{interleave_codes, quantize_lut, scan, BLK, K};
 use crate::quant::pq::{pq_distance_table, pq_encode, train_pq_codebook, PQCodebook};
+use ndarray::{Array2, ArrayView2};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// One coarse cell's PQ4 fast-scan store.
@@ -139,13 +141,79 @@ impl IvfPq4Index {
             scored.truncate(probe);
         }
 
+        let probe_lists: Vec<usize> = scored.iter().map(|&(_, c)| c).collect();
+        self.scan_probed(&q, &probe_lists, k)
+    }
+
+    /// Batch search over a flat `[q * dim]` query buffer, parallelised across
+    /// queries (rayon, lock-free). The coarse step — comparing each query to
+    /// every centroid — is the dominant cost at high dim / many lists, so it is
+    /// computed as one `Q·Cᵀ` GEMM per tile (centroid matrix reused across the
+    /// tile, the way FAISS routes its coarse quantiser) instead of a per-query
+    /// serial scalar scan; the PQ4 `pshufb` scan then runs per query. Mirrors
+    /// [`super::ivf_pq::IvfPqIndex::search_batch_flat`].
+    pub fn search_batch_flat(
+        &self,
+        flat: &[f32],
+        dim: usize,
+        k: usize,
+        n_probe: usize,
+    ) -> Vec<Vec<(usize, f32)>> {
+        if dim == 0 {
+            return Vec::new();
+        }
+        let q = flat.len() / dim;
+        if !self.trained || self.dim == 0 {
+            return vec![Vec::new(); q];
+        }
+        assert_eq!(dim, self.dim, "query dim mismatch");
+        if q == 0 {
+            return Vec::new();
+        }
+
+        // Unit-normalise every query once (cosine == dot for unit vectors).
+        let mut qnorm = vec![0.0f32; q * dim];
+        for i in 0..q {
+            let row = &flat[i * dim..(i + 1) * dim];
+            let inv = 1.0 / row.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+            for (j, &x) in row.iter().enumerate() {
+                qnorm[i * dim + j] = x * inv;
+            }
+        }
+        let cmat = ArrayView2::from_shape((self.n_lists, dim), &self.coarse_centroids)
+            .expect("centroid shape");
+        let probe = n_probe.min(self.n_lists);
+
+        const CHUNK: usize = 32;
+        let mut results: Vec<Vec<(usize, f32)>> = vec![Vec::new(); q];
+        results.par_chunks_mut(CHUNK).enumerate().for_each(|(c, out)| {
+            let lo = c * CHUNK;
+            let rows = out.len();
+            let qtile = ArrayView2::from_shape((rows, dim), &qnorm[lo * dim..(lo + rows) * dim])
+                .expect("query tile shape");
+            // sims[r, l] = dot(query r, centroid l) — higher = closer (cosine).
+            let sims: Array2<f32> = qtile.dot(&cmat.t());
+            for (r, slot) in out.iter_mut().enumerate() {
+                let srow = sims.row(r);
+                let probe_lists = top_probe_from_sims(srow.as_slice().expect("contig row"), probe);
+                let qi = lo + r;
+                *slot = self.scan_probed(&qnorm[qi * dim..(qi + 1) * dim], &probe_lists, k);
+            }
+        });
+        results
+    }
+
+    /// PQ4 fast-scan over the chosen `probe_lists` for an already-normalised
+    /// query, returning the top-`k` `(gid, dist)`. Shared by the single-query and
+    /// batched search paths.
+    fn scan_probed(&self, q: &[f32], probe_lists: &[usize], k: usize) -> Vec<(usize, f32)> {
         // One u8 LUT for the whole query; sums across cells are comparable.
-        let table = pq_distance_table(&q, &self.codebook);
+        let table = pq_distance_table(q, &self.codebook);
         let (lut, inv_scale, bias) = quantize_lut(&table, self.m);
 
         let mut cand: Vec<(u16, usize)> = Vec::new();
         let mut sums: Vec<u16> = Vec::new();
-        for &(_, c) in &scored {
+        for &c in probe_lists {
             let list = &self.lists[c];
             let n = list.ids.len();
             if n == 0 {
@@ -233,6 +301,74 @@ mod tests {
             }
         }
         assert!(hits >= 95, "self-recall@1 too low: {hits}/100");
+    }
+
+    /// A/B: looped single-query coarse scan vs the batched coarse GEMM.
+    /// `cargo test -p vectro_lib --release ivf_pq4_batch_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn ivf_pq4_batch_timing() {
+        use std::time::Instant;
+        let (n, d, n_lists, n_probe) = (200_000usize, 768usize, 2048usize, 32usize);
+        let data = rand_unit(n, d, 1);
+        let idx = IvfPq4Index::build(&data, n_lists, n_probe, 96, 10, 1).expect("build");
+        let queries = rand_unit(2000, d, 99);
+        let flat: Vec<f32> = queries.iter().flatten().copied().collect();
+        let k = 10usize;
+
+        // warm
+        let _ = idx.search_batch_flat(&flat, d, k, n_probe);
+        for q in &queries {
+            std::hint::black_box(idx.search_with_probe(q, k, n_probe).len());
+        }
+
+        let mut single = f64::INFINITY;
+        for _ in 0..3 {
+            let t = Instant::now();
+            let mut s = 0usize;
+            for q in &queries {
+                s += idx.search_with_probe(q, k, n_probe).len();
+            }
+            std::hint::black_box(s);
+            single = single.min(t.elapsed().as_secs_f64());
+        }
+        let mut batch = f64::INFINITY;
+        for _ in 0..3 {
+            let t = Instant::now();
+            let r = idx.search_batch_flat(&flat, d, k, n_probe);
+            std::hint::black_box(r.len());
+            batch = batch.min(t.elapsed().as_secs_f64());
+        }
+        let nq = queries.len() as f64;
+        println!(
+            "ivf_pq4 n={n} d={d} lists={n_lists} probe={n_probe}: single={:.0} qps | batch={:.0} qps | {:.2}x",
+            nq / single,
+            nq / batch,
+            single / batch
+        );
+    }
+
+    #[test]
+    fn search_batch_flat_matches_single_query() {
+        let data = rand_unit(2000, 64, 7);
+        let idx = IvfPq4Index::build(&data, 32, 8, 16, 12, 7).expect("build");
+        let queries = rand_unit(50, 64, 99);
+        let flat: Vec<f32> = queries.iter().flatten().copied().collect();
+        let batch = idx.search_batch_flat(&flat, 64, 10, 8);
+        assert_eq!(batch.len(), queries.len());
+        for (i, q) in queries.iter().enumerate() {
+            let single = idx.search_with_probe(q, 10, 8);
+            // The batched coarse GEMM and the scalar coarse scan can tie-break
+            // equidistant centroids differently, so compare the returned gids as
+            // sets (same candidates, possibly reordered only on exact ties).
+            let bs: std::collections::HashSet<usize> = batch[i].iter().map(|&(g, _)| g).collect();
+            let ss: std::collections::HashSet<usize> = single.iter().map(|&(g, _)| g).collect();
+            let overlap = bs.intersection(&ss).count();
+            assert!(
+                overlap >= 9,
+                "batch vs single overlap {overlap}/10 too low at query {i}"
+            );
+        }
     }
 
     #[test]

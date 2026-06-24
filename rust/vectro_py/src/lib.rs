@@ -1270,6 +1270,28 @@ impl PyIvfPq4Index {
         py.allow_threads(|| self.inner.search_with_probe(&owned, k, n_probe))
     }
 
+    /// Batch search over a 2-D numpy query array [Q, D], parallelised across
+    /// queries (rayon, GIL released). The coarse step runs as a batched GEMM
+    /// (centroid matrix reused across the tile) instead of a per-query serial
+    /// scan — the throughput path for the PQ4 fast-scan index.
+    fn search_batch_np(
+        &self,
+        py: Python<'_>,
+        queries: PyReadonlyArray2<f32>,
+        k: usize,
+        n_probe: usize,
+    ) -> Vec<Vec<(usize, f32)>> {
+        let arr = queries.as_array();
+        let (_q, d) = (arr.nrows(), arr.ncols());
+        match arr.as_slice() {
+            Some(flat) => py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, n_probe)),
+            None => {
+                let owned: Vec<f32> = arr.iter().copied().collect();
+                py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, n_probe))
+            }
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!("PyIvfPq4Index(n={})", self.inner.len())
     }
