@@ -311,7 +311,27 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                 }
                 // Iterate adjacency by reference — `neighbors` and `encoded` are
                 // distinct shared borrows of `self`, so no clone is needed here.
-                for &nb in &self.neighbors[c][layer] {
+                let nbrs = &self.neighbors[c][layer];
+                // Software-pipelined prefetch of the (cold, separately-allocated)
+                // code rows: prime the first PF neighbours, then stay PF ahead so
+                // each code streams in while the previous distance computes. Only
+                // at query time (`!use_f32`) — the build path scores against the
+                // f32 `build_vectors`, not `encoded`. Mirrors `hnsw.rs`.
+                #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+                const PF: usize = 2;
+                #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+                if !use_f32 {
+                    for &pf in nbrs.iter().take(PF) {
+                        Q::prefetch(&self.encoded[pf as usize]);
+                    }
+                }
+                for (i, &nb) in nbrs.iter().enumerate() {
+                    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+                    if !use_f32 {
+                        if let Some(&fut) = nbrs.get(i + PF) {
+                            Q::prefetch(&self.encoded[fut as usize]);
+                        }
+                    }
                     let nb = nb as usize;
                     if !visited.visit(nb) {
                         continue;

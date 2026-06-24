@@ -46,8 +46,57 @@ pub trait Quantizer: Send + Sync + 'static {
     /// Returns a value in `[0, 2]` where 0 = identical direction, 2 = opposite.
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32;
 
+    /// Prefetch `enc`'s encoded bytes into cache (read hint).
+    ///
+    /// Default is a no-op; codecs whose `Encoded` holds a contiguous data buffer
+    /// override it to prime that buffer. The beam search calls this a couple of
+    /// neighbours ahead so each cold code row streams in while the current
+    /// node's distance computes — the per-node code buffer is a separate heap
+    /// allocation (array-of-structs), so without this every neighbour probe is a
+    /// likely cache miss.
+    #[inline]
+    fn prefetch(enc: &Self::Encoded) {
+        let _ = enc;
+    }
+
     /// Bits used per dimension.
     fn bits_per_dim() -> u32;
+}
+
+/// Prefetch every 64-byte cache line spanning `[ptr, ptr + len_bytes)` into L1
+/// (T0 read hint). A no-op on targets without a prefetch intrinsic.
+///
+/// `(lines - 1) * 64 < len_bytes` always holds, so the computed addresses stay
+/// within the allocation; prefetch is a pure hint with no memory effect either
+/// way.
+#[inline]
+pub(crate) fn prefetch_bytes(ptr: *const u8, len_bytes: usize) {
+    if len_bytes == 0 {
+        return;
+    }
+    let lines = len_bytes.div_ceil(64);
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+        for l in 0..lines {
+            // SAFETY: prefetch is a hint with no memory effect; address in-bounds.
+            unsafe { _mm_prefetch::<_MM_HINT_T0>(ptr.add(l * 64) as *const i8) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        for l in 0..lines {
+            // SAFETY: prefetch is a hint with no memory effect; address in-bounds.
+            unsafe {
+                let p = ptr.add(l * 64);
+                core::arch::asm!("prfm pldl1keep, [{p}]", p = in(reg) p, options(nostack, preserves_flags, readonly));
+            }
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let _ = lines;
+    }
 }
 
 // ─────────────────────────── shared helper ────────────────────────────────────
@@ -79,6 +128,9 @@ impl Quantizer for Bf16Quantizer {
         // Direct from codes — no per-call decode allocation.
         enc.cosine_dist_to_query(query)
     }
+    fn prefetch(enc: &Self::Encoded) {
+        prefetch_bytes(enc.packed.as_ptr() as *const u8, enc.packed.len() * 2);
+    }
     fn bits_per_dim() -> u32 { 16 }
 }
 
@@ -95,6 +147,9 @@ impl Quantizer for Int8Quantizer {
         // unit-normalised stored vectors.
         (1.0 - enc.dot_query(query)).max(0.0)
     }
+    fn prefetch(enc: &Self::Encoded) {
+        prefetch_bytes(enc.codes.as_ptr() as *const u8, enc.codes.len());
+    }
     fn bits_per_dim() -> u32 { 8 }
 }
 
@@ -108,6 +163,9 @@ impl Quantizer for Nf4Quantizer {
     fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
         enc.cosine_dist_to_query(query)
+    }
+    fn prefetch(enc: &Self::Encoded) {
+        prefetch_bytes(enc.packed.as_ptr(), enc.packed.len());
     }
     fn bits_per_dim() -> u32 { 4 }
 }
@@ -124,6 +182,9 @@ impl Quantizer for BinaryQuantizer {
         // Sign bits → asymmetric cosine, directly from the packed bits.
         enc.cosine_dist_to_query(query)
     }
+    fn prefetch(enc: &Self::Encoded) {
+        prefetch_bytes(enc.packed.as_ptr(), enc.packed.len());
+    }
     fn bits_per_dim() -> u32 { 1 }
 }
 
@@ -138,6 +199,9 @@ impl Quantizer for Sq2Quantizer {
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
         enc.cosine_dist_to_query(query)
     }
+    fn prefetch(enc: &Self::Encoded) {
+        prefetch_bytes(enc.packed.as_ptr(), enc.packed.len());
+    }
     fn bits_per_dim() -> u32 { 2 }
 }
 
@@ -151,6 +215,9 @@ impl Quantizer for Sq3Quantizer {
     fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
         enc.cosine_dist_to_query(query)
+    }
+    fn prefetch(enc: &Self::Encoded) {
+        prefetch_bytes(enc.packed.as_ptr(), enc.packed.len());
     }
     fn bits_per_dim() -> u32 { 3 }
 }
