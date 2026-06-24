@@ -29,6 +29,10 @@ pub struct BM25Index {
     doc_ids: Vec<String>,
     /// Per-document raw TF map: term → raw count.
     doc_term_freqs: Vec<HashMap<String, u32>>,
+    /// Inverted index: term → list of `(doc_idx, tf)` postings. Lets `top_k`
+    /// traverse only the documents that contain a query term (the whole point of
+    /// BM25) instead of scoring every document in the corpus.
+    postings: HashMap<String, Vec<(u32, u32)>>,
     /// Token length of each document (number of tokens after normalisation).
     doc_lengths: Vec<f32>,
     /// Average document length across the corpus.
@@ -138,9 +142,23 @@ impl BM25Index {
             .map(|(term, &df_count)| (term.clone(), robertson_idf(df_count, n_docs)))
             .collect();
 
+        // ── Step 4: build the inverted index (term → [(doc_idx, tf)]) ──────────
+        // Pre-sized per term from the document-frequency counts so the posting
+        // Vecs never reallocate.
+        let mut postings: HashMap<String, Vec<(u32, u32)>> =
+            df.iter().map(|(t, &c)| (t.clone(), Vec::with_capacity(c as usize))).collect();
+        for (doc_idx, tf_map) in doc_term_freqs.iter().enumerate() {
+            for (term, &tf) in tf_map {
+                if let Some(p) = postings.get_mut(term) {
+                    p.push((doc_idx as u32, tf));
+                }
+            }
+        }
+
         Self {
             doc_ids,
             doc_term_freqs,
+            postings,
             doc_lengths,
             avg_dl,
             idf,
@@ -191,20 +209,49 @@ impl BM25Index {
             return Vec::new();
         }
 
-        let mut scores: Vec<(&str, f32)> = (0..self.n_docs)
-            .filter_map(|i| {
-                let s = self.score_doc(&tokens, i);
-                if s > 0.0 {
-                    Some((self.doc_ids[i].as_str(), s))
-                } else {
-                    None
-                }
-            })
+        // Collapse repeated query terms to a per-term query frequency: scoring a
+        // term's postings once and scaling by `qf` is identical to summing the
+        // contribution `qf` times (what the per-document path does), but visits
+        // each posting list once.
+        let mut qtf: HashMap<&str, u32> = HashMap::new();
+        for t in &tokens {
+            *qtf.entry(t.as_str()).or_insert(0) += 1;
+        }
+
+        // Accumulate BM25 scores by walking only the postings of query terms —
+        // documents containing no query term are never touched.
+        let mut acc: HashMap<u32, f32> = HashMap::new();
+        for (&term, &qf) in &qtf {
+            let idf = match self.idf.get(term) {
+                Some(&v) => v,
+                None => continue,
+            };
+            let Some(postings) = self.postings.get(term) else {
+                continue;
+            };
+            let qf = qf as f32;
+            for &(doc_idx, tf) in postings {
+                let dl = self.doc_lengths[doc_idx as usize];
+                let norm_factor = 1.0 - self.b + self.b * (dl / self.avg_dl.max(1.0));
+                let tf = tf as f32;
+                let bm25_tf = (tf * (self.k1 + 1.0)) / (tf + self.k1 * norm_factor);
+                *acc.entry(doc_idx).or_insert(0.0) += idf * bm25_tf * qf;
+            }
+        }
+
+        let mut scores: Vec<(&str, f32)> = acc
+            .into_iter()
+            .map(|(idx, s)| (self.doc_ids[idx as usize].as_str(), s))
             .collect();
 
-        // Partial sort — only fully sort the first k elements for efficiency.
+        // Partial sort: select the top-k, then fully sort just those k.
+        if k < scores.len() {
+            scores.select_nth_unstable_by(k - 1, |a, b| {
+                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scores.truncate(k);
+        }
         scores.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scores.truncate(k);
         scores
     }
 
@@ -347,6 +394,104 @@ mod tests {
         let idx = BM25Index::build_from_texts(&["a"], &["the fox! sat."]);
         let results = idx.top_k("fox", 1);
         assert_eq!(results.len(), 1, "trailing punctuation should be stripped");
+    }
+
+    /// Deterministic synthetic corpus: each doc is a bag of terms drawn from a
+    /// vocabulary with a Zipf-ish skew (low ids common, high ids rare).
+    fn synth_corpus(n_docs: usize, vocab: usize, doc_len: usize, seed: u64) -> Vec<String> {
+        let mut s = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut next = move || {
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (s >> 33) as f64 / (1u64 << 31) as f64
+        };
+        (0..n_docs)
+            .map(|_| {
+                let words: Vec<String> = (0..doc_len)
+                    .map(|_| {
+                        // Skew toward low term ids: term = floor(vocab * r^3).
+                        let r = next();
+                        let t = ((vocab as f64) * r * r * r) as usize;
+                        format!("t{}", t.min(vocab - 1))
+                    })
+                    .collect();
+                words.join(" ")
+            })
+            .collect()
+    }
+
+    fn reference_top_k<'a>(idx: &'a BM25Index, query: &str, k: usize) -> Vec<(&'a str, f32)> {
+        let tokens = tokenise(query);
+        let mut scores: Vec<(&str, f32)> = (0..idx.len())
+            .filter_map(|i| {
+                let s = idx.score_doc(&tokens, i);
+                (s > 0.0).then(|| (idx.doc_ids()[i].as_str(), s))
+            })
+            .collect();
+        scores.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scores.truncate(k);
+        scores
+    }
+
+    #[test]
+    fn top_k_inverted_matches_full_scan() {
+        let texts = synth_corpus(3000, 400, 30, 7);
+        let ids: Vec<String> = (0..texts.len()).map(|i| format!("d{i}")).collect();
+        let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let idx = BM25Index::build_from_texts(&id_refs, &text_refs);
+
+        for q in ["t0", "t1 t5", "t2 t2 t10", "t0 t1 t2 t3 t50"] {
+            let got = idx.top_k(q, 10);
+            let want = reference_top_k(&idx, q, 10);
+            // Same score multiset (tie order may differ between HashMap iteration
+            // and doc-order), and the same top score.
+            let mut gs: Vec<f32> = got.iter().map(|&(_, s)| s).collect();
+            let mut ws: Vec<f32> = want.iter().map(|&(_, s)| s).collect();
+            assert_eq!(gs.len(), ws.len(), "result count mismatch for {q:?}");
+            gs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            ws.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for (a, b) in gs.iter().zip(&ws) {
+                assert!((a - b).abs() <= 1e-4, "score mismatch for {q:?}: {a} vs {b}");
+            }
+        }
+    }
+
+    /// `cargo test -p vectro_lib --release bm25_top_k_bench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bm25_top_k_bench() {
+        use std::time::Instant;
+        let texts = synth_corpus(200_000, 5000, 40, 1);
+        let ids: Vec<String> = (0..texts.len()).map(|i| format!("d{i}")).collect();
+        let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let idx = BM25Index::build_from_texts(&id_refs, &text_refs);
+        // Selective query: rare-ish terms (high ids appear in few docs).
+        let queries = ["t1200 t3400", "t800 t2500 t4100", "t4999 t4800"];
+
+        let bench = |f: &dyn Fn(&str) -> usize| -> f64 {
+            for q in &queries {
+                std::hint::black_box(f(q));
+            }
+            let mut best = f64::INFINITY;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let mut s = 0usize;
+                for q in &queries {
+                    s += f(q);
+                }
+                std::hint::black_box(s);
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best * 1e6 / queries.len() as f64
+        };
+        let inv_us = bench(&|q| idx.top_k(q, 10).len());
+        let scan_us = bench(&|q| reference_top_k(&idx, q, 10).len());
+        println!(
+            "bm25 top_k n={} vocab=5000: full-scan={scan_us:.1}us inverted={inv_us:.1}us ({:.1}x)",
+            idx.len(),
+            scan_us / inv_us
+        );
     }
 
     #[test]
