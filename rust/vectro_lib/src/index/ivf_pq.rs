@@ -625,12 +625,21 @@ impl IvfPqIndex {
                 (cosine_dist(v, cent), ci)
             })
             .collect();
+        // Partial selection: when n_probe ≪ n_lists (the usual case) a full
+        // sort of all centroids is wasted work. `select_nth_unstable` is O(n),
+        // then only the probed prefix is sorted.
+        let probe = n_probe.min(self.n_lists);
+        if probe == 0 {
+            return Vec::new();
+        }
+        if probe < scored.len() {
+            scored.select_nth_unstable_by(probe - 1, |a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored.truncate(probe);
+        }
         scored.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored
-            .into_iter()
-            .take(n_probe.min(self.n_lists))
-            .map(|(_, ci)| ci)
-            .collect()
+        scored.into_iter().map(|(_, ci)| ci).collect()
     }
 
     /// PQ-encode a single (already-normalised) vector.

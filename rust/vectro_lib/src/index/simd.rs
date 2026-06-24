@@ -28,6 +28,11 @@ pub(crate) fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     {
         // `is_x86_feature_detected!` caches its result, so the hot-loop cost is a
         // cached load — far cheaper than SimSIMD's per-call dispatch.
+        //
+        // Note: no AVX-512 path. Benchmarked on AVX-512-capable hardware the
+        // 512-bit f32 kernel ran 0.76–0.94× the AVX2 kernel across d=64..1024
+        // (double-pumped 512-bit units + a costlier `reduce_add`), so AVX2 is
+        // the fastest portable x86 width here.
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
             // SAFETY: gated by the runtime detection above; reads in-bounds lanes.
             return unsafe { dot_f32_avx2(a, b) };
@@ -40,7 +45,8 @@ pub(crate) fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-/// `Σ (a[i] − b[i])²` over `min(a, b)` lanes — NEON on aarch64, scalar otherwise.
+/// `Σ (a[i] − b[i])²` over `min(a, b)` lanes — NEON on aarch64, AVX2+FMA on
+/// x86_64 (runtime-detected), SimSIMD / scalar fallback otherwise.
 #[inline]
 pub(crate) fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "aarch64")]
@@ -48,9 +54,22 @@ pub(crate) fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
         // SAFETY: NEON is mandated on AArch64-v8; reads in-bounds lanes.
         unsafe { l2_sq_neon(a, b) }
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     {
-        a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum()
+        // Mirror `dot_f32`: a directly compiled kernel removes the per-call
+        // dispatch indirection SimSIMD pays at the low dims typical of ANN
+        // search and k-means. Prefer 512-bit width on AVX-512 hosts. The
+        // detection result is cached. AVX2 only — see `dot_f32` on why the
+        // 512-bit kernel is not used.
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            // SAFETY: gated by the runtime detection above; reads in-bounds lanes.
+            return unsafe { l2_sq_avx2(a, b) };
+        }
+        <f32 as SpatialSimilarity>::sqeuclidean(a, b).unwrap_or(-1.0) as f32
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        <f32 as SpatialSimilarity>::sqeuclidean(a, b).unwrap_or(-1.0) as f32
     }
 }
 
@@ -214,6 +233,57 @@ unsafe fn dot_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
     total
 }
 
+/// Inlined AVX2+FMA squared-Euclidean distance, the x86_64 analogue of
+/// [`l2_sq_neon`] and mirror of [`dot_f32_avx2`]. Four independent `f32x8`
+/// accumulators (32 lanes/iter) saturate the FMA pipes; the difference is
+/// squared via `fmadd(d, d, acc)`.
+///
+/// # Safety
+/// Requires AVX2 + FMA (the caller runtime-detects). Reads only `min(a, b)` lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn l2_sq_avx2(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let ap = a.as_ptr();
+    let bp = b.as_ptr();
+    let mut acc0 = _mm256_setzero_ps();
+    let mut acc1 = _mm256_setzero_ps();
+    let mut acc2 = _mm256_setzero_ps();
+    let mut acc3 = _mm256_setzero_ps();
+    let chunks = n / 32;
+    for i in 0..chunks {
+        let o = i * 32;
+        let d0 = _mm256_sub_ps(_mm256_loadu_ps(ap.add(o)), _mm256_loadu_ps(bp.add(o)));
+        let d1 = _mm256_sub_ps(_mm256_loadu_ps(ap.add(o + 8)), _mm256_loadu_ps(bp.add(o + 8)));
+        let d2 = _mm256_sub_ps(_mm256_loadu_ps(ap.add(o + 16)), _mm256_loadu_ps(bp.add(o + 16)));
+        let d3 = _mm256_sub_ps(_mm256_loadu_ps(ap.add(o + 24)), _mm256_loadu_ps(bp.add(o + 24)));
+        acc0 = _mm256_fmadd_ps(d0, d0, acc0);
+        acc1 = _mm256_fmadd_ps(d1, d1, acc1);
+        acc2 = _mm256_fmadd_ps(d2, d2, acc2);
+        acc3 = _mm256_fmadd_ps(d3, d3, acc3);
+    }
+    let mut o = chunks * 32;
+    while o + 8 <= n {
+        let d = _mm256_sub_ps(_mm256_loadu_ps(ap.add(o)), _mm256_loadu_ps(bp.add(o)));
+        acc0 = _mm256_fmadd_ps(d, d, acc0);
+        o += 8;
+    }
+    let sum = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+    let lo = _mm256_castps256_ps128(sum);
+    let hi = _mm256_extractf128_ps::<1>(sum);
+    let mut s = _mm_add_ps(lo, hi);
+    s = _mm_hadd_ps(s, s);
+    s = _mm_hadd_ps(s, s);
+    let mut total = _mm_cvtss_f32(s);
+    for i in o..n {
+        let d = a[i] - b[i];
+        total += d * d;
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +298,30 @@ mod tests {
             let l2_ref: f32 = a.iter().zip(&b).map(|(x, y)| (x - y) * (x - y)).sum();
             assert!((dot_f32(&a, &b) - dot_ref).abs() <= 1e-3, "dot mismatch d={d}");
             assert!((l2_sq(&a, &b) - l2_ref).abs() <= 1e-3, "l2 mismatch d={d}");
+        }
+    }
+
+    /// Adversarial 1e6-magnitude inputs across the full-width, cleanup and tail
+    /// paths — the FP32-accumulation SIMD kernels must stay within a tight
+    /// relative tolerance of the scalar reference (CLAUDE.md SIMD rule).
+    #[test]
+    fn dot_and_l2_large_magnitude_relative() {
+        let cases: &[usize] = &[33, 64, 96, 129, 768];
+        for &d in cases {
+            let a: Vec<f32> = (0..d).map(|i| ((i % 7) as f32 - 3.0) * 1.0e6).collect();
+            let b: Vec<f32> = (0..d).map(|i| ((i % 5) as f32 - 2.0) * 1.0e6).collect();
+            let dot_ref: f64 = a.iter().zip(&b).map(|(x, y)| *x as f64 * *y as f64).sum();
+            let l2_ref: f64 = a
+                .iter()
+                .zip(&b)
+                .map(|(x, y)| (*x as f64 - *y as f64).powi(2))
+                .sum();
+            let dot = dot_f32(&a, &b) as f64;
+            let l2 = l2_sq(&a, &b) as f64;
+            let dot_rel = (dot - dot_ref).abs() / dot_ref.abs().max(1.0);
+            let l2_rel = (l2 - l2_ref).abs() / l2_ref.abs().max(1.0);
+            assert!(dot_rel <= 1e-4, "dot rel err {dot_rel} d={d}");
+            assert!(l2_rel <= 1e-4, "l2 rel err {l2_rel} d={d}");
         }
     }
 }

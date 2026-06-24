@@ -173,17 +173,53 @@ unsafe fn dot_i8_f32_avx512(codes: &[i8], query: &[f32]) -> f32 {
     let cptr = codes.as_ptr();
     let qptr = query.as_ptr();
 
-    let mut acc = _mm512_setzero_ps();
-    let chunks = n / 16;
+    // Four independent accumulators (64 elements/iter) break the FMA
+    // dependency chain — AVX-512 FMA has ~4-cycle latency at 2/cycle
+    // throughput, so a single accumulator left ~7/8 of the FMA pipes idle.
+    let mut acc0 = _mm512_setzero_ps();
+    let mut acc1 = _mm512_setzero_ps();
+    let mut acc2 = _mm512_setzero_ps();
+    let mut acc3 = _mm512_setzero_ps();
+    let chunks = n / 64;
     for i in 0..chunks {
-        let c8 = _mm_loadu_si128(cptr.add(i * 16) as *const __m128i); // 16× i8
-        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(c8)); // sign-extend → f32
-        let qf = _mm512_loadu_ps(qptr.add(i * 16));
-        acc = _mm512_fmadd_ps(cf, qf, acc);
+        let o = i * 64;
+        let l0 = _mm_loadu_si128(cptr.add(o) as *const __m128i);
+        let l1 = _mm_loadu_si128(cptr.add(o + 16) as *const __m128i);
+        let l2 = _mm_loadu_si128(cptr.add(o + 32) as *const __m128i);
+        let l3 = _mm_loadu_si128(cptr.add(o + 48) as *const __m128i);
+        acc0 = _mm512_fmadd_ps(
+            _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(l0)),
+            _mm512_loadu_ps(qptr.add(o)),
+            acc0,
+        );
+        acc1 = _mm512_fmadd_ps(
+            _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(l1)),
+            _mm512_loadu_ps(qptr.add(o + 16)),
+            acc1,
+        );
+        acc2 = _mm512_fmadd_ps(
+            _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(l2)),
+            _mm512_loadu_ps(qptr.add(o + 32)),
+            acc2,
+        );
+        acc3 = _mm512_fmadd_ps(
+            _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(l3)),
+            _mm512_loadu_ps(qptr.add(o + 48)),
+            acc3,
+        );
     }
+    // Cleanup: remaining 16-lane blocks below the 64-wide stride.
+    let mut o = chunks * 64;
+    while o + 16 <= n {
+        let c8 = _mm_loadu_si128(cptr.add(o) as *const __m128i);
+        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(c8));
+        acc0 = _mm512_fmadd_ps(cf, _mm512_loadu_ps(qptr.add(o)), acc0);
+        o += 16;
+    }
+    let acc = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
     let mut total = _mm512_reduce_add_ps(acc);
 
-    for i in chunks * 16..n {
+    for i in o..n {
         total += codes[i] as f32 * query[i];
     }
     total

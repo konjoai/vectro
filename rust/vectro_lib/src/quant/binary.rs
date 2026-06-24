@@ -35,16 +35,13 @@ impl BinaryVector {
         let bytes_per_vec = dim.div_ceil(8);
         let mut packed = vec![0u8; bytes_per_vec];
 
-        // Use f64 for the norm to avoid f32 overflow on extreme-valued vectors.
-        let norm_factor_f64: f64 = if normalize {
-            let sq: f64 = v.iter().map(|&x| (x as f64) * (x as f64)).sum();
-            if sq > 0.0 { sq.sqrt() } else { 1.0 }
-        } else {
-            1.0_f64
-        };
-
+        // L2-normalization scales every element by the same strictly-positive
+        // factor, which can never flip a sign — so for sign-packing the
+        // `normalize` flag is a no-op and the per-element divide it used to do
+        // was dead work. The bit is set iff the raw value is positive.
+        let _ = normalize;
         for (i, &x) in v.iter().enumerate() {
-            if (x as f64) / norm_factor_f64 > 0.0 {
+            if x > 0.0 {
                 packed[i / 8] |= 1u8 << (i % 8);
             }
         }
@@ -68,10 +65,26 @@ impl BinaryVector {
     /// a large win.
     #[inline]
     pub fn cosine_dist_to_query(&self, query: &[f32]) -> f32 {
+        let n = self.dim.min(query.len());
+        let full = n / 8;
         let mut dot = 0.0f32;
-        for (i, &q) in query.iter().enumerate().take(self.dim) {
-            let bit = (self.packed[i / 8] >> (i % 8)) & 1;
-            dot += if bit == 1 { q } else { -q };
+        // Byte-major, branchless: each bit selects +q (bit=1) or -q (bit=0) via
+        // `sign = 2*bit - 1`. Hoisting the byte load out of the 8-bit inner
+        // body removes the per-element `i/8`,`i%8` and the data-dependent branch
+        // the old loop carried — both blockers to autovectorization.
+        for b in 0..full {
+            let byte = self.packed[b];
+            let base = b * 8;
+            for k in 0..8 {
+                let sign = (((byte >> k) & 1) as f32) * 2.0 - 1.0;
+                dot += sign * query[base + k];
+            }
+        }
+        // Tail (<8 elements): needs both the packed-bit index and query[i].
+        #[allow(clippy::needless_range_loop)]
+        for i in full * 8..n {
+            let sign = (((self.packed[i / 8] >> (i % 8)) & 1) as f32) * 2.0 - 1.0;
+            dot += sign * query[i];
         }
         let norm = (self.dim as f32).sqrt();
         if norm < 1e-8 {
@@ -124,6 +137,13 @@ pub fn hamming_search(
         .enumerate()
         .map(|(i, bv)| (i, query.hamming(bv)))
         .collect();
+    // Partial selection: O(n) to isolate the top_k smallest, then sort only
+    // that prefix — far cheaper than a full O(n log n) sort when top_k ≪ n.
+    let k = top_k.min(dists.len());
+    if k > 0 && k < dists.len() {
+        dists.select_nth_unstable_by_key(k - 1, |&(_, d)| d);
+        dists.truncate(k);
+    }
     dists.sort_by_key(|&(_, d)| d);
     dists.truncate(top_k);
     dists
