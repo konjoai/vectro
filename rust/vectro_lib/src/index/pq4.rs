@@ -26,9 +26,25 @@ use crate::quant::pq::{pq_distance_table, pq_encode, train_pq_codebook, PQCodebo
 use serde::{Deserialize, Serialize};
 
 /// Candidates per SIMD block (one 256-bit `pshufb` resolves 32 lookups).
-const BLK: usize = 32;
+pub(crate) const BLK: usize = 32;
 /// Centroids per subspace (4-bit codes).
-const K: usize = 16;
+pub(crate) const K: usize = 16;
+
+/// Interleave per-vector codes `[n][m]` into the blocked SIMD layout
+/// `[n_blocks][m][BLK]` (one nibble per byte), zero-padding the final block.
+/// Shared by the flat index and the IVF-PQ4 per-list stores.
+pub(crate) fn interleave_codes(codes: &[Vec<u8>], m: usize) -> Vec<u8> {
+    let n_blocks = codes.len().div_ceil(BLK);
+    let mut out = vec![0u8; n_blocks * m * BLK];
+    for (i, code) in codes.iter().enumerate() {
+        let base = (i / BLK) * m * BLK;
+        let c = i % BLK;
+        for (mi, &cd) in code.iter().enumerate() {
+            out[base + mi * BLK + c] = cd;
+        }
+    }
+    out
+}
 
 /// Exhaustive PQ4 fast-scan index over a fixed vector set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,16 +69,7 @@ impl Pq4FlatIndex {
         let codebook = train_pq_codebook(data, m, K, max_iter, seed)?;
         let codes = pq_encode(data, &codebook); // [n][m], each value in 0..16
         let n = data.len();
-        let n_blocks = n.div_ceil(BLK);
-        let mut codes_il = vec![0u8; n_blocks * m * BLK];
-        for (i, code) in codes.iter().enumerate() {
-            let b = i / BLK;
-            let c = i % BLK;
-            let base = b * m * BLK;
-            for (mi, &cd) in code.iter().enumerate() {
-                codes_il[base + mi * BLK + c] = cd;
-            }
-        }
+        let codes_il = interleave_codes(&codes, m);
         Ok(Self { codebook, m, n, codes_il })
     }
 
@@ -109,7 +116,7 @@ impl Pq4FlatIndex {
 /// cannot overflow. Returns `(lut, inv_scale, bias)` such that
 /// `true_distance ≈ u16_sum * inv_scale + bias` (and ranking is exact modulo
 /// the u8 quantization step).
-fn quantize_lut(table: &[f32], m: usize) -> (Vec<u8>, f32, f32) {
+pub(crate) fn quantize_lut(table: &[f32], m: usize) -> (Vec<u8>, f32, f32) {
     let qmax = ((u16::MAX as usize / m.max(1)).min(255)) as f32;
     let mut bias = 0.0f32;
     let mut gmax = 0.0f32;
@@ -137,7 +144,7 @@ fn quantize_lut(table: &[f32], m: usize) -> (Vec<u8>, f32, f32) {
 /// Accumulate `u16` distance sums for every candidate (AVX2 `pshufb` on x86_64
 /// with runtime detection, scalar fallback otherwise).
 #[inline]
-fn scan(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out: &mut [u16]) {
+pub(crate) fn scan(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out: &mut [u16]) {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
