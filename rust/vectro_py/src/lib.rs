@@ -657,15 +657,19 @@ impl PyHnswIndex {
     }
 
     /// Zero-copy nearest-neighbour search from a 1-D numpy query vector.
-    fn search_np(&self, query: PyReadonlyArray1<f32>, k: usize, ef: usize) -> Vec<(usize, f32)> {
-        let q = query.as_array();
-        match q.as_slice() {
-            Some(s) => self.inner.search(s, k, ef),
-            None => {
-                let v: Vec<f32> = q.iter().copied().collect();
-                self.inner.search(&v, k, ef)
-            }
-        }
+    ///
+    /// Copies the (tiny) query out and releases the GIL during the search, so a
+    /// Python threadpool issuing concurrent queries scales across cores instead
+    /// of serializing on the interpreter lock.
+    fn search_np(
+        &self,
+        py: Python<'_>,
+        query: PyReadonlyArray1<f32>,
+        k: usize,
+        ef: usize,
+    ) -> Vec<(usize, f32)> {
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        py.allow_threads(|| self.inner.search(&owned, k, ef))
     }
 
     fn search(&self, query: Vec<f32>, k: usize, ef: usize) -> Vec<(usize, f32)> {
@@ -906,13 +910,11 @@ impl PyIvfIndex {
         self.inner.search(&query, k)
     }
 
-    /// Zero-copy search from a 1-D numpy query vector.
-    fn search_np(&self, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
-        let q = query.as_array();
-        match q.as_slice() {
-            Some(s) => self.inner.search(s, k),
-            None => { let v: Vec<f32> = q.iter().copied().collect(); self.inner.search(&v, k) }
-        }
+    /// Zero-copy search from a 1-D numpy query vector. Releases the GIL during
+    /// the search so a Python threadpool scales across cores.
+    fn search_np(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        py.allow_threads(|| self.inner.search(&owned, k))
     }
 
     /// Search with explicit n_probe override.
@@ -1060,13 +1062,11 @@ impl PyIvfPqIndex {
         self.inner.search(&query, k)
     }
 
-    /// Zero-copy search from a 1-D numpy query vector.
-    fn search_np(&self, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
-        let q = query.as_array();
-        match q.as_slice() {
-            Some(s) => self.inner.search(s, k),
-            None => { let v: Vec<f32> = q.iter().copied().collect(); self.inner.search(&v, k) }
-        }
+    /// Zero-copy search from a 1-D numpy query vector. Releases the GIL during
+    /// the search so a Python threadpool scales across cores.
+    fn search_np(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        py.allow_threads(|| self.inner.search(&owned, k))
     }
 
     /// Search with explicit n_probe override.
@@ -1237,21 +1237,17 @@ macro_rules! quant_hnsw_pyclass {
                 }
             }
 
-            /// Zero-copy search from a 1-D numpy query vector.
+            /// Zero-copy search from a 1-D numpy query vector. Releases the GIL
+            /// during the search so a Python threadpool scales across cores.
             fn search_np(
                 &self,
+                py: Python<'_>,
                 query: PyReadonlyArray1<f32>,
                 k: usize,
                 ef: usize,
             ) -> Vec<(usize, f32)> {
-                let q = query.as_array();
-                match q.as_slice() {
-                    Some(s) => self.inner.search(s, k, ef),
-                    None => {
-                        let v: Vec<f32> = q.iter().copied().collect();
-                        self.inner.search(&v, k, ef)
-                    }
-                }
+                let owned: Vec<f32> = query.as_array().iter().copied().collect();
+                py.allow_threads(|| self.inner.search(&owned, k, ef))
             }
 
             /// Batch search: queries shape [Q, D], parallelised across queries
