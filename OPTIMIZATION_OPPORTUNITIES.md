@@ -14,6 +14,20 @@ AVX-512F + FMA, **260 MiB L3**, glibc malloc, `target-cpu=x86-64-v3`, release
 
 ## Shipped — measured wins
 
+### Campaign 2 (AVX-512 distance kernels — this sweep)
+
+| Change | Win (this host) | PR |
+|--------|-----------------|----|
+| **AVX-512-VNNI INT8 distance** — `vpdpbusd` integer dot replaces per-call i8→f32 widen; query quantised once/search via new `Quantizer::Prepared`; in-register XOR→u8, no serialization change | INT8 quant-HNSW **1.52× QPS** (kernel 1.6–2.7×), recall-neutral | #86 (merged) |
+| **NF4 AVX2 codebook-LUT distance** — the last scalar quant distance; two `permutevar8x32_ps` + blend, 8 dims/iter | NF4 search **2.87× QPS** (kernel 3.9–4.7×), recall-neutral | #87 (merged) |
+| **BF16 AVX-512 16-wide widen** — bf16 path is load/widen-bound (not FMA-bound), so AVX-512 wins where the f32 AVX-512 kernels lost | BF16 search **1.07× QPS** (kernel 1.4×), bit-identical | #88 (merged) |
+
+Net effect of campaign 2: the three most-used quantized distance kernels are
+materially faster with zero recall impact. NF4 is no longer the slow mode (it was
+the last scalar distance). INT8 — the flagship — gained the largest absolute QPS.
+
+### Campaign 1 (foundational kernels)
+
 | Change | Win (this host) | PR |
 |--------|-----------------|----|
 | AVX2 `l2_sq` kernel (was scalar on x86_64) + IVF SIMD routing + partial-sorts + branchless binary | `l2_sq` **6–12×** kernel | #73 (merged) |
@@ -48,19 +62,32 @@ faster, and multi-threaded query serving now scales across cores.
   #73; the across-K kernel saves only horizontal-reduction overhead (~1.3×
   build-time) and needs a new u32 argmax-dot kernel (current `assign_nearest`
   returns u8, k≤256, but `n_lists` exceeds 256 on large datasets). Deferred.
+- **SQ2/SQ3 stored norms** — microbenched flat (1.00×): the kernel is
+  code-unpack-bound, not FMA-bound, so the query-independent norm FMA is free on
+  the second port. Not shipped (see `PERF_FINDINGS.md`).
+- **Shared f32 `dot_f32`/`l2_sq` micro-tuning** (`hadd`→shuffle, 6/8
+  accumulators) — load-port-bound, all variants within noise. Not shipped.
 
 ---
 
 ## Roadmap — remaining high-value opportunities
 
-Ordered by expected impact. Each is scoped for a dedicated effort.
+Ordered by expected impact. Items 1 and 3 from the original list shipped this
+sweep (NF4 SIMD distance) and earlier (#84 IVF-PQ4 fast-scan); the PQ4 PyO3
+binding + 2-nibble packing are in flight separately.
 
-### 1. IVF-PQ PQ4 fast-scan — the 3–5× IVF-PQ lever
-FAISS-style 4-bit (K=16) codes in an **interleaved layout** with an in-register
-`pshufb`/`tbl` table lookup (16–32 codes/instruction). This is the single biggest
-IVF-PQ QPS lever, but a substantial new-format feature: new code layout, uint8
-LUT quantization with periodic uint16 normalization, and SIMD accumulation. Can't
-reuse the current K=256 format — it's a parallel index variant (`IVFPQFastScan`).
+### 1. PyO3 — finish the FFI modernization *(highest remaining value)*
+- Release the GIL on `train` (k-means) and `add_batch` (parallel build) — the
+  heaviest kernels, currently serialized. Mirror the single-query `search_np` fix
+  (#79, 3.8–3.9× concurrent). Mechanical: own the rows before `allow_threads`.
+- NF4 batch FFI: `_rust_bridge.encode_nf4_batch` does per-row `row.tolist()`
+  crossings (N FFI calls + N·D boxed floats); add a batched `quantize_nf4_batch`
+  Rust entry mirroring `quantize_int8_batch`. ~10–30× NF4 batch encode.
+- Return packed numpy arrays from batch search / `decode` instead of
+  list-of-tuples. 2–5× large-batch marshalling.
+- `dequantize_int8_batch` writes into a zero-inited `Vec` then copies into a new
+  PyArray — write into an uninit `PyArray2` under `allow_threads` (≈2×, like the
+  encode path).
 
 ### 2. Quantized-HNSW flat code store
 Replace `Vec<Q::Encoded>` (array-of-structs, per-node heap allocation) with one
@@ -68,35 +95,25 @@ contiguous strided code buffer. Complements the prefetch already shipped (#75):
 removes the ~24-bytes/node `Vec`-header overhead and the pointer-chase. Touches
 the `Quantizer` trait + serialization (migration needed).
 
-### 3. NF4 SIMD asymmetric distance
-The one remaining scalar quant distance (binary/BF16/SQ2/SQ3 are done). NF4's
-dequant is a **non-affine 16-entry normal-float LUT**, so it needs a
-`pshufb`/`permute`-based in-register LUT (two `_mm256_permutevar8x32_ps` + blend
-for the 16 entries) rather than the affine trick used for SQ. Expected ~3–5× like
-its siblings.
+### 3. Binary symmetric Hamming — `avx512_vpopcntdq`
+Verify whether simsimd v6 dispatches `vpopcntq` on this host; if not, a ~15-line
+`_mm512_popcnt_epi64` kernel for `hamming_search`. Up to 2–4× — but measure
+first, may be a no-op. (The asymmetric binary distance is already AVX2, #77.)
 
 ### 4. NEON kernels for the new distance paths
-Binary/BF16/SQ2/SQ3 distance SIMD currently ships AVX2 + scalar fallback; the
-aarch64 (Apple) path is still scalar (no regression, but leaves the M-series on
-the table). Port each to NEON (`tbl`, `vsubq`, `vfmaq`).
+The aarch64 (Apple) path is still scalar for INT8-VNNI-equiv / NF4 / BF16 /
+SQ2/SQ3 (no regression, but leaves the M-series on the table). Port each to NEON
+(`tbl`, `vsubq`, `vfmaq`; INT8 via `sdot`).
 
-### 5. PyO3 — finish the FFI modernization
-- Release the GIL on `train` (k-means) and `add_batch` (parallel build) — the
-  heaviest kernels, currently serialized.
-- NF4 batch FFI: `_rust_bridge.encode_nf4_batch` does per-row `row.tolist()`
-  crossings (N FFI calls + N·D boxed floats); add a batched `encode_nf4_batch_np`
-  Rust entry mirroring `quantize_int8_batch`.
-- Return packed numpy arrays from batch search / `decode` instead of
-  list-of-tuples.
+### 5. IVF coarse-assign batched GEMM + SIMD argmin
+`add` / single-query `top_coarse` score centroids in a serial scalar loop; route
+through a batched `B·Cᵀ` GEMM + a u32 across-K argmin (n_lists > 256). Large on
+IVF/IVF-PQ build time; also subsample coarse k-means training at very large N.
 
-### 6. Coarse k-means u32 across-K kernel (build-time)
-A `assign_argmax_dot` (cosine) kernel returning u32 (n_lists > 256) + parallel
-update reduction. ~1.3–2× on IVF/IVF-PQ build time.
-
-### 7. SQ2/SQ3 stored norms (search-time)
-`norm_sq` is query-independent; storing it at encode time halves the
-per-candidate distance work. Needs a struct field + serialization migration with
-a recompute-on-load hook (the generic `QuantHnswIndex` lacks one today).
+### 6. AMX-INT8 batch distance
+This host exposes `amx_int8` (a separate tile execution unit). For batched /
+IVF-coarse / brute-force INT8 scoring (`Q·Cᵀ` matmul) it can far exceed VNNI, but
+needs OS tile enablement + a min-batch crossover. High lift, high ceiling.
 
 ---
 
@@ -104,9 +121,11 @@ a recompute-on-load hook (the generic `QuantHnswIndex` lacks one today).
 
 - Every change was benchmarked before/after on the target hardware; the win (or
   its absence) is recorded in the PR.
-- When the in-repo benchmark couldn't exercise the bottleneck (e.g. the 260 MiB
-  L3 masking prefetch at n=20k), an isolated microbenchmark at the right scale was
-  built to confirm or refute the mechanism.
-- Opportunities that didn't pan out were **reverted and documented**, not shipped.
-- All shipped PRs keep 216 Rust tests + clippy green and (for Python/PyO3) the
-  Python test suite green in a built venv.
+- When the in-repo benchmark couldn't exercise the bottleneck, an isolated
+  microbenchmark at the right scale (often with a built-in correctness assert)
+  was used to confirm or refute the mechanism *before* touching the repo.
+- Opportunities that didn't pan out were **documented with numbers**, not shipped
+  (SQ stored norms, f32 micro-tuning this sweep).
+- All shipped PRs keep the Rust tests + clippy green, with a SIMD-vs-scalar
+  parity test and a tracked criterion bench case per kernel.
+
