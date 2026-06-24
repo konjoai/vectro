@@ -70,21 +70,40 @@ impl Int8Vector {
     /// Uses the scale factor to weight the result correctly.
     ///
     /// This is the per-candidate distance kernel during INT8 HNSW search, so the
-    /// i8×f32 dot is SIMD-accelerated on aarch64 (NEON), with a scalar fallback
-    /// elsewhere.
+    /// i8×f32 dot is SIMD-accelerated on aarch64 (NEON) and x86-64 (AVX-512F →
+    /// AVX2+FMA), with a scalar fallback elsewhere.
     #[inline]
     pub fn dot_query(&self, query_norm: &[f32]) -> f32 {
         #[cfg(target_arch = "aarch64")]
         // SAFETY: AArch64-v8 mandates NEON; the helper reads only in-bounds
         // lanes (min length) and handles the tail scalarly.
         let raw = unsafe { dot_i8_f32_neon(&self.codes, query_norm) };
-        #[cfg(not(target_arch = "aarch64"))]
+
+        #[cfg(target_arch = "x86_64")]
+        let raw = {
+            if is_x86_feature_detected!("avx512f") {
+                // SAFETY: guarded by runtime AVX-512F detection; reads min-length lanes.
+                unsafe { dot_i8_f32_avx512(&self.codes, query_norm) }
+            } else if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                // SAFETY: guarded by runtime AVX2+FMA detection; reads min-length lanes.
+                unsafe { dot_i8_f32_avx2(&self.codes, query_norm) }
+            } else {
+                self.codes
+                    .iter()
+                    .zip(query_norm.iter())
+                    .map(|(&q, &qv)| (q as f32) * qv)
+                    .sum()
+            }
+        };
+
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
         let raw: f32 = self
             .codes
             .iter()
             .zip(query_norm.iter())
             .map(|(&q, &qv)| (q as f32) * qv)
             .sum();
+
         raw * (self.scale / 127.0)
     }
 }
@@ -128,6 +147,87 @@ unsafe fn dot_i8_f32_neon(codes: &[i8], query: &[f32]) -> f32 {
     }
     let sum = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
     let mut total = vaddvq_f32(sum);
+
+    for i in chunks * 16..n {
+        total += codes[i] as f32 * query[i];
+    }
+    total
+}
+
+/// AVX-512F i8×f32 dot product: `Σ codes[i] as f32 * query[i]`.
+///
+/// Sign-extends 16 i8 lanes → i32 → f32 (`vpmovsxbd` + `vcvtdq2ps`) and FMAs
+/// against the f32 query, 16 elements per iteration, with a scalar tail. The
+/// per-candidate distance kernel for INT8 HNSW search on x86-64.
+///
+/// # Safety
+/// Requires AVX-512F (runtime-checked by the caller). Reads only
+/// `min(codes, query)` lanes; the 128-bit code load covers exactly 16 bytes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[inline]
+unsafe fn dot_i8_f32_avx512(codes: &[i8], query: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+
+    let n = codes.len().min(query.len());
+    let cptr = codes.as_ptr();
+    let qptr = query.as_ptr();
+
+    let mut acc = _mm512_setzero_ps();
+    let chunks = n / 16;
+    for i in 0..chunks {
+        let c8 = _mm_loadu_si128(cptr.add(i * 16) as *const __m128i); // 16× i8
+        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(c8)); // sign-extend → f32
+        let qf = _mm512_loadu_ps(qptr.add(i * 16));
+        acc = _mm512_fmadd_ps(cf, qf, acc);
+    }
+    let mut total = _mm512_reduce_add_ps(acc);
+
+    for i in chunks * 16..n {
+        total += codes[i] as f32 * query[i];
+    }
+    total
+}
+
+/// AVX2+FMA i8×f32 dot product: `Σ codes[i] as f32 * query[i]`.
+///
+/// Two independent f32x8 accumulators (breaks the FMA dependency chain),
+/// 16 elements per iteration via two `vpmovsxbd`+`vcvtdq2ps`+`vfmadd` groups,
+/// with a scalar tail. Used when the host has AVX2 but not AVX-512F.
+///
+/// # Safety
+/// Requires AVX2+FMA (runtime-checked by the caller). Reads only
+/// `min(codes, query)` lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn dot_i8_f32_avx2(codes: &[i8], query: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+
+    let n = codes.len().min(query.len());
+    let cptr = codes.as_ptr();
+    let qptr = query.as_ptr();
+
+    let mut acc0 = _mm256_setzero_ps();
+    let mut acc1 = _mm256_setzero_ps();
+    let chunks = n / 16;
+    for i in 0..chunks {
+        let base = i * 16;
+        // Low 8 bytes → 8× i32 → f32; high 8 bytes likewise.
+        let c8 = _mm_loadu_si128(cptr.add(base) as *const __m128i); // 16× i8
+        let lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c8));
+        let hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(c8, 8)));
+        acc0 = _mm256_fmadd_ps(lo, _mm256_loadu_ps(qptr.add(base)), acc0);
+        acc1 = _mm256_fmadd_ps(hi, _mm256_loadu_ps(qptr.add(base + 8)), acc1);
+    }
+    // Horizontal sum of the two accumulators.
+    let sum = _mm256_add_ps(acc0, acc1);
+    let hi128 = _mm256_extractf128_ps(sum, 1);
+    let lo128 = _mm256_castps256_ps128(sum);
+    let s128 = _mm_add_ps(hi128, lo128);
+    let s64 = _mm_add_ps(s128, _mm_movehl_ps(s128, s128));
+    let s32 = _mm_add_ss(s64, _mm_shuffle_ps(s64, s64, 0x55));
+    let mut total = _mm_cvtss_f32(s32);
 
     for i in chunks * 16..n {
         total += codes[i] as f32 * query[i];
@@ -1352,6 +1452,34 @@ mod tests {
             let want: f32 =
                 enc.codes.iter().zip(q.iter()).map(|(&c, &qv)| c as f32 * qv).sum::<f32>() * factor;
             assert!((got - want).abs() < 1e-3, "d={d}: got={got} want={want}");
+        }
+    }
+
+    /// Directly exercise the x86 i8×f32 dot kernels against the scalar reference,
+    /// independent of which one `dot_query` happens to dispatch to on the host.
+    /// f32 FMA/accumulation order differs from a left-to-right scalar sum, so the
+    /// tolerance matches the HNSW-distance contract (well under quantisation noise).
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn dot_i8_f32_simd_matches_scalar() {
+        for d in [1usize, 7, 8, 15, 16, 17, 31, 32, 33, 64, 127, 128, 768] {
+            let v: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.013) - 0.5).sin()).collect();
+            let q: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.027) + 0.2).cos()).collect();
+            let codes = Int8Vector::encode(&v).codes;
+            let want: f32 = codes.iter().zip(q.iter()).map(|(&c, &qv)| c as f32 * qv).sum();
+            // Relative tolerance: two valid f32 reduction trees of the raw (unscaled)
+            // dot differ by ~n·eps·|partial|, which scales with the result magnitude.
+            let tol = want.abs() * 1e-3 + 1e-2;
+            if is_x86_feature_detected!("avx512f") {
+                // SAFETY: guarded by runtime AVX-512F detection.
+                let got = unsafe { dot_i8_f32_avx512(&codes, &q) };
+                assert!((got - want).abs() <= tol, "avx512 d={d}: {got} vs {want}");
+            }
+            if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                // SAFETY: guarded by runtime AVX2+FMA detection.
+                let got = unsafe { dot_i8_f32_avx2(&codes, &q) };
+                assert!((got - want).abs() <= tol, "avx2 d={d}: {got} vs {want}");
+            }
         }
     }
 
