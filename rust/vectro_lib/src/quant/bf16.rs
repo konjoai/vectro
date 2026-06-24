@@ -14,6 +14,80 @@
 use serde::{Deserialize, Serialize};
 use simsimd::{bf16 as SimBf16, SpatialSimilarity};
 
+/// Asymmetric `(dot, norm_sq)` of a bf16-packed stored vector against an f32
+/// query: `dot = Σ dv·q`, `norm_sq = Σ dv²`, where `dv` is the widened bf16.
+/// BF16→F32 widening is exact (`f32::from_bits((bits as u32) << 16)`), so the
+/// AVX2 path is bit-identical to the scalar reference. AVX2+FMA on x86_64
+/// (runtime-detected), scalar fallback otherwise.
+#[inline]
+fn bf16_dot_norm(packed: &[u16], query: &[f32], n: usize) -> (f32, f32) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            // SAFETY: gated by the runtime detection above; reads in-bounds lanes.
+            return unsafe { bf16_dot_norm_avx2(packed, query, n) };
+        }
+    }
+    bf16_dot_norm_scalar(packed, query, n)
+}
+
+/// Scalar reference for [`bf16_dot_norm`].
+#[inline]
+fn bf16_dot_norm_scalar(packed: &[u16], query: &[f32], n: usize) -> (f32, f32) {
+    let mut dot = 0.0f32;
+    let mut norm_sq = 0.0f32;
+    for (&bits, &q) in packed.iter().take(n).zip(query.iter()) {
+        let dv = SimBf16(bits).to_f32();
+        dot += dv * q;
+        norm_sq += dv * dv;
+    }
+    (dot, norm_sq)
+}
+
+/// AVX2+FMA kernel for [`bf16_dot_norm`]. Widens 8 bf16 lanes per iteration
+/// (zero-extend `u16`→`u32`, `<< 16`, reinterpret as `f32`) and accumulates the
+/// dot and squared-norm with two independent FMA chains.
+///
+/// # Safety
+/// Requires AVX2 + FMA (the caller runtime-detects). Reads only `min(dim, query)` lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn bf16_dot_norm_avx2(packed: &[u16], query: &[f32], n: usize) -> (f32, f32) {
+    use std::arch::x86_64::*;
+    let full = n / 8;
+    let mut dot = _mm256_setzero_ps();
+    let mut nrm = _mm256_setzero_ps();
+    let pp = packed.as_ptr();
+    let qp = query.as_ptr();
+    for b in 0..full {
+        let u16x8 = _mm_loadu_si128(pp.add(b * 8) as *const __m128i);
+        // zero-extend u16→u32, shift into the high half → f32 bit pattern.
+        let fbits = _mm256_slli_epi32::<16>(_mm256_cvtepu16_epi32(u16x8));
+        let dv = _mm256_castsi256_ps(fbits);
+        let q8 = _mm256_loadu_ps(qp.add(b * 8));
+        dot = _mm256_fmadd_ps(dv, q8, dot);
+        nrm = _mm256_fmadd_ps(dv, dv, nrm);
+    }
+    let lo = _mm256_castps256_ps128(dot);
+    let hi = _mm256_extractf128_ps::<1>(dot);
+    let mut sd = _mm_add_ps(lo, hi);
+    sd = _mm_hadd_ps(sd, sd);
+    sd = _mm_hadd_ps(sd, sd);
+    let mut d = _mm_cvtss_f32(sd);
+    let lo = _mm256_castps256_ps128(nrm);
+    let hi = _mm256_extractf128_ps::<1>(nrm);
+    let mut sn = _mm_add_ps(lo, hi);
+    sn = _mm_hadd_ps(sn, sn);
+    sn = _mm_hadd_ps(sn, sn);
+    let mut nm = _mm_cvtss_f32(sn);
+    for i in full * 8..n {
+        let dv = f32::from_bits((*packed.get_unchecked(i) as u32) << 16);
+        d += dv * *query.get_unchecked(i);
+        nm += dv * dv;
+    }
+    (d, nm)
+}
+
 /// One BF16-quantised vector, stored as a packed `Vec<u16>`.
 ///
 /// The `u16` layout is identical to `simsimd::bf16`, enabling a zero-copy
@@ -43,13 +117,8 @@ impl Bf16Vector {
     /// `cosine_dist_f32(&self.decode(), query)`.
     #[inline]
     pub fn cosine_dist_to_query(&self, query: &[f32]) -> f32 {
-        let mut dot = 0.0f32;
-        let mut norm_sq = 0.0f32;
-        for (&bits, &q) in self.packed.iter().zip(query.iter()) {
-            let dv = SimBf16(bits).to_f32();
-            dot += dv * q;
-            norm_sq += dv * dv;
-        }
+        let n = self.dim.min(query.len());
+        let (dot, norm_sq) = bf16_dot_norm(&self.packed, query, n);
         let norm = norm_sq.sqrt();
         if norm < 1e-8 {
             return 1.0;
