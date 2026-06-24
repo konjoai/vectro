@@ -100,6 +100,30 @@ The honest at-scale view: recall **per byte**, not a single QPS number.
 - IVF-PQ: vectro is **recall-competitive** (0.774 vs 0.768) at identical 60 bytes/vec;
   FAISS only wins the *search speed* there (~7×, its tuned ADC) — its optimised corner.
 
+#### Target regime — d=768 embeddings (100K, k=10, batch)
+
+The d=100 glove view *understates* vectro: at the real embedding dimension, PQ
+falls apart and quantized HNSW is the only high-recall-compressed option.
+
+| method | recall@10 | QPS | bytes/vec | 100M footprint |
+|--------|:---------:|----:|----------:|---------------:|
+| vectro HNSW fp32 | 0.9992 | 10,132 | 3,200 | ~320 GB |
+| faiss HNSW fp32 | 0.9998 | 15,238 | 3,200 | ~320 GB |
+| **vectro HNSW-INT8** | **0.933** | 4,925 | 900 | **~90 GB** |
+| **vectro NF4-HNSW + re-rank** | **0.933** | 4,966 | 1,288 | ~128 GB |
+| vectro Binary-HNSW + re-rank | 0.655 | 1,293 | 996 | ~100 GB |
+| vectro IVF-PQ (M=64) | 0.133 | 5,682 | 103 | ~10 GB |
+| faiss IVF-PQ (M=64) | 0.176 | 12,582 | 103 | ~10 GB |
+
+- **IVF-PQ recall collapses at d=768 for *everyone*** (vectro 0.13, faiss 0.18) at
+  this aggressive ratio — high-compression PQ ≠ high recall on real embeddings.
+  (Higher `M_pq` recovers recall at less compression.)
+- **Quantized HNSW (INT8/NF4) is the only method giving recall *and* compression
+  here**: 0.933 @ 3.5× (≈90 GB at 100M) — vectro's differentiated quadrant,
+  exactly where PQ (FAISS's strength) can't follow.
+- vectro HNSW ≈ faiss HNSW on recall (0.999); QPS ~1.5× behind in this
+  distance-bound regime (the honest remaining gap).
+
 ### 2.4 Quality parity
 | Metric | vectro | FAISS |
 |--------|:------:|:-----:|
