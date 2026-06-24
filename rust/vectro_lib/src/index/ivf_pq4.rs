@@ -14,6 +14,7 @@
 //! This is a **build-once** index (train + populate in [`IvfPq4Index::build`]);
 //! incremental `add`, nibble-packing, and a PyO3 binding are tracked follow-ups.
 
+use super::hnsw::HnswIndex;
 use super::ivf_pq::{cosine_dist, kmeans_lloyd, top_probe_from_sims};
 use super::pq4::{interleave_codes, quantize_lut, scan, BLK, K};
 use crate::quant::pq::{pq_distance_table, pq_encode, train_pq_codebook, PQCodebook};
@@ -37,6 +38,14 @@ pub struct IvfPq4Index {
     n_probe: usize,
     /// Coarse centroids, `[n_lists * dim]`, unit-norm.
     coarse_centroids: Vec<f32>,
+    /// Optional HNSW over the coarse centroids — the coarse quantiser. Lets the
+    /// `n_probe` nearest cells be found in ~`O(log n_lists)` graph hops instead
+    /// of a brute-force scan over every centroid, so the index can partition
+    /// finely (small posting lists → cheap PQ4 scan) *and* probe widely (matched
+    /// recall) without the coarse step blowing up. `None` on indexes built before
+    /// this field existed → falls back to the brute-force / GEMM coarse scan.
+    #[serde(default)]
+    coarse_hnsw: Option<HnswIndex>,
     /// PQ codebook with `n_centroids == 16`.
     codebook: PQCodebook,
     /// Per-cell fast-scan stores, indexed by coarse-cell id.
@@ -46,10 +55,21 @@ pub struct IvfPq4Index {
     trained: bool,
 }
 
+/// HNSW parameters for the coarse quantiser (small graph over the centroids).
+const COARSE_M: usize = 16;
+const COARSE_EF_C: usize = 200;
+
 #[inline]
 fn normalize(v: &[f32]) -> Vec<f32> {
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
     v.iter().map(|x| x / n).collect()
+}
+
+/// Coarse search ef: probe wide enough that the HNSW finds the true `n_probe`
+/// nearest cells with high recall (a generous multiple of `n_probe`).
+#[inline]
+fn coarse_ef(n_probe: usize) -> usize {
+    (n_probe * 2).max(64)
 }
 
 impl IvfPq4Index {
@@ -85,6 +105,13 @@ impl IvfPq4Index {
         let coarse_centroids = kmeans_lloyd(&normed, n_lists, d, max_iter, seed);
         let codebook = train_pq_codebook(&normed, m, K, max_iter, seed)?;
 
+        // Coarse quantiser: an HNSW over the centroids (unit-norm → cosine). The
+        // n_probe nearest cells are then found by a graph walk, not a full scan.
+        let centroid_rows: Vec<&[f32]> =
+            (0..n_lists).map(|c| &coarse_centroids[c * d..(c + 1) * d]).collect();
+        let mut coarse_hnsw = HnswIndex::new(COARSE_M, COARSE_EF_C);
+        coarse_hnsw.add_batch(&centroid_rows);
+
         // Assign every vector to its nearest coarse cell.
         let mut cell_ids: Vec<Vec<usize>> = vec![Vec::new(); n_lists];
         for (i, v) in normed.iter().enumerate() {
@@ -102,7 +129,17 @@ impl IvfPq4Index {
             })
             .collect();
 
-        Ok(Self { n_lists, n_probe, coarse_centroids, codebook, lists, m, dim: d, trained: true })
+        Ok(Self {
+            n_lists,
+            n_probe,
+            coarse_centroids,
+            coarse_hnsw: Some(coarse_hnsw),
+            codebook,
+            lists,
+            m,
+            dim: d,
+            trained: true,
+        })
     }
 
     /// Number of indexed vectors.
@@ -128,21 +165,28 @@ impl IvfPq4Index {
         }
         assert_eq!(query.len(), self.dim, "query dim mismatch");
         let q = normalize(query);
-
-        // Coarse scan: pick the n_probe nearest cells (partial select, not sort).
-        let mut scored: Vec<(f32, usize)> = (0..self.n_lists)
-            .map(|c| (cosine_dist(&q, &self.coarse_centroids[c * self.dim..(c + 1) * self.dim]), c))
-            .collect();
         let probe = n_probe.min(self.n_lists);
+        let probe_lists = self.coarse_probe(&q, probe);
+        self.scan_probed(&q, &probe_lists, k)
+    }
+
+    /// Pick the `probe` nearest coarse cells for an already-normalised query:
+    /// an HNSW graph walk when the coarse quantiser is present, else the
+    /// brute-force partial-select scan (old indexes / fallback).
+    fn coarse_probe(&self, q: &[f32], probe: usize) -> Vec<usize> {
+        if let Some(h) = &self.coarse_hnsw {
+            return h.search(q, probe, coarse_ef(probe)).into_iter().map(|(id, _)| id).collect();
+        }
+        let mut scored: Vec<(f32, usize)> = (0..self.n_lists)
+            .map(|c| (cosine_dist(q, &self.coarse_centroids[c * self.dim..(c + 1) * self.dim]), c))
+            .collect();
         if probe < scored.len() {
             scored.select_nth_unstable_by(probe - 1, |a, b| {
                 a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
             });
             scored.truncate(probe);
         }
-
-        let probe_lists: Vec<usize> = scored.iter().map(|&(_, c)| c).collect();
-        self.scan_probed(&q, &probe_lists, k)
+        scored.iter().map(|&(_, c)| c).collect()
     }
 
     /// Batch search over a flat `[q * dim]` query buffer, parallelised across
@@ -180,12 +224,28 @@ impl IvfPq4Index {
                 qnorm[i * dim + j] = x * inv;
             }
         }
+        let probe = n_probe.min(self.n_lists);
+        let mut results: Vec<Vec<(usize, f32)>> = vec![Vec::new(); q];
+
+        // Coarse quantiser present → per-query HNSW graph walk (parallel across
+        // queries). Each query finds its probe cells in ~O(log n_lists) hops, so
+        // the coarse cost no longer scales with n_lists — the lever that lets the
+        // index partition finely and probe widely at matched recall.
+        if let Some(h) = &self.coarse_hnsw {
+            let ef = coarse_ef(probe);
+            results.par_iter_mut().enumerate().for_each(|(i, slot)| {
+                let qn = &qnorm[i * dim..(i + 1) * dim];
+                let probe_lists: Vec<usize> =
+                    h.search(qn, probe, ef).into_iter().map(|(id, _)| id).collect();
+                *slot = self.scan_probed(qn, &probe_lists, k);
+            });
+            return results;
+        }
+
+        // Fallback (old index, no coarse HNSW): tiled `Q·Cᵀ` GEMM coarse scan.
         let cmat = ArrayView2::from_shape((self.n_lists, dim), &self.coarse_centroids)
             .expect("centroid shape");
-        let probe = n_probe.min(self.n_lists);
-
         const CHUNK: usize = 32;
-        let mut results: Vec<Vec<(usize, f32)>> = vec![Vec::new(); q];
         results.par_chunks_mut(CHUNK).enumerate().for_each(|(c, out)| {
             let lo = c * CHUNK;
             let rows = out.len();
@@ -203,28 +263,10 @@ impl IvfPq4Index {
         results
     }
 
-    /// Test-only single-threaded coarse-vs-scan timing breakdown (seconds).
+    /// Test-only: drop the coarse HNSW so the GEMM fallback path is exercised.
     #[cfg(test)]
-    pub(crate) fn timed_batch(&self, flat: &[f32], dim: usize, k: usize, n_probe: usize) -> (f64, f64) {
-        use std::time::Instant;
-        let q = flat.len() / dim;
-        let cmat = ArrayView2::from_shape((self.n_lists, dim), &self.coarse_centroids).unwrap();
-        let probe = n_probe.min(self.n_lists);
-        let (mut coarse, mut scan_t) = (0.0f64, 0.0f64);
-        for i in 0..q {
-            let row = &flat[i * dim..(i + 1) * dim];
-            let inv = 1.0 / row.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
-            let qn: Vec<f32> = row.iter().map(|&x| x * inv).collect();
-            let t = Instant::now();
-            let qv = ArrayView2::from_shape((1, dim), &qn).unwrap();
-            let sims = qv.dot(&cmat.t());
-            let pl = top_probe_from_sims(sims.row(0).as_slice().unwrap(), probe);
-            coarse += t.elapsed().as_secs_f64();
-            let t = Instant::now();
-            std::hint::black_box(self.scan_probed(&qn, &pl, k));
-            scan_t += t.elapsed().as_secs_f64();
-        }
-        (coarse, scan_t)
+    pub(crate) fn disable_coarse_hnsw(&mut self) {
+        self.coarse_hnsw = None;
     }
 
     /// PQ4 fast-scan over the chosen `probe_lists` for an already-normalised
@@ -327,54 +369,69 @@ mod tests {
         assert!(hits >= 95, "self-recall@1 too low: {hits}/100");
     }
 
-    /// A/B: looped single-query coarse scan vs the batched coarse GEMM.
-    /// `cargo test -p vectro_lib --release ivf_pq4_batch_timing -- --ignored --nocapture`
+    /// A/B: HNSW coarse quantiser vs the brute-force/GEMM coarse, on both batch
+    /// QPS and recall@10 (vs exact brute-force ground truth), across n_probe.
+    /// `cargo test -p vectro_lib --release ivf_pq4_coarse_ab -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn ivf_pq4_batch_timing() {
+    fn ivf_pq4_coarse_ab() {
+        use std::collections::HashSet;
         use std::time::Instant;
-        // faiss-IVF-PQ compressed_ann config: n_lists=1024, n_probe=32, m=64.
-        let (n, d, n_lists, n_probe) = (200_000usize, 768usize, 2048usize, 32usize);
+        let (n, d, n_lists) = (200_000usize, 768usize, 4096usize);
+        let k = 10usize;
         let data = rand_unit(n, d, 1);
-        let idx = IvfPq4Index::build(&data, n_lists, n_probe, 96, 10, 1).expect("build");
         let queries = rand_unit(2000, d, 99);
         let flat: Vec<f32> = queries.iter().flatten().copied().collect();
-        let k = 10usize;
 
-        // warm
-        let _ = idx.search_batch_flat(&flat, d, k, n_probe);
-        for q in &queries {
-            std::hint::black_box(idx.search_with_probe(q, k, n_probe).len());
-        }
+        // Exact cosine ground truth for the first 200 queries.
+        let gt: Vec<HashSet<usize>> = queries[..200]
+            .iter()
+            .map(|q| {
+                let mut s: Vec<(f32, usize)> = data
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| (-q.iter().zip(v).map(|(a, b)| a * b).sum::<f32>(), i))
+                    .collect();
+                s.select_nth_unstable_by(k - 1, |a, b| a.0.partial_cmp(&b.0).unwrap());
+                s.truncate(k);
+                s.into_iter().map(|(_, i)| i).collect()
+            })
+            .collect();
 
-        let mut single = f64::INFINITY;
-        for _ in 0..3 {
-            let t = Instant::now();
-            let mut s = 0usize;
-            for q in &queries {
-                s += idx.search_with_probe(q, k, n_probe).len();
+        let hnsw = IvfPq4Index::build(&data, n_lists, 32, 96, 10, 1).expect("build");
+        let mut gemm = hnsw.clone();
+        gemm.disable_coarse_hnsw();
+
+        let recall = |idx: &IvfPq4Index, np: usize| -> f64 {
+            let qf: Vec<f32> = queries[..200].iter().flatten().copied().collect();
+            let res = idx.search_batch_flat(&qf, d, k, np);
+            let mut tot = 0usize;
+            for (r, g) in res.iter().zip(&gt) {
+                tot += r.iter().filter(|(id, _)| g.contains(id)).count();
             }
-            std::hint::black_box(s);
-            single = single.min(t.elapsed().as_secs_f64());
+            tot as f64 / (gt.len() * k) as f64
+        };
+        let qps = |idx: &IvfPq4Index, np: usize| -> f64 {
+            let _ = idx.search_batch_flat(&flat, d, k, np);
+            let mut best = f64::INFINITY;
+            for _ in 0..3 {
+                let t = Instant::now();
+                std::hint::black_box(idx.search_batch_flat(&flat, d, k, np).len());
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            queries.len() as f64 / best
+        };
+
+        println!("ivf_pq4 coarse A/B  n={n} d={d} lists={n_lists} (faiss-IVF-PQ ref: 11828 qps)");
+        for &np in &[32usize, 48, 64] {
+            println!(
+                "  n_probe={np:>3}: GEMM {:.0} qps R@{k}={:.4} | HNSW {:.0} qps R@{k}={:.4}",
+                qps(&gemm, np),
+                recall(&gemm, np),
+                qps(&hnsw, np),
+                recall(&hnsw, np),
+            );
         }
-        let mut batch = f64::INFINITY;
-        for _ in 0..3 {
-            let t = Instant::now();
-            let r = idx.search_batch_flat(&flat, d, k, n_probe);
-            std::hint::black_box(r.len());
-            batch = batch.min(t.elapsed().as_secs_f64());
-        }
-        let nq = queries.len() as f64;
-        let (coarse, scan_t) = idx.timed_batch(&flat, d, k, n_probe);
-        println!(
-            "ivf_pq4 n={n} d={d} lists={n_lists} probe={n_probe}: single={:.0} qps | batch={:.0} qps | {:.2}x | coarse={:.0}ms scan={:.0}ms (coarse {:.0}%)",
-            nq / single,
-            nq / batch,
-            single / batch,
-            coarse * 1e3,
-            scan_t * 1e3,
-            100.0 * coarse / (coarse + scan_t)
-        );
     }
 
     #[test]
