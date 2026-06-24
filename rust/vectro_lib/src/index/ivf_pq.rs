@@ -382,9 +382,7 @@ impl IvfPqIndex {
                     continue;
                 }
                 let codes = self.code_row(gid);
-                let adc_dist: f32 = (0..m)
-                    .map(|mi| dist_table[mi * kc + codes[mi] as usize])
-                    .sum();
+                let adc_dist = crate::quant::pq::adc_distance(&dist_table, codes, m, kc);
                 candidates.push((adc_dist, gid));
             }
         }
@@ -771,7 +769,7 @@ mod tests {
             let mut all: Vec<(f32, usize)> = (0..data.len())
                 .map(|gid| {
                     let codes = idx.code_row(gid);
-                    let d: f32 = (0..m).map(|mi| table[mi * kc + codes[mi] as usize]).sum();
+                    let d = crate::quant::pq::adc_distance(&table, codes, m, kc);
                     (d, gid)
                 })
                 .collect();
