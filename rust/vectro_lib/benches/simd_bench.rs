@@ -16,7 +16,7 @@ use vectro_lib::quant::{int8, nf4};
 use vectro_lib::index::hnsw::HnswIndex;
 use vectro_lib::index::ivf::IvfIndex;
 use vectro_lib::index::ivf_pq::IvfPqIndex;
-use vectro_lib::index::quant_hnsw::{Int8HnswIndex, Nf4HnswIndex};
+use vectro_lib::index::quant_hnsw::{Bf16HnswIndex, Int8HnswIndex, Nf4HnswIndex};
 
 fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
     (0..n)
@@ -111,6 +111,26 @@ fn bench_nf4_hnsw_search(c: &mut Criterion) {
     group.finish();
 }
 
+/// BF16 quant-HNSW asymmetric search throughput. Exercises the bf16→f32 widen
+/// distance kernel (AVX-512 16-wide on capable hosts, AVX2 8-wide otherwise).
+fn bench_bf16_hnsw_search(c: &mut Criterion) {
+    const N: usize = 5_000;
+    const D: usize = 768;
+    let vecs = make_vecs(N, D);
+    let query = vecs[1].clone();
+
+    let mut idx = Bf16HnswIndex::new(16, 200);
+    idx.add_batch(&vecs);
+    idx.finalize();
+
+    let mut group = c.benchmark_group("bf16_hnsw_search");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("search_k10_ef100_n5000_d768", |b| {
+        b.iter(|| idx.search(black_box(&query), 10, 100))
+    });
+    group.finish();
+}
+
 /// IVF-Flat search throughput (index trained and populated outside the timed loop).
 fn bench_ivf_search(c: &mut Criterion) {
     const N: usize = 10_000;
@@ -197,6 +217,7 @@ criterion_group!(
     bench_hnsw_search,
     bench_int8_hnsw_search,
     bench_nf4_hnsw_search,
+    bench_bf16_hnsw_search,
     bench_ivf_search,
     bench_ivfpq_search,
     bench_sq2_decode,
