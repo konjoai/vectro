@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 struct Pq4List {
     /// Global vector id for slot `i` (`len` = real candidate count).
     ids: Vec<usize>,
-    /// Interleaved codes `[n_blocks][m][BLK]` (one nibble/byte), padded.
+    /// Nibble-packed interleaved codes `[n_blocks][⌈m/2⌉][BLK]`, padded.
     codes_il: Vec<u8>,
 }
 
