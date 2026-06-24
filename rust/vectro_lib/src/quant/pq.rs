@@ -561,6 +561,37 @@ pub fn pq_distance_table(query: &[f32], codebook: &PQCodebook) -> Vec<f32> {
     table
 }
 
+/// Sum the ADC-table entries selected by `codes`: `Σ_m table[m*k + codes[m]]` —
+/// the per-candidate approximate distance, the innermost loop of every PQ scan.
+///
+/// Four independent accumulators break the f32 reduction's serial dependency
+/// chain (an `.iter().sum()` cannot legally reassociate f32, so it serializes at
+/// the FP-add latency even though the table gathers are mutually independent).
+/// The gathers can then overlap, turning the scan from add-latency-bound toward
+/// load-throughput-bound. Reassociating changes only the last-ULP rounding of
+/// an already-approximate distance.
+#[inline]
+pub fn adc_distance(table: &[f32], codes: &[u8], m: usize, k: usize) -> f32 {
+    let mut a0 = 0.0f32;
+    let mut a1 = 0.0f32;
+    let mut a2 = 0.0f32;
+    let mut a3 = 0.0f32;
+    let mut mi = 0;
+    while mi + 4 <= m {
+        a0 += table[mi * k + codes[mi] as usize];
+        a1 += table[(mi + 1) * k + codes[mi + 1] as usize];
+        a2 += table[(mi + 2) * k + codes[mi + 2] as usize];
+        a3 += table[(mi + 3) * k + codes[mi + 3] as usize];
+        mi += 4;
+    }
+    let mut s = (a0 + a1) + (a2 + a3);
+    while mi < m {
+        s += table[mi * k + codes[mi] as usize];
+        mi += 1;
+    }
+    s
+}
+
 /// Approximate top-k nearest neighbours using the ADC table.
 ///
 /// Returns `(Vec<index>, Vec<approx_dist>)` sorted ascending by distance.
@@ -572,14 +603,12 @@ pub fn pq_search(
 ) -> Vec<(usize, f32)> {
     let table = pq_distance_table(query, codebook);
     let k = codebook.n_centroids;
+    let m = codebook.n_subspaces;
 
     let mut dists: Vec<(usize, f32)> = codes
         .par_iter()
         .enumerate()
-        .map(|(i, code)| {
-            let d: f32 = code.iter().enumerate().map(|(m, &c)| table[m * k + c as usize]).sum();
-            (i, d)
-        })
+        .map(|(i, code)| (i, adc_distance(&table, code, m, k)))
         .collect();
 
     dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
