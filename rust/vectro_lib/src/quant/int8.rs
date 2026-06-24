@@ -1275,7 +1275,10 @@ pub fn encode_normalized_into(v: &[f32], out: &mut [i8]) -> f32 {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: guarded by runtime AVX-512F detection. 16-wide narrow.
+            unsafe { encode_normalized_avx512(v, out) };
+        } else if is_x86_feature_detected!("avx2") {
             // SAFETY: guarded by runtime AVX2 detection.
             unsafe { encode_normalized_avx2(v, out) };
         } else {
@@ -1382,6 +1385,38 @@ unsafe fn encode_normalized_avx2(v: &[f32], out: &mut [i8]) {
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
     for (i, &val) in v.iter().enumerate().skip(chunks8 * 8) {
+        *out_ptr.add(i) = (val * 127.0_f32).round().clamp(-127.0, 127.0) as i8;
+    }
+}
+
+/// AVX-512 single-pass quantise for L2-normalised inputs (fixed `inv = 127`).
+/// Mirrors the proven, bit-identical pass-2 of [`encode_avx512_into`]: 16 floats
+/// per iteration, one saturating `vpmovsdb` narrow + one 128-bit store, vs the
+/// AVX2 path's 8 floats and 2-step SSE pack chain. Convert/narrow/store-bound,
+/// so the doubled width is near-linear here (distinct from the f32-distance
+/// regime where AVX-512 lost on this CPU).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[inline]
+unsafe fn encode_normalized_avx512(v: &[f32], out: &mut [i8]) {
+    use std::arch::x86_64::*;
+    let n = v.len();
+    if n == 0 {
+        return;
+    }
+    let ptr = v.as_ptr();
+    let out_ptr = out.as_mut_ptr();
+    let vinv = _mm512_set1_ps(127.0_f32);
+
+    let chunks16 = n / 16;
+    for i in 0..chunks16 {
+        let base = i * 16;
+        let x = _mm512_loadu_ps(ptr.add(base));
+        let i32s = _mm512_cvtps_epi32(_mm512_mul_ps(x, vinv));
+        let i8s = _mm512_cvtsepi32_epi8(i32s);
+        _mm_storeu_si128(out_ptr.add(base) as *mut __m128i, i8s);
+    }
+    for (i, &val) in v.iter().enumerate().skip(chunks16 * 16) {
         *out_ptr.add(i) = (val * 127.0_f32).round().clamp(-127.0, 127.0) as i8;
     }
 }
@@ -1911,6 +1946,47 @@ mod tests {
         assert_eq!(first_non_finite_row(&row), None);
         row[30] = f32::NAN;
         assert_eq!(first_non_finite_row(&row), Some(30));
+    }
+
+    /// Isolated A/B microbench for the normalized INT8 encode kernels.
+    /// `cargo test -p vectro_lib --release encode_normalized_microbench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(target_arch = "x86_64")]
+    fn encode_normalized_microbench() {
+        use std::time::Instant;
+        for &d in &[256usize, 768, 1536] {
+            let raw: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.31) - 4.0).sin()).collect();
+            let n2: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let v: Vec<f32> = raw.iter().map(|x| x / n2).collect();
+            let mut out = vec![0i8; d];
+            let rows = 200_000usize;
+
+            let avx2_ns = if is_x86_feature_detected!("avx2") {
+                unsafe { encode_normalized_avx2(&v, &mut out) };
+                let t = Instant::now();
+                for _ in 0..rows {
+                    unsafe { encode_normalized_avx2(&v, &mut out) };
+                }
+                std::hint::black_box(&out);
+                t.elapsed().as_nanos() as f64 / rows as f64
+            } else { f64::NAN };
+
+            let avx512_ns = if is_x86_feature_detected!("avx512f") {
+                unsafe { encode_normalized_avx512(&v, &mut out) };
+                let t = Instant::now();
+                for _ in 0..rows {
+                    unsafe { encode_normalized_avx512(&v, &mut out) };
+                }
+                std::hint::black_box(&out);
+                t.elapsed().as_nanos() as f64 / rows as f64
+            } else { f64::NAN };
+
+            println!(
+                "d={d}: avx2={avx2_ns:.1}ns avx512={avx512_ns:.1}ns  avx512/avx2={:.3}x",
+                avx2_ns / avx512_ns
+            );
+        }
     }
 
     /// Wave 1.2: encode_normalized_into preserves direction within INT8's
