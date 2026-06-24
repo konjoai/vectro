@@ -7,6 +7,7 @@
 //! At D=768: 1 Gelem/s ≈ 1.3M vec/s.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use vectro_lib::index::quant_hnsw::Int8HnswIndex;
 use vectro_lib::quant::int8::{encode_batch, Int8Vector};
 
 fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
@@ -51,5 +52,49 @@ fn bench_batch(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_single_vec, bench_batch);
+/// i8×f32 `dot_query` — the per-candidate distance kernel in INT8-HNSW search.
+fn bench_dot_query(c: &mut Criterion) {
+    const D: usize = 768;
+    let v: Vec<f32> = (0..D).map(|i| (i as f32 * 0.007).sin()).collect();
+    let q: Vec<f32> = (0..D).map(|i| (i as f32 * 0.011).cos()).collect();
+    let enc = Int8Vector::encode_fast(&v);
+
+    let mut group = c.benchmark_group("int8_dot_query_d768");
+    group.throughput(Throughput::Elements(D as u64));
+    group.bench_function("dot_query", |b| b.iter(|| enc.dot_query(black_box(&q))));
+    group.finish();
+}
+
+/// INT8-HNSW search — the real consumer of `dot_query`. Exercises the kernel in
+/// the graph-traversal hot loop (distance per visited candidate), so the e2e gain
+/// reflects the distance-computation fraction of search time, not the kernel alone.
+fn bench_int8_hnsw_search(c: &mut Criterion) {
+    const N: usize = 20_000;
+    const D: usize = 768;
+    let vecs: Vec<Vec<f32>> = (0..N)
+        .map(|i| (0..D).map(|j| ((i * D + j) as f32 * 0.0013_f32).sin()).collect())
+        .collect();
+    let mut idx = Int8HnswIndex::new(16, 100);
+    idx.add_batch(&vecs);
+    let queries: Vec<&Vec<f32>> = (0..64).map(|i| &vecs[i * 137 % N]).collect();
+
+    let mut group = c.benchmark_group("int8_hnsw_search_d768");
+    group.throughput(Throughput::Elements(queries.len() as u64));
+    group.bench_function("search_n20k_m16_ef100_k10", |b| {
+        b.iter(|| {
+            for q in &queries {
+                black_box(idx.search(black_box(q), 10, 100));
+            }
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_single_vec,
+    bench_batch,
+    bench_dot_query,
+    bench_int8_hnsw_search
+);
 criterion_main!(benches);
