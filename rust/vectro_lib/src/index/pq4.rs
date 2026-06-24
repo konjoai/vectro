@@ -30,17 +30,32 @@ pub(crate) const BLK: usize = 32;
 /// Centroids per subspace (4-bit codes).
 pub(crate) const K: usize = 16;
 
-/// Interleave per-vector codes `[n][m]` into the blocked SIMD layout
-/// `[n_blocks][m][BLK]` (one nibble per byte), zero-padding the final block.
-/// Shared by the flat index and the IVF-PQ4 per-list stores.
+/// Number of byte planes for `m` subspaces: two 4-bit codes share a byte, so a
+/// block needs `⌈m/2⌉` planes of `BLK` bytes (half the memory of one byte per
+/// code). A trailing odd subspace occupies its own low-nibble plane.
+#[inline]
+pub(crate) fn n_planes(m: usize) -> usize {
+    m.div_ceil(2)
+}
+
+/// Interleave per-vector codes `[n][m]` into the **nibble-packed** blocked SIMD
+/// layout `[n_blocks][⌈m/2⌉][BLK]`: plane `t` packs subspace `2t` in the low
+/// nibble and `2t+1` in the high nibble of each candidate's byte (a trailing odd
+/// subspace is stored low-nibble only). Halves the code memory vs one byte per
+/// code; the final block is zero-padded. Shared by the flat and IVF-PQ4 stores.
 pub(crate) fn interleave_codes(codes: &[Vec<u8>], m: usize) -> Vec<u8> {
     let n_blocks = codes.len().div_ceil(BLK);
-    let mut out = vec![0u8; n_blocks * m * BLK];
+    let planes = n_planes(m);
+    let pairs = m / 2;
+    let mut out = vec![0u8; n_blocks * planes * BLK];
     for (i, code) in codes.iter().enumerate() {
-        let base = (i / BLK) * m * BLK;
+        let base = (i / BLK) * planes * BLK;
         let c = i % BLK;
-        for (mi, &cd) in code.iter().enumerate() {
-            out[base + mi * BLK + c] = cd;
+        for t in 0..pairs {
+            out[base + t * BLK + c] = (code[2 * t] & 0x0F) | (code[2 * t + 1] << 4);
+        }
+        if m & 1 == 1 {
+            out[base + pairs * BLK + c] = code[m - 1] & 0x0F;
         }
     }
     out
@@ -55,8 +70,8 @@ pub struct Pq4FlatIndex {
     m: usize,
     /// Number of real vectors (the interleaved store is padded up to a block).
     n: usize,
-    /// Interleaved codes `[n_blocks][m][BLK]`, one 4-bit code per byte. Padding
-    /// candidates (index ≥ `n`) hold code 0 and are excluded from results.
+    /// Nibble-packed interleaved codes `[n_blocks][⌈m/2⌉][BLK]` (two codes per
+    /// byte). Padding candidates (index ≥ `n`) hold code 0 and are excluded.
     codes_il: Vec<u8>,
 }
 
@@ -157,14 +172,22 @@ pub(crate) fn scan(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out: 
 }
 
 /// Scalar reference scan — the correctness baseline the SIMD kernel must match.
-/// Reads the same interleaved layout so results are identical.
+/// Reads the nibble-packed layout (low nibble = subspace `2t`, high = `2t+1`).
 fn scan_scalar(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out: &mut [u16]) {
+    let planes = n_planes(m);
+    let pairs = m / 2;
     for b in 0..n_blocks {
-        let base = b * m * BLK;
+        let base = b * planes * BLK;
         for c in 0..BLK {
             let mut acc: u16 = 0;
-            for mi in 0..m {
-                acc = acc.wrapping_add(lut[mi * K + codes_il[base + mi * BLK + c] as usize] as u16);
+            for t in 0..pairs {
+                let byte = codes_il[base + t * BLK + c];
+                acc = acc.wrapping_add(lut[2 * t * K + (byte & 0x0F) as usize] as u16);
+                acc = acc.wrapping_add(lut[(2 * t + 1) * K + (byte >> 4) as usize] as u16);
+            }
+            if m & 1 == 1 {
+                let byte = codes_il[base + pairs * BLK + c];
+                acc = acc.wrapping_add(lut[(m - 1) * K + (byte & 0x0F) as usize] as u16);
             }
             out[b * BLK + c] = acc;
         }
@@ -192,30 +215,54 @@ static PERM: [usize; BLK] = {
 
 /// AVX2 `pshufb` fast-scan: for each block of 32 candidates, look up all 32
 /// per-subspace distances with one `_mm256_shuffle_epi8`, widen `u8`→`u16`, and
-/// accumulate across subspaces. 32 lookups per SIMD op vs one per scalar gather.
+/// accumulate across subspaces. One 256-bit load of a packed plane yields 32
+/// candidates' codes for **two** subspaces (low/high nibble), so each plane
+/// costs one load + two `pshufb` (vs one byte-plane load per subspace before
+/// packing) — half the loads and half the memory.
 ///
 /// # Safety
-/// Requires AVX2 (the caller runtime-detects). `codes_il` is `n_blocks*m*32`
-/// bytes and `out` is `n_blocks*32` — all reads/writes stay in-bounds.
+/// Requires AVX2 (the caller runtime-detects). `codes_il` is
+/// `n_blocks * ⌈m/2⌉ * 32` bytes and `out` is `n_blocks*32` — all in-bounds.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn scan_avx2(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out: &mut [u16]) {
     use std::arch::x86_64::*;
     let zero = _mm256_setzero_si256();
+    let lo_mask = _mm256_set1_epi8(0x0F);
+    let planes = n_planes(m);
+    let pairs = m / 2;
+    // Resolve one subspace's 32 codes against its LUT and accumulate (u8→u16).
+    #[inline(always)]
+    unsafe fn accum(
+        lut: &[u8],
+        sub: usize,
+        codes: std::arch::x86_64::__m256i,
+        zero: std::arch::x86_64::__m256i,
+        acc_lo: &mut std::arch::x86_64::__m256i,
+        acc_hi: &mut std::arch::x86_64::__m256i,
+    ) {
+        let l128 = _mm_loadu_si128(lut.as_ptr().add(sub * K) as *const __m128i);
+        let lut256 = _mm256_set_m128i(l128, l128);
+        let looked = _mm256_shuffle_epi8(lut256, codes);
+        *acc_lo = _mm256_add_epi16(*acc_lo, _mm256_unpacklo_epi8(looked, zero));
+        *acc_hi = _mm256_add_epi16(*acc_hi, _mm256_unpackhi_epi8(looked, zero));
+    }
     for b in 0..n_blocks {
         let mut acc_lo = _mm256_setzero_si256(); // 16 u16 lanes
         let mut acc_hi = _mm256_setzero_si256(); // 16 u16 lanes
-        let blk_base = b * m * BLK;
-        for mi in 0..m {
-            // 16-entry LUT for this subspace, duplicated into both 128-bit lanes.
-            let l128 = _mm_loadu_si128(lut.as_ptr().add(mi * K) as *const __m128i);
-            let lut256 = _mm256_set_m128i(l128, l128);
-            // 32 codes (nibbles 0..15) for this (block, subspace).
-            let codes = _mm256_loadu_si256(codes_il.as_ptr().add(blk_base + mi * BLK) as *const __m256i);
-            // Each 128-bit lane resolves its 16 codes against its 16-entry table.
-            let looked = _mm256_shuffle_epi8(lut256, codes);
-            acc_lo = _mm256_add_epi16(acc_lo, _mm256_unpacklo_epi8(looked, zero));
-            acc_hi = _mm256_add_epi16(acc_hi, _mm256_unpackhi_epi8(looked, zero));
+        let blk_base = b * planes * BLK;
+        for t in 0..pairs {
+            let packed = _mm256_loadu_si256(codes_il.as_ptr().add(blk_base + t * BLK) as *const __m256i);
+            // Low nibble = subspace 2t; high nibble = subspace 2t+1.
+            let lo_codes = _mm256_and_si256(packed, lo_mask);
+            let hi_codes = _mm256_and_si256(_mm256_srli_epi16(packed, 4), lo_mask);
+            accum(lut, 2 * t, lo_codes, zero, &mut acc_lo, &mut acc_hi);
+            accum(lut, 2 * t + 1, hi_codes, zero, &mut acc_lo, &mut acc_hi);
+        }
+        if m & 1 == 1 {
+            let packed = _mm256_loadu_si256(codes_il.as_ptr().add(blk_base + pairs * BLK) as *const __m256i);
+            let lo_codes = _mm256_and_si256(packed, lo_mask);
+            accum(lut, m - 1, lo_codes, zero, &mut acc_lo, &mut acc_hi);
         }
         let mut tmp = [0u16; BLK];
         _mm256_storeu_si256(tmp.as_mut_ptr() as *mut __m256i, acc_lo);
@@ -250,27 +297,29 @@ mod tests {
 
     #[test]
     fn scan_simd_matches_scalar() {
-        // Random LUT + interleaved codes across non-block-aligned sizes.
-        let m = 16usize;
-        let n_blocks = 5usize;
-        let mut lut = vec![0u8; m * K];
-        let mut codes = vec![0u8; n_blocks * m * BLK];
         let mut s = 0x9e37u32;
         let mut rng = || {
             s = s.wrapping_mul(1_103_515_245).wrapping_add(12_345);
             (s >> 16) as u8
         };
-        for x in lut.iter_mut() {
-            *x = rng() % 64;
+        // Cover even and odd m (odd exercises the trailing low-nibble plane).
+        for &m in &[16usize, 15] {
+            let n_blocks = 5usize;
+            let mut lut = vec![0u8; m * K];
+            // Full packed bytes (both nibbles populated), sized to ⌈m/2⌉ planes.
+            let mut codes = vec![0u8; n_blocks * n_planes(m) * BLK];
+            for x in lut.iter_mut() {
+                *x = rng() % 64;
+            }
+            for x in codes.iter_mut() {
+                *x = rng();
+            }
+            let mut a = vec![0u16; n_blocks * BLK];
+            let mut b = vec![0u16; n_blocks * BLK];
+            scan_scalar(&lut, &codes, n_blocks, m, &mut a);
+            scan(&lut, &codes, n_blocks, m, &mut b);
+            assert_eq!(a, b, "SIMD scan must match scalar reference (m={m})");
         }
-        for x in codes.iter_mut() {
-            *x = rng() & 0x0F;
-        }
-        let mut a = vec![0u16; n_blocks * BLK];
-        let mut b = vec![0u16; n_blocks * BLK];
-        scan_scalar(&lut, &codes, n_blocks, m, &mut a);
-        scan(&lut, &codes, n_blocks, m, &mut b);
-        assert_eq!(a, b, "SIMD scan must match scalar reference");
     }
 
     #[test]

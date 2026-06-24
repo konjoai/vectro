@@ -1136,6 +1136,83 @@ impl PyIvfPqIndex {
     }
 }
 
+/// IVF-PQ4 SIMD fast-scan index (Python binding).
+///
+/// Build-once: trains the coarse quantizer + K=16 PQ codebook and populates from
+/// an `[N, D]` float32 array in the constructor, then serves approximate
+/// nearest-neighbour queries via the `pshufb` fast-scan. ~5-6x the QPS of the
+/// classic IVF-PQ scan at matched recall and memory budget.
+#[pyclass]
+struct PyIvfPq4Index {
+    inner: vectro_lib::index::ivf_pq4::IvfPq4Index,
+}
+
+#[pymethods]
+impl PyIvfPq4Index {
+    /// Build from a numpy `[N, D]` float32 array.
+    ///
+    /// * `n_lists` — coarse Voronoi cells.  * `n_probe` — default cells per query.
+    /// * `m`       — PQ subspaces (must divide D).
+    #[new]
+    #[pyo3(signature = (array, n_lists, n_probe, m, max_iter = 25, seed = 42))]
+    fn new(
+        py: Python<'_>,
+        array: PyReadonlyArray2<f32>,
+        n_lists: usize,
+        n_probe: usize,
+        m: usize,
+        max_iter: usize,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let arr = array.as_array();
+        let (n, d) = (arr.nrows(), arr.ncols());
+        // Own the data so the heavy build can run with the GIL released.
+        let data: Vec<Vec<f32>> = match arr.as_slice() {
+            Some(flat) => (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect(),
+            None => arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect(),
+        };
+        let inner = py
+            .allow_threads(|| {
+                vectro_lib::index::ivf_pq4::IvfPq4Index::build(&data, n_lists, n_probe, m, max_iter, seed)
+            })
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Number of indexed vectors.
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Search for the k nearest neighbours.  Returns a list of (id, distance).
+    fn search(&self, query: Vec<f32>, k: usize) -> Vec<(usize, f32)> {
+        self.inner.search(&query, k)
+    }
+
+    /// Zero-copy search from a 1-D numpy query, GIL released during the scan so a
+    /// Python threadpool scales across cores.
+    fn search_np(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        py.allow_threads(|| self.inner.search(&owned, k))
+    }
+
+    /// Search with an explicit probe width (GIL released).
+    fn search_with_probe(
+        &self,
+        py: Python<'_>,
+        query: PyReadonlyArray1<f32>,
+        k: usize,
+        n_probe: usize,
+    ) -> Vec<(usize, f32)> {
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        py.allow_threads(|| self.inner.search_with_probe(&owned, k, n_probe))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyIvfPq4Index(n={})", self.inner.len())
+    }
+}
+
 // ─────────────────────── Quantized HNSW Python bindings ──────────────────────
 
 macro_rules! quant_hnsw_pyclass {
@@ -1622,7 +1699,7 @@ fn pq_train_batch<'py>(
             "PQ requires K ≤ 256 (got {n_centroids})"
         )));
     }
-    if n_subspaces == 0 || d % n_subspaces != 0 {
+    if n_subspaces == 0 || !d.is_multiple_of(n_subspaces) {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "vector dim {d} not divisible by n_subspaces {n_subspaces}"
         )));
@@ -1767,6 +1844,7 @@ fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyBf16Encoder>()?;
     m.add_class::<PyIvfIndex>()?;
     m.add_class::<PyIvfPqIndex>()?;
+    m.add_class::<PyIvfPq4Index>()?;
     // Quantized HNSW variants (Phase 22)
     m.add_class::<PyBf16HnswIndex>()?;
     m.add_class::<PyInt8HnswIndex>()?;
