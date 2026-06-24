@@ -68,7 +68,10 @@ def _decode_scalar(packed: np.ndarray, scales: np.ndarray, dim: int, bits: int) 
     scales = np.asarray(scales, dtype=np.float32).reshape(-1, 1)
     levels = 1 << bits
     codes = _unpack_codes(packed, dim, bits).astype(np.float32)
-    values = scales * (2.0 * codes - (levels - 1)) / np.float32(levels)
+    # float32 literals keep every intermediate in float32; a bare `2.0` /
+    # `(levels - 1)` would promote the whole expression to float64 (2x the
+    # intermediate memory and half the SIMD width) before the final narrow.
+    values = scales * (np.float32(2.0) * codes - np.float32(levels - 1)) / np.float32(levels)
     return values.astype(np.float32)
 
 

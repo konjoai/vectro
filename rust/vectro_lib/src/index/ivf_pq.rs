@@ -499,10 +499,10 @@ impl IvfPqIndex {
             .zip(ground_truth.iter())
             .map(|(q, gt)| {
                 let results = self.search_with_probe(q, k, n_probe);
-                let found = results
-                    .iter()
-                    .filter(|(id, _)| gt.contains(id))
-                    .count();
+                // Hash the ground-truth ids once (O(k)) rather than a linear
+                // `gt.contains` per result (O(k²) per query).
+                let gt_set: std::collections::HashSet<usize> = gt.iter().copied().collect();
+                let found = results.iter().filter(|(id, _)| gt_set.contains(id)).count();
                 found as f32 / gt.len() as f32
             })
             .sum();
