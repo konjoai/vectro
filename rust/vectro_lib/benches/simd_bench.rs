@@ -16,7 +16,7 @@ use vectro_lib::quant::{int8, nf4};
 use vectro_lib::index::hnsw::HnswIndex;
 use vectro_lib::index::ivf::IvfIndex;
 use vectro_lib::index::ivf_pq::IvfPqIndex;
-use vectro_lib::index::quant_hnsw::Int8HnswIndex;
+use vectro_lib::index::quant_hnsw::{Int8HnswIndex, Nf4HnswIndex};
 
 fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
     (0..n)
@@ -84,6 +84,26 @@ fn bench_int8_hnsw_search(c: &mut Criterion) {
     idx.finalize();
 
     let mut group = c.benchmark_group("int8_hnsw_search");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("search_k10_ef100_n5000_d768", |b| {
+        b.iter(|| idx.search(black_box(&query), 10, 100))
+    });
+    group.finish();
+}
+
+/// NF4 quant-HNSW asymmetric search throughput. Exercises the AVX2 in-register
+/// codebook-LUT distance kernel (the former scalar hot path).
+fn bench_nf4_hnsw_search(c: &mut Criterion) {
+    const N: usize = 5_000;
+    const D: usize = 768;
+    let vecs = make_vecs(N, D);
+    let query = vecs[1].clone();
+
+    let mut idx = Nf4HnswIndex::new(16, 200);
+    idx.add_batch(&vecs);
+    idx.finalize();
+
+    let mut group = c.benchmark_group("nf4_hnsw_search");
     group.throughput(Throughput::Elements(1));
     group.bench_function("search_k10_ef100_n5000_d768", |b| {
         b.iter(|| idx.search(black_box(&query), 10, 100))
@@ -176,6 +196,7 @@ criterion_group!(
     bench_nf4_throughput,
     bench_hnsw_search,
     bench_int8_hnsw_search,
+    bench_nf4_hnsw_search,
     bench_ivf_search,
     bench_ivfpq_search,
     bench_sq2_decode,
