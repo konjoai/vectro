@@ -10,6 +10,63 @@ glibc malloc, `target-cpu=x86-64-v3`, `--release` (fat LTO, codegen-units=1).
 
 ---
 
+## ❌ SQ2 / SQ3 stored norms — no measurable win (not shipped)
+
+**Opportunity:** `sq2_dot_norm` / `sq3_dot_norm` compute the query-independent
+`norm_sq = Σ dv²` on every candidate. Store `norm` at encode time and run a
+dot-only kernel (drop one FMA chain + one horizontal reduction per candidate).
+Estimated ~30–45%.
+
+**Benchmark** (isolated microbench, SQ2 AVX2 kernel, 4096 codes/iter, best of
+repeated runs):
+
+| d | dot+norm | dot-only | speedup |
+|---|----------|----------|---------|
+| 96 | 15.8 ns | 15.9 ns | 1.00× |
+| 128 | 21.1 ns | 22.0 ns | 0.98× |
+| 256 | 39.6 ns | 39.7 ns | 1.00× |
+| 768 | 121 ns | 121 ns | 1.00× |
+| 1024 | 161 ns | 160 ns | 1.00× |
+
+Flat — within run-to-run noise at every dim.
+
+**Why it didn't work:** the kernel is bound by the **code-unpack** path
+(`_mm256_srlv_epi32` + mask + `cvtepi32_ps` + the affine `(2·code−3)·¼·scale`
+sequence), not by FMA throughput. The norm accumulator `fmadd(dv, dv, nrm)` runs
+on the second FMA port in parallel with the dot `fmadd(dv, q, dot)` — there is
+spare FMA issue width, so the norm is effectively free and removing it saves
+nothing. SQ3's unpack is heavier still, so the same conclusion holds. Avoided
+the serde-migration cost (an additive `norm` field) for zero gain.
+
+**When to revisit:** only worthwhile if the unpack itself is first made cheaper
+(e.g. a `pshufb`-based 2-bit→f32 LUT replacing the `srlv`+affine chain); then the
+norm FMA would become a relatively larger share and stored norms might pay off.
+
+---
+
+## ❌ Shared f32 `dot_f32` / `l2_sq` micro-tuning — no measurable win (not shipped)
+
+**Opportunity:** the AVX2 f32 kernels (`index/simd.rs`) use `_mm_hadd_ps` ×2 for
+the final horizontal reduction and 4 `f32x8` accumulators. Try the
+`movehl`/`shuffle` add ladder instead of `hadd`, and 6 / 8 accumulators (the
+NEON sibling uses 8).
+
+**Benchmark** (isolated microbench, 4096 vector pairs, two runs):
+
+| d | 4·hadd | 4·shuf | 6·shuf | 8·shuf |
+|---|--------|--------|--------|--------|
+| 128 | 3.49 G/s | 3.49 G/s | 3.41 G/s | 3.37 G/s |
+| 768 | 3.08–3.41 G/s | 3.09–3.39 G/s | 3.10–3.40 G/s | 3.11–3.38 G/s |
+
+All variants within ±2–3% run-to-run noise; run 2 reversed run 1's ordering.
+
+**Why it didn't work:** the kernel is **load-port-bound** (2 loads per FMA,
+2 load ports on this Xeon → ~1 FMA/cycle ceiling), so neither the reduction
+style (amortised over `d/8` FMAs) nor more accumulators move the needle. Confirms
+the prior campaign's "AVX2 4-accumulator is right here" conclusion.
+
+---
+
 ## ❌ HNSW per-query thread-local scratch heaps — no measurable win (reverted)
 
 **Opportunity (was P1 #1):** `search_layer_impl` constructs two `BinaryHeap`s per
