@@ -106,6 +106,126 @@ impl Int8Vector {
 
         raw * (self.scale / 127.0)
     }
+
+    /// Weighted dot product against a [`Int8Query`] prepared once per search.
+    ///
+    /// On AVX-512-VNNI hosts (`avx512vnni`) this is a pure-integer `vpdpbusd`
+    /// dot product — the stored i8 codes are XOR-flipped to u8 in-register and
+    /// the `128·Σq` bias is a per-query constant — which avoids the per-call
+    /// i8→i32→f32 widening of [`Int8Vector::dot_query`]. On every other host it
+    /// falls back to the exact f32 path, so the non-VNNI result is byte-for-byte
+    /// identical to `dot_query`. Integer accumulation is exact (FP32 only enters
+    /// at the final scale multiply), satisfying the FP32-accumulation rule.
+    #[inline]
+    pub fn dot_query_prepared(&self, q: &Int8Query) -> f32 {
+        #[cfg(target_arch = "x86_64")]
+        if q.use_vnni {
+            // SAFETY: `use_vnni` is only set when `avx512vnni` (+f/bw) were
+            // runtime-detected in `Int8Query::prepare`; the kernel reads
+            // `min(codes, qi8)` lanes.
+            let raw = unsafe { dot_i8_vnni(&self.codes, &q.qi8) };
+            // raw = Σ (codes+128)·qi8 = Σ codes·qi8 + 128·Σqi8
+            let dot_int = raw - 128 * q.q_sum;
+            return (dot_int as f32) * q.qscale_over_127 * (self.scale / 127.0);
+        }
+        self.dot_query(&q.q_f32)
+    }
+}
+
+/// A query prepared once per beam search for INT8 asymmetric distance.
+///
+/// Carries both the original f32 query (the exact fallback path) and a
+/// once-quantised i8 form with its scale and code-sum bias for the VNNI integer
+/// dot. Quantising the query once amortises across the hundreds–thousands of
+/// candidate distance evaluations in a single search.
+#[derive(Debug, Clone)]
+pub struct Int8Query {
+    /// Original f32 query — used on non-VNNI hosts for an exact result.
+    q_f32: Vec<f32>,
+    /// Query quantised to i8 with `qscale` (VNNI operand).
+    qi8: Vec<i8>,
+    /// `qscale / 127` — dequantises the integer dot back to the f32 scale.
+    qscale_over_127: f32,
+    /// `Σ qi8` — the per-query half of the u8-offset bias correction.
+    q_sum: i32,
+    /// Whether the VNNI integer path is active on this host + dimension.
+    use_vnni: bool,
+}
+
+impl Int8Query {
+    /// Quantise `query` once for the duration of a search.
+    pub fn prepare(query: &[f32]) -> Self {
+        let qscale = query.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+        let qscale = if qscale == 0.0 { 1.0 } else { qscale };
+        let inv = 127.0 / qscale;
+        let qi8: Vec<i8> =
+            query.iter().map(|x| (x * inv).round().clamp(-127.0, 127.0) as i8).collect();
+        let q_sum: i32 = qi8.iter().map(|&x| x as i32).sum();
+        // VNNI wins for d ≥ 128 (below that the per-call setup outweighs the
+        // integer-pipe gain — measured ~0.9× at d=96, ~1.7–2.3× at d≥128).
+        #[cfg(target_arch = "x86_64")]
+        let use_vnni = query.len() >= 128
+            && is_x86_feature_detected!("avx512vnni")
+            && is_x86_feature_detected!("avx512bw");
+        #[cfg(not(target_arch = "x86_64"))]
+        let use_vnni = false;
+        Self { q_f32: query.to_vec(), qi8, qscale_over_127: qscale / 127.0, q_sum, use_vnni }
+    }
+}
+
+/// AVX-512-VNNI integer dot: `Σ (codes[i] + 128) · qi8[i]`.
+///
+/// Loads 64 i8 codes per `vpdpbusd`, XOR-flipping the sign bit in-register to
+/// turn each i8 code into its `+128` u8 representation (the unsigned operand
+/// `vpdpbusd` requires). The `128·Σqi8` half of the bias is corrected by the
+/// caller (it is query-independent across candidates). Four i32 accumulators
+/// (256 codes/iter) break the `vpdpbusd` latency chain; a 64-wide cleanup and a
+/// scalar tail handle the remainder.
+///
+/// # Safety
+/// Requires AVX-512-VNNI + AVX-512BW + AVX-512F (the caller runtime-detects via
+/// `Int8Query::use_vnni`). Reads only `min(codes, qi8)` lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512vnni,avx512bw,avx512f")]
+unsafe fn dot_i8_vnni(codes: &[i8], qi8: &[i8]) -> i32 {
+    use std::arch::x86_64::*;
+
+    let n = codes.len().min(qi8.len());
+    let cptr = codes.as_ptr();
+    let qptr = qi8.as_ptr();
+    let flip = _mm512_set1_epi8(0x80u8 as i8);
+
+    let mut acc0 = _mm512_setzero_si512();
+    let mut acc1 = _mm512_setzero_si512();
+    let mut acc2 = _mm512_setzero_si512();
+    let mut acc3 = _mm512_setzero_si512();
+    let chunks = n / 256;
+    for i in 0..chunks {
+        let o = i * 256;
+        let c0 = _mm512_xor_si512(_mm512_loadu_si512(cptr.add(o) as *const __m512i), flip);
+        let c1 = _mm512_xor_si512(_mm512_loadu_si512(cptr.add(o + 64) as *const __m512i), flip);
+        let c2 = _mm512_xor_si512(_mm512_loadu_si512(cptr.add(o + 128) as *const __m512i), flip);
+        let c3 = _mm512_xor_si512(_mm512_loadu_si512(cptr.add(o + 192) as *const __m512i), flip);
+        acc0 = _mm512_dpbusd_epi32(acc0, c0, _mm512_loadu_si512(qptr.add(o) as *const __m512i));
+        acc1 =
+            _mm512_dpbusd_epi32(acc1, c1, _mm512_loadu_si512(qptr.add(o + 64) as *const __m512i));
+        acc2 =
+            _mm512_dpbusd_epi32(acc2, c2, _mm512_loadu_si512(qptr.add(o + 128) as *const __m512i));
+        acc3 =
+            _mm512_dpbusd_epi32(acc3, c3, _mm512_loadu_si512(qptr.add(o + 192) as *const __m512i));
+    }
+    let mut o = chunks * 256;
+    while o + 64 <= n {
+        let c = _mm512_xor_si512(_mm512_loadu_si512(cptr.add(o) as *const __m512i), flip);
+        acc0 = _mm512_dpbusd_epi32(acc0, c, _mm512_loadu_si512(qptr.add(o) as *const __m512i));
+        o += 64;
+    }
+    let acc = _mm512_add_epi32(_mm512_add_epi32(acc0, acc1), _mm512_add_epi32(acc2, acc3));
+    let mut total = _mm512_reduce_add_epi32(acc);
+    for i in o..n {
+        total += ((codes[i] as i32) + 128) * (qi8[i] as i32);
+    }
+    total
 }
 
 /// NEON i8×f32 dot product: `Σ codes[i] as f32 * query[i]`.
@@ -1488,6 +1608,35 @@ mod tests {
             let want: f32 =
                 enc.codes.iter().zip(q.iter()).map(|(&c, &qv)| c as f32 * qv).sum::<f32>() * factor;
             assert!((got - want).abs() < 1e-3, "d={d}: got={got} want={want}");
+        }
+    }
+
+    /// The VNNI prepared-query path must match the f32 `dot_query` within
+    /// quantisation tolerance — the query is now itself quantised to i8, so the
+    /// extra error is ~1 query LSB on top of the existing code quantisation.
+    #[test]
+    fn dot_query_prepared_matches_dot_query() {
+        for d in [1usize, 64, 96, 127, 128, 129, 256, 384, 768, 1000] {
+            // Unit-normalised vectors, as the HNSW search guarantees.
+            let mk = |seed: f32| -> Vec<f32> {
+                let raw: Vec<f32> =
+                    (0..d).map(|i| ((i as f32 * 0.013 + seed) - 0.5).sin()).collect();
+                let n: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
+                raw.iter().map(|x| x / n).collect()
+            };
+            let v = mk(0.1);
+            let q = mk(0.7);
+            let enc = Int8Vector::encode_fast(&v);
+            let prepared = Int8Query::prepare(&q);
+            let got = enc.dot_query_prepared(&prepared);
+            let want = enc.dot_query(&q);
+            // Query quantisation adds ~1/127 relative error per dim; the dot is a
+            // sum of unit-scale terms, so an absolute tolerance tied to dim holds.
+            assert!(
+                (got - want).abs() < 5e-3,
+                "d={d}: prepared={got} dot_query={want} use_vnni={}",
+                prepared.use_vnni
+            );
         }
     }
 
