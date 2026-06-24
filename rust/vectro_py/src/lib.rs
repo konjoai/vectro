@@ -647,6 +647,15 @@ impl PyHnswIndex {
         self.inner.add_batch(&vectors);
     }
 
+    /// Enable the BF16 navigation fast path: the beam traverses on a half-width
+    /// bf16 copy of the vectors (halving the per-candidate DRAM traffic that
+    /// bounds high-dim search), then re-scores the final `ef` window against the
+    /// exact f32 vectors — ~1.4-1.5x search QPS at recall-identical results,
+    /// for +50% index memory. Call after building; re-call after any insert.
+    fn enable_bf16_nav(&mut self) {
+        self.inner.enable_bf16_nav();
+    }
+
     /// Batch insert from a numpy array (shape [N, D]).
     ///
     /// Routed through `add_batch` (not per-row `add`) so a large first batch

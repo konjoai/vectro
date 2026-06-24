@@ -20,7 +20,7 @@ use simsimd::{bf16 as SimBf16, SpatialSimilarity};
 /// AVX2 path is bit-identical to the scalar reference. AVX2+FMA on x86_64
 /// (runtime-detected), scalar fallback otherwise.
 #[inline]
-fn bf16_dot_norm(packed: &[u16], query: &[f32], n: usize) -> (f32, f32) {
+pub(crate) fn bf16_dot_norm(packed: &[u16], query: &[f32], n: usize) -> (f32, f32) {
     #[cfg(target_arch = "x86_64")]
     {
         // AVX-512 doubles the widen width (256-bit u16 load → 16 lanes). Unlike
@@ -142,6 +142,14 @@ pub struct Bf16Vector {
     pub packed: Vec<u16>,
     /// Original vector dimension.
     pub dim: usize,
+}
+
+/// Append the BF16 (round-to-nearest, ties-even) packing of `v` to `out` — the
+/// flat-buffer builder for the HNSW bf16 navigation store. Matches
+/// [`Bf16Vector::encode`]'s rounding exactly so nav distances line up with the
+/// standalone bf16 codec.
+pub(crate) fn encode_bf16_flat(v: &[f32], out: &mut Vec<u16>) {
+    out.extend(v.iter().map(|&x| SimBf16::from_f32(x).0));
 }
 
 impl Bf16Vector {
