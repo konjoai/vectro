@@ -28,6 +28,121 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Asymmetric `(dot, norm_sq)` of an SQ3-packed stored vector vs an f32 query.
+/// Like SQ2 the dequant is **affine** — `dv = scale·(2·code−7)/8` — so no LUT is
+/// needed. The AVX2 path unpacks 8 codes/iter: 8 × 3-bit codes span exactly 24
+/// bits, so one little-endian `u32` load + a per-lane variable shift extracts
+/// them all (no byte-straddle branch). Scalar fallback otherwise.
+#[inline]
+fn sq3_dot_norm(packed: &[u8], query: &[f32], n: usize, scale: f32) -> (f32, f32) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            // SAFETY: gated by the runtime detection above; reads in-bounds lanes.
+            return unsafe { sq3_dot_norm_avx2(packed, query, n, scale) };
+        }
+    }
+    sq3_dot_norm_scalar(packed, query, n, scale)
+}
+
+/// Scalar reference for [`sq3_dot_norm`] (the original byte-straddle unpack).
+#[inline]
+fn sq3_dot_norm_scalar(packed: &[u8], query: &[f32], n: usize, scale: f32) -> (f32, f32) {
+    let mut dot = 0.0f32;
+    let mut norm_sq = 0.0f32;
+    for (i, &q) in query.iter().enumerate().take(n) {
+        let bit_pos = i * 3;
+        let byte_idx = bit_pos / 8;
+        let bit_shift = bit_pos % 8;
+        let code = if bit_shift <= 5 {
+            (packed[byte_idx] >> bit_shift) & 0x7
+        } else {
+            let lo = packed[byte_idx] >> bit_shift;
+            let hi = packed[byte_idx + 1] << (8 - bit_shift);
+            (lo | hi) & 0x7
+        };
+        let dv = scale * ((2 * code as i32 - 7) as f32 / 8.0);
+        dot += dv * q;
+        norm_sq += dv * dv;
+    }
+    (dot, norm_sq)
+}
+
+/// AVX2 kernel for [`sq3_dot_norm`]. Each group of 8 dims occupies 3 bytes (24
+/// bits) starting at byte `g*3`; a `u32` load (needs `g*3 + 4 <= len`, the 4th
+/// byte's bits are masked off) plus `srlv` by `[0,3,…,21]` & `7` yields all 8
+/// codes. Affine dequant `dv = scale·(2·code−7)·⅛`, two FMA chains. Groups
+/// without a 4th readable byte fall to the scalar tail.
+///
+/// # Safety
+/// Requires AVX2 + FMA (the caller runtime-detects). Reads only in-bounds lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn sq3_dot_norm_avx2(packed: &[u8], query: &[f32], n: usize, scale: f32) -> (f32, f32) {
+    use std::arch::x86_64::*;
+    let shifts = _mm256_setr_epi32(0, 3, 6, 9, 12, 15, 18, 21);
+    let mask = _mm256_set1_epi32(0x7);
+    let scale_v = _mm256_set1_ps(scale);
+    let seven = _mm256_set1_ps(7.0);
+    let eighth = _mm256_set1_ps(0.125);
+    let mut dot = _mm256_setzero_ps();
+    let mut nrm = _mm256_setzero_ps();
+    let qp = query.as_ptr();
+    // Number of 8-dim groups whose 3 code bytes + 1 load-slack byte are in range.
+    let max_groups = if packed.len() >= 4 { (packed.len() - 4) / 3 + 1 } else { 0 };
+    let full = (n / 8).min(max_groups);
+    for g in 0..full {
+        let base = g * 3;
+        let word = u32::from_le_bytes([
+            *packed.get_unchecked(base),
+            *packed.get_unchecked(base + 1),
+            *packed.get_unchecked(base + 2),
+            *packed.get_unchecked(base + 3),
+        ]) as i32;
+        let codes = _mm256_and_si256(_mm256_srlv_epi32(_mm256_set1_epi32(word), shifts), mask);
+        let code_f = _mm256_cvtepi32_ps(codes);
+        // dv = scale · ((2·code − 7) · ⅛)
+        let two_code = _mm256_add_ps(code_f, code_f);
+        let dv = _mm256_mul_ps(scale_v, _mm256_mul_ps(_mm256_sub_ps(two_code, seven), eighth));
+        let q8 = _mm256_loadu_ps(qp.add(g * 8));
+        dot = _mm256_fmadd_ps(dv, q8, dot);
+        nrm = _mm256_fmadd_ps(dv, dv, nrm);
+    }
+    let (mut d, mut nm) = (hsum256(dot), hsum256(nrm));
+    for i in full * 8..n {
+        let bit_pos = i * 3;
+        let byte_idx = bit_pos / 8;
+        let bit_shift = bit_pos % 8;
+        let code = if bit_shift <= 5 {
+            (*packed.get_unchecked(byte_idx) >> bit_shift) & 0x7
+        } else {
+            let lo = *packed.get_unchecked(byte_idx) >> bit_shift;
+            let hi = *packed.get_unchecked(byte_idx + 1) << (8 - bit_shift);
+            (lo | hi) & 0x7
+        };
+        let dv = scale * ((2 * code as i32 - 7) as f32 / 8.0);
+        d += dv * *query.get_unchecked(i);
+        nm += dv * dv;
+    }
+    (d, nm)
+}
+
+/// Horizontal sum of an `f32x8`.
+///
+/// # Safety
+/// Requires AVX (caller is AVX2-gated).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hsum256(v: std::arch::x86_64::__m256) -> f32 {
+    use std::arch::x86_64::*;
+    let lo = _mm256_castps256_ps128(v);
+    let hi = _mm256_extractf128_ps::<1>(v);
+    let mut s = _mm_add_ps(lo, hi);
+    s = _mm_hadd_ps(s, s);
+    s = _mm_hadd_ps(s, s);
+    _mm_cvtss_f32(s)
+}
+
 /// One 3-bit-quantized vector.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Sq3Vector {
@@ -75,23 +190,8 @@ impl Sq3Vector {
     /// `cosine_dist_f32(&self.decode(), query)`.
     #[inline]
     pub fn cosine_dist_to_query(&self, query: &[f32]) -> f32 {
-        let mut dot = 0.0f32;
-        let mut norm_sq = 0.0f32;
-        for (i, &q) in query.iter().enumerate().take(self.dim) {
-            let bit_pos = i * 3;
-            let byte_idx = bit_pos / 8;
-            let bit_shift = bit_pos % 8;
-            let code = if bit_shift <= 5 {
-                (self.packed[byte_idx] >> bit_shift) & 0x7
-            } else {
-                let lo = self.packed[byte_idx] >> bit_shift;
-                let hi = self.packed[byte_idx + 1] << (8 - bit_shift);
-                (lo | hi) & 0x7
-            };
-            let dv = self.scale * ((2 * code as i32 - 7) as f32 / 8.0);
-            dot += dv * q;
-            norm_sq += dv * dv;
-        }
+        let n = self.dim.min(query.len());
+        let (dot, norm_sq) = sq3_dot_norm(&self.packed, query, n, self.scale);
         let norm = norm_sq.sqrt();
         if norm < 1e-8 {
             return 1.0;

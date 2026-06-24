@@ -24,6 +24,94 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Asymmetric `(dot, norm_sq)` of an SQ2-packed stored vector vs an f32 query.
+/// The dequantised value is **affine in the code** — `dv = scale·(2·code−3)/4` —
+/// so no lookup table is needed: unpack the 2-bit code to a float and apply the
+/// affine map. AVX2+FMA on x86_64 (runtime-detected), scalar fallback otherwise.
+#[inline]
+fn sq2_dot_norm(packed: &[u8], query: &[f32], n: usize, scale: f32) -> (f32, f32) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            // SAFETY: gated by the runtime detection above; reads in-bounds lanes.
+            return unsafe { sq2_dot_norm_avx2(packed, query, n, scale) };
+        }
+    }
+    sq2_dot_norm_scalar(packed, query, n, scale)
+}
+
+/// Scalar reference for [`sq2_dot_norm`].
+#[inline]
+fn sq2_dot_norm_scalar(packed: &[u8], query: &[f32], n: usize, scale: f32) -> (f32, f32) {
+    let mut dot = 0.0f32;
+    let mut norm_sq = 0.0f32;
+    for (i, &q) in query.iter().enumerate().take(n) {
+        let code = (packed[i / 4] >> ((i % 4) * 2)) & 0b11;
+        let dv = scale * ((2 * code as i32 - 3) as f32 / 4.0);
+        dot += dv * q;
+        norm_sq += dv * dv;
+    }
+    (dot, norm_sq)
+}
+
+/// AVX2 kernel for [`sq2_dot_norm`]. Unpacks 8 codes/iter (2 bytes) via per-lane
+/// variable shift, applies the affine dequant `dv = scale·(2·code−3)·¼`, and
+/// accumulates dot and squared-norm with two FMA chains.
+///
+/// # Safety
+/// Requires AVX2 + FMA (the caller runtime-detects). Reads only `min(dim, query)` lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn sq2_dot_norm_avx2(packed: &[u8], query: &[f32], n: usize, scale: f32) -> (f32, f32) {
+    use std::arch::x86_64::*;
+    let full = n / 8;
+    let shifts = _mm256_setr_epi32(0, 2, 4, 6, 0, 2, 4, 6);
+    let mask = _mm256_set1_epi32(0b11);
+    let scale_v = _mm256_set1_ps(scale);
+    let three = _mm256_set1_ps(3.0);
+    let quarter = _mm256_set1_ps(0.25);
+    let mut dot = _mm256_setzero_ps();
+    let mut nrm = _mm256_setzero_ps();
+    let qp = query.as_ptr();
+    for g in 0..full {
+        let b0 = *packed.get_unchecked(g * 2) as i32;
+        let b1 = *packed.get_unchecked(g * 2 + 1) as i32;
+        let bytes = _mm256_setr_epi32(b0, b0, b0, b0, b1, b1, b1, b1);
+        let codes = _mm256_and_si256(_mm256_srlv_epi32(bytes, shifts), mask);
+        let code_f = _mm256_cvtepi32_ps(codes);
+        // dv = scale · ((2·code − 3) · ¼)
+        let two_code = _mm256_add_ps(code_f, code_f);
+        let dv = _mm256_mul_ps(scale_v, _mm256_mul_ps(_mm256_sub_ps(two_code, three), quarter));
+        let q8 = _mm256_loadu_ps(qp.add(g * 8));
+        dot = _mm256_fmadd_ps(dv, q8, dot);
+        nrm = _mm256_fmadd_ps(dv, dv, nrm);
+    }
+    let (mut d, mut nm) = (hsum256(dot), hsum256(nrm));
+    for i in full * 8..n {
+        let code = (*packed.get_unchecked(i / 4) >> ((i % 4) * 2)) & 0b11;
+        let dv = scale * ((2 * code as i32 - 3) as f32 / 4.0);
+        d += dv * *query.get_unchecked(i);
+        nm += dv * dv;
+    }
+    (d, nm)
+}
+
+/// Horizontal sum of an `f32x8`.
+///
+/// # Safety
+/// Requires AVX (caller is AVX2-gated).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hsum256(v: std::arch::x86_64::__m256) -> f32 {
+    use std::arch::x86_64::*;
+    let lo = _mm256_castps256_ps128(v);
+    let hi = _mm256_extractf128_ps::<1>(v);
+    let mut s = _mm_add_ps(lo, hi);
+    s = _mm_hadd_ps(s, s);
+    s = _mm_hadd_ps(s, s);
+    _mm_cvtss_f32(s)
+}
+
 /// One 2-bit-quantized vector.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Sq2Vector {
@@ -62,14 +150,8 @@ impl Sq2Vector {
     /// `cosine_dist_f32(&self.decode(), query)`.
     #[inline]
     pub fn cosine_dist_to_query(&self, query: &[f32]) -> f32 {
-        let mut dot = 0.0f32;
-        let mut norm_sq = 0.0f32;
-        for (i, &q) in query.iter().enumerate().take(self.dim) {
-            let code = (self.packed[i / 4] >> ((i % 4) * 2)) & 0b11;
-            let dv = self.scale * ((2 * code as i32 - 3) as f32 / 4.0);
-            dot += dv * q;
-            norm_sq += dv * dv;
-        }
+        let n = self.dim.min(query.len());
+        let (dot, norm_sq) = sq2_dot_norm(&self.packed, query, n, self.scale);
         let norm = norm_sq.sqrt();
         if norm < 1e-8 {
             return 1.0;
