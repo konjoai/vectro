@@ -49,7 +49,7 @@ fn top_probe_from_sims(sims: &[f32], n_probe: usize) -> Vec<usize> {
 
 /// Cosine distance (1 − cosine similarity) using SimSIMD.
 #[inline]
-fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
     // Unit-norm vectors → cosine distance is 1 − dot. The shared SIMD kernel
     // avoids SimSIMD's per-call dispatch, which dominated the coarse-quantiser
     // scan (called over every centroid, per query) and k-means assignment.
@@ -115,8 +115,9 @@ fn kmeans_pp_init(data: &[Vec<f32>], k: usize, d: usize, seed: u64) -> Vec<f32> 
 
 /// Lloyd's k-means over `data` (unit-norm vectors, cosine distance).
 ///
-/// Returns centroids as a flat `[k * d]` slice.
-fn kmeans_lloyd(
+/// Returns centroids as a flat `[k * d]` slice. `pub(crate)` so the coarse
+/// quantiser is shared with [`super::pq4`]'s IVF-PQ4 fast-scan index.
+pub(crate) fn kmeans_lloyd(
     data: &[Vec<f32>],
     k: usize,
     d: usize,
@@ -382,9 +383,7 @@ impl IvfPqIndex {
                     continue;
                 }
                 let codes = self.code_row(gid);
-                let adc_dist: f32 = (0..m)
-                    .map(|mi| dist_table[mi * kc + codes[mi] as usize])
-                    .sum();
+                let adc_dist = crate::quant::pq::adc_distance(&dist_table, codes, m, kc);
                 candidates.push((adc_dist, gid));
             }
         }
@@ -501,10 +500,10 @@ impl IvfPqIndex {
             .zip(ground_truth.iter())
             .map(|(q, gt)| {
                 let results = self.search_with_probe(q, k, n_probe);
-                let found = results
-                    .iter()
-                    .filter(|(id, _)| gt.contains(id))
-                    .count();
+                // Hash the ground-truth ids once (O(k)) rather than a linear
+                // `gt.contains` per result (O(k²) per query).
+                let gt_set: std::collections::HashSet<usize> = gt.iter().copied().collect();
+                let found = results.iter().filter(|(id, _)| gt_set.contains(id)).count();
                 found as f32 / gt.len() as f32
             })
             .sum();
@@ -771,7 +770,7 @@ mod tests {
             let mut all: Vec<(f32, usize)> = (0..data.len())
                 .map(|gid| {
                     let codes = idx.code_row(gid);
-                    let d: f32 = (0..m).map(|mi| table[mi * kc + codes[mi] as usize]).sum();
+                    let d = crate::quant::pq::adc_distance(&table, codes, m, kc);
                     (d, gid)
                 })
                 .collect();

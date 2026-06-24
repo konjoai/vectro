@@ -21,6 +21,89 @@ use simsimd::BinarySimilarity;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
+/// Signed dot `Σ s_i·query_i` where `s_i = +1` if packed bit `i` is set else
+/// `−1` — the unnormalised core of the binary asymmetric cosine distance.
+///
+/// AVX2 sign-flip kernel on x86_64 (runtime-detected), scalar fallback
+/// otherwise. The SIMD path expands 8 packed bits to per-lane masks and flips
+/// the sign of each `query` lane whose bit is clear (`q XOR signbit`), then
+/// accumulates — 8 dims/iter with no per-element branch.
+#[inline]
+fn signed_dot(packed: &[u8], query: &[f32], n: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            // SAFETY: gated by the runtime detection above; reads in-bounds lanes.
+            return unsafe { signed_dot_avx2(packed, query, n) };
+        }
+    }
+    signed_dot_scalar(packed, query, n)
+}
+
+/// Scalar reference for [`signed_dot`] — byte-major, branchless
+/// (`sign = 2*bit − 1`). The correctness baseline the SIMD kernel must match.
+#[inline]
+fn signed_dot_scalar(packed: &[u8], query: &[f32], n: usize) -> f32 {
+    let full = n / 8;
+    let mut dot = 0.0f32;
+    for (b, &byte) in packed.iter().take(full).enumerate() {
+        let base = b * 8;
+        for k in 0..8 {
+            let sign = (((byte >> k) & 1) as f32) * 2.0 - 1.0;
+            dot += sign * query[base + k];
+        }
+    }
+    // Tail (<8 elements): needs both the packed-bit index and query[i].
+    #[allow(clippy::needless_range_loop)]
+    for i in full * 8..n {
+        let sign = (((packed[i / 8] >> (i % 8)) & 1) as f32) * 2.0 - 1.0;
+        dot += sign * query[i];
+    }
+    dot
+}
+
+/// AVX2 sign-flip kernel for [`signed_dot`]. Processes one packed byte (8 dims)
+/// per iteration: broadcast the byte, AND with per-lane bit selectors, compare
+/// to build a set-mask, then XOR the query lanes whose bit is *clear* with the
+/// sign bit (negating them) before accumulating.
+///
+/// # Safety
+/// Requires AVX2 (the caller runtime-detects). Reads only `min(dim, query)` lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn signed_dot_avx2(packed: &[u8], query: &[f32], n: usize) -> f32 {
+    let full = n / 8;
+    // LSB-first bit selectors: lane l tests bit l of the byte (dim base+l).
+    let bits = _mm256_setr_epi32(1, 2, 4, 8, 16, 32, 64, 128);
+    let signbit = _mm256_set1_epi32(i32::MIN); // 0x8000_0000
+    let mut acc = _mm256_setzero_ps();
+    let qp = query.as_ptr();
+    for b in 0..full {
+        let byte = *packed.get_unchecked(b) as i32;
+        let bcast = _mm256_set1_epi32(byte);
+        let sel = _mm256_and_si256(bcast, bits);
+        // 0xFFFF_FFFF in lanes whose bit is set, 0 elsewhere.
+        let setmask = _mm256_cmpeq_epi32(sel, bits);
+        // sign bit only in lanes whose bit is *clear* → those query lanes negate.
+        let flip = _mm256_andnot_si256(setmask, signbit);
+        let q8 = _mm256_loadu_ps(qp.add(b * 8));
+        let signed = _mm256_xor_ps(q8, _mm256_castsi256_ps(flip));
+        acc = _mm256_add_ps(acc, signed);
+    }
+    // Horizontal sum of the 8 lanes.
+    let lo = _mm256_castps256_ps128(acc);
+    let hi = _mm256_extractf128_ps::<1>(acc);
+    let mut s = _mm_add_ps(lo, hi);
+    s = _mm_hadd_ps(s, s);
+    s = _mm_hadd_ps(s, s);
+    let mut dot = _mm_cvtss_f32(s);
+    for i in full * 8..n {
+        let sign = (((*packed.get_unchecked(i / 8) >> (i % 8)) & 1) as f32) * 2.0 - 1.0;
+        dot += sign * *query.get_unchecked(i);
+    }
+    dot
+}
+
 /// One binary-quantized vector (packed bits, original dimension stored).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinaryVector {
@@ -104,26 +187,7 @@ impl BinaryVector {
     #[inline]
     pub fn cosine_dist_to_query(&self, query: &[f32]) -> f32 {
         let n = self.dim.min(query.len());
-        let full = n / 8;
-        let mut dot = 0.0f32;
-        // Byte-major, branchless: each bit selects +q (bit=1) or -q (bit=0) via
-        // `sign = 2*bit - 1`. Hoisting the byte load out of the 8-bit inner
-        // body removes the per-element `i/8`,`i%8` and the data-dependent branch
-        // the old loop carried — both blockers to autovectorization.
-        for b in 0..full {
-            let byte = self.packed[b];
-            let base = b * 8;
-            for k in 0..8 {
-                let sign = (((byte >> k) & 1) as f32) * 2.0 - 1.0;
-                dot += sign * query[base + k];
-            }
-        }
-        // Tail (<8 elements): needs both the packed-bit index and query[i].
-        #[allow(clippy::needless_range_loop)]
-        for i in full * 8..n {
-            let sign = (((self.packed[i / 8] >> (i % 8)) & 1) as f32) * 2.0 - 1.0;
-            dot += sign * query[i];
-        }
+        let dot = signed_dot(&self.packed, query, n);
         let norm = (self.dim as f32).sqrt();
         if norm < 1e-8 {
             return 1.0;

@@ -49,3 +49,46 @@ arena contention is real, eliminating per-query allocations could measurably cut
 tail latency. Not reproducible on a 4-core host, so reverted to keep the code
 elegant (no machinery without a measured payoff). Revisit with many-core hardware
 and a tail-latency (p99) metric rather than mean throughput.
+
+---
+
+## ❌ AVX-512 f32 distance kernels — slower than AVX2 on this CPU (removed)
+
+**Opportunity:** the shared distance kernels (`index/simd.rs` `dot_f32` / `l2_sq`)
+use AVX2 (256-bit). This host has AVX-512F, so a 512-bit kernel "should" be faster
+by doubling the lane width.
+
+**Implementation:** added `dot_f32_avx512` / `l2_sq_avx512` (four `f32x16`
+accumulators, 64 lanes/iter, `_mm512_reduce_add_ps`) gated behind
+`is_x86_feature_detected!("avx512f")`, preferred over the AVX2 path.
+
+**Benchmark** (isolated microbench, best of repeated runs, this 4-core Xeon):
+
+| d | AVX2 | AVX-512 | 512 / 256 |
+|---|------|---------|-----------|
+| 64 | 220 M/s | 168 M/s | 0.76× |
+| 96 | 165 M/s | 177 M/s | 1.07× |
+| 128 | 143 M/s | 125 M/s | 0.87× |
+| 256 | 80 M/s | 92 M/s | 1.16× |
+| 384 | 53 M/s | 45 M/s | 0.85× |
+| 768 | 27 M/s | 25 M/s | 0.92× |
+| 1024 | 20 M/s | 18 M/s | 0.91× |
+
+AVX-512 is **slower at almost every dimension**, including the d=768 embedding
+regime (0.92×). Only d=96 / d=256 saw a marginal win.
+
+**Why it didn't work:** this class of Xeon implements AVX-512 on double-pumped
+256-bit execution units, so 512-bit ops carry no throughput advantage, while the
+wider `_mm512_reduce_add_ps` horizontal reduction and AVX-512 frequency licensing
+cost more. The net is a regression.
+
+**Resolution:** removed both AVX-512 kernels; AVX2 is the fastest portable x86
+width here. An in-code comment in `index/simd.rs` (shipped in PR #73) records the
+measurement so the 512-bit path is not re-added on spec. This also explained an
+earlier end-to-end "IVF regressed" blip that was in fact bench noise, not a real
+SimSIMD-AVX512 edge — confirmed by the high run-to-run variance on this shared host.
+
+**When to revisit:** native-512-bit microarchitectures (Intel server P-cores with
+a full 512-bit FMA — Skylake-SP / Ice Lake-SP / Sapphire Rapids) may flip the
+result. Re-benchmark before re-enabling, and gate on a CPU-family check, not just
+the `avx512f` feature bit.
