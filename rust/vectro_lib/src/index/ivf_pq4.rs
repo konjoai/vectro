@@ -203,6 +203,30 @@ impl IvfPq4Index {
         results
     }
 
+    /// Test-only single-threaded coarse-vs-scan timing breakdown (seconds).
+    #[cfg(test)]
+    pub(crate) fn timed_batch(&self, flat: &[f32], dim: usize, k: usize, n_probe: usize) -> (f64, f64) {
+        use std::time::Instant;
+        let q = flat.len() / dim;
+        let cmat = ArrayView2::from_shape((self.n_lists, dim), &self.coarse_centroids).unwrap();
+        let probe = n_probe.min(self.n_lists);
+        let (mut coarse, mut scan_t) = (0.0f64, 0.0f64);
+        for i in 0..q {
+            let row = &flat[i * dim..(i + 1) * dim];
+            let inv = 1.0 / row.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+            let qn: Vec<f32> = row.iter().map(|&x| x * inv).collect();
+            let t = Instant::now();
+            let qv = ArrayView2::from_shape((1, dim), &qn).unwrap();
+            let sims = qv.dot(&cmat.t());
+            let pl = top_probe_from_sims(sims.row(0).as_slice().unwrap(), probe);
+            coarse += t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            std::hint::black_box(self.scan_probed(&qn, &pl, k));
+            scan_t += t.elapsed().as_secs_f64();
+        }
+        (coarse, scan_t)
+    }
+
     /// PQ4 fast-scan over the chosen `probe_lists` for an already-normalised
     /// query, returning the top-`k` `(gid, dist)`. Shared by the single-query and
     /// batched search paths.
@@ -309,6 +333,7 @@ mod tests {
     #[ignore]
     fn ivf_pq4_batch_timing() {
         use std::time::Instant;
+        // faiss-IVF-PQ compressed_ann config: n_lists=1024, n_probe=32, m=64.
         let (n, d, n_lists, n_probe) = (200_000usize, 768usize, 2048usize, 32usize);
         let data = rand_unit(n, d, 1);
         let idx = IvfPq4Index::build(&data, n_lists, n_probe, 96, 10, 1).expect("build");
@@ -340,11 +365,15 @@ mod tests {
             batch = batch.min(t.elapsed().as_secs_f64());
         }
         let nq = queries.len() as f64;
+        let (coarse, scan_t) = idx.timed_batch(&flat, d, k, n_probe);
         println!(
-            "ivf_pq4 n={n} d={d} lists={n_lists} probe={n_probe}: single={:.0} qps | batch={:.0} qps | {:.2}x",
+            "ivf_pq4 n={n} d={d} lists={n_lists} probe={n_probe}: single={:.0} qps | batch={:.0} qps | {:.2}x | coarse={:.0}ms scan={:.0}ms (coarse {:.0}%)",
             nq / single,
             nq / batch,
-            single / batch
+            single / batch,
+            coarse * 1e3,
+            scan_t * 1e3,
+            100.0 * coarse / (coarse + scan_t)
         );
     }
 
