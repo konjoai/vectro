@@ -49,7 +49,7 @@ fn top_probe_from_sims(sims: &[f32], n_probe: usize) -> Vec<usize> {
 
 /// Cosine distance (1 − cosine similarity) using SimSIMD.
 #[inline]
-fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
     // Unit-norm vectors → cosine distance is 1 − dot. The shared SIMD kernel
     // avoids SimSIMD's per-call dispatch, which dominated the coarse-quantiser
     // scan (called over every centroid, per query) and k-means assignment.
@@ -115,8 +115,9 @@ fn kmeans_pp_init(data: &[Vec<f32>], k: usize, d: usize, seed: u64) -> Vec<f32> 
 
 /// Lloyd's k-means over `data` (unit-norm vectors, cosine distance).
 ///
-/// Returns centroids as a flat `[k * d]` slice.
-fn kmeans_lloyd(
+/// Returns centroids as a flat `[k * d]` slice. `pub(crate)` so the coarse
+/// quantiser is shared with [`super::pq4`]'s IVF-PQ4 fast-scan index.
+pub(crate) fn kmeans_lloyd(
     data: &[Vec<f32>],
     k: usize,
     d: usize,
