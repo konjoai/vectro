@@ -65,3 +65,7 @@ harness = false
 [[bench]]
 name = "train_bench"
 harness = false
+
+[[bench]]
+name = "binary_bench"
+harness = false

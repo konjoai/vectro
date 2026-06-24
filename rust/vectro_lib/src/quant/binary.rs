@@ -18,6 +18,9 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use simsimd::BinarySimilarity;
 
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
 /// Signed dot `Σ s_i·query_i` where `s_i = +1` if packed bit `i` is set else
 /// `−1` — the unnormalised core of the binary asymmetric cosine distance.
 ///
@@ -69,7 +72,6 @@ fn signed_dot_scalar(packed: &[u8], query: &[f32], n: usize) -> f32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn signed_dot_avx2(packed: &[u8], query: &[f32], n: usize) -> f32 {
-    use std::arch::x86_64::*;
     let full = n / 8;
     // LSB-first bit selectors: lane l tests bit l of the byte (dim base+l).
     let bits = _mm256_setr_epi32(1, 2, 4, 8, 16, 32, 64, 128);
@@ -133,7 +135,42 @@ impl BinaryVector {
         Self { packed, dim }
     }
 
-    /// Decode packed bits to {+1.0, -1.0} f32 values.
+    /// SIMD-accelerated sign-pack. Dispatches AVX-512F (16 signs → a 2-byte mask
+    /// per `vcmpps`) → AVX2 (8 signs → 1 byte via `vmovmskps`) → scalar, and is
+    /// bit-for-bit identical to [`encode`]. The scalar loop's per-element branch
+    /// and `packed[i/8] |= 1<<(i%8)` scatter defeat autovectorisation, so this is
+    /// a genuine win rather than a re-expression the compiler already finds.
+    /// `normalize` is a no-op (a positive scale can't flip a sign), matching
+    /// [`encode`].
+    pub fn encode_fast(v: &[f32], normalize: bool) -> Self {
+        let _ = normalize;
+        let dim = v.len();
+        let bytes_per_vec = dim.div_ceil(8);
+        let mut packed = vec![0u8; bytes_per_vec];
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx512f") {
+                // SAFETY: guarded by runtime AVX-512F detection.
+                unsafe { pack_signs_avx512(v, &mut packed) };
+                return Self { packed, dim };
+            }
+            if is_x86_feature_detected!("avx2") {
+                // SAFETY: guarded by runtime AVX2 detection.
+                unsafe { pack_signs_avx2(v, &mut packed) };
+                return Self { packed, dim };
+            }
+        }
+
+        // Scalar fallback (non-x86, or x86 without AVX2/AVX-512F).
+        for (i, &x) in v.iter().enumerate() {
+            if x > 0.0 {
+                packed[i / 8] |= 1u8 << (i % 8);
+            }
+        }
+
+        Self { packed, dim }
+    }
     pub fn decode(&self) -> Vec<f32> {
         (0..self.dim).map(|i| {
             if (self.packed[i / 8] >> (i % 8)) & 1 == 1 { 1.0f32 } else { -1.0f32 }
@@ -179,9 +216,62 @@ impl BinaryVector {
     }
 }
 
+/// AVX-512F sign-bit pack: `_mm512_cmp_ps_mask(x, 0, GT)` yields 16 sign bits as
+/// a `__mmask16` (lane j → bit j), which is exactly 2 LSB-first packed bytes.
+///
+/// # Safety
+/// Caller must ensure AVX-512F is available; writes `2` bytes per 16-lane chunk
+/// into `packed`, whose length is `ceil(v.len()/8)`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn pack_signs_avx512(v: &[f32], packed: &mut [u8]) {
+    let n = v.len();
+    let ptr = v.as_ptr();
+    let zero = _mm512_setzero_ps();
+    let chunks = n / 16;
+    for c in 0..chunks {
+        let x = _mm512_loadu_ps(ptr.add(c * 16));
+        // bit j set iff lane j > 0.0 (ordered; NaN and ≤0 → 0), matching `encode`.
+        let mask: u16 = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(x, zero);
+        let b = c * 2;
+        packed[b] = (mask & 0xFF) as u8;
+        packed[b + 1] = (mask >> 8) as u8;
+    }
+    for i in chunks * 16..n {
+        if v[i] > 0.0 {
+            packed[i / 8] |= 1u8 << (i % 8);
+        }
+    }
+}
+
+/// AVX2 sign-bit pack: `vmovmskps` of `vcmpps(x, 0, GT)` yields 8 sign bits as a
+/// byte (lane j → bit j) — one LSB-first packed byte per 8-lane chunk.
+///
+/// # Safety
+/// Caller must ensure AVX2 is available; writes `1` byte per 8-lane chunk into
+/// `packed`, whose length is `ceil(v.len()/8)`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn pack_signs_avx2(v: &[f32], packed: &mut [u8]) {
+    let n = v.len();
+    let ptr = v.as_ptr();
+    let zero = _mm256_setzero_ps();
+    let chunks = n / 8;
+    for (c, slot) in packed[..chunks].iter_mut().enumerate() {
+        let x = _mm256_loadu_ps(ptr.add(c * 8));
+        let cmp = _mm256_cmp_ps::<_CMP_GT_OQ>(x, zero);
+        *slot = _mm256_movemask_ps(cmp) as u8;
+    }
+    for i in chunks * 8..n {
+        if v[i] > 0.0 {
+            packed[i / 8] |= 1u8 << (i % 8);
+        }
+    }
+}
+
 /// Encode a batch of f32 vectors to binary in parallel.
 pub fn encode_batch(vectors: &[Vec<f32>], normalize: bool) -> Vec<BinaryVector> {
-    vectors.par_iter().map(|v| BinaryVector::encode(v, normalize)).collect()
+    vectors.par_iter().map(|v| BinaryVector::encode_fast(v, normalize)).collect()
 }
 
 /// Decode a batch of BinaryVectors back to f32 in parallel.
@@ -228,6 +318,26 @@ pub fn binary_search(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `encode_fast` (AVX-512F / AVX2 sign-pack) must be bit-for-bit identical to
+    /// the scalar `encode` across SIMD-width boundaries, odd tails, exact zeros
+    /// (→ 0 bit), and large magnitudes. Runs on every target; the SIMD paths only
+    /// activate where the host advertises the feature.
+    #[test]
+    fn encode_fast_matches_scalar() {
+        for &d in &[0usize, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 127, 128, 768] {
+            let v: Vec<f32> = (0..d)
+                .map(|i| ((i as f32 * 0.37).sin() - 0.1) * 1e3)
+                .collect();
+            let scalar = BinaryVector::encode(&v, true);
+            let fast = BinaryVector::encode_fast(&v, true);
+            assert_eq!(scalar.packed, fast.packed, "packed mismatch at d={d}");
+            assert_eq!(scalar.dim, fast.dim, "dim mismatch at d={d}");
+        }
+        // Exact zero must clear its bit in both paths (sign = x > 0.0).
+        let z = vec![0.0f32; 20];
+        assert_eq!(BinaryVector::encode_fast(&z, true).packed, vec![0u8; 3]);
+    }
 
     #[test]
     fn packing_basic() {
