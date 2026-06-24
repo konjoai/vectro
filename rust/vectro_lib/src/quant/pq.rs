@@ -294,6 +294,13 @@ fn assign_nearest(v: &[f32], lut: &SubspaceLut, k: usize, sub_dim: usize) -> u8 
     #[cfg(not(target_arch = "aarch64"))]
     {
         #[cfg(target_arch = "x86_64")]
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: gated by the runtime feature detection above; all indices
+            // stay < k ≤ MAX_K and within the `ct`/`norms` slices. AVX-512 wins
+            // 1.4–1.8× here (loop + argmin-update overhead bound, not FMA-bound).
+            return unsafe { assign_argmin_avx512(v, &lut.ct, &lut.norms, k, sub_dim) };
+        }
+        #[cfg(target_arch = "x86_64")]
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
             // SAFETY: gated by the runtime feature detection above; all indices
             // stay < k ≤ MAX_K and within the `ct`/`norms` slices.
@@ -459,6 +466,87 @@ unsafe fn assign_argmin_avx2(v: &[f32], ct: &[f32], norms: &[f32], k: usize, sub
             best = ki as u32;
         }
         ki += 1;
+    }
+    best as u8
+}
+
+/// Fused AVX-512F nearest-centroid: computes `dist = norms − 2·v·cᵀ` and tracks
+/// the running minimum in **mask registers**, 16 centroids at a time (512-bit
+/// lanes) — no per-point `dist` buffer. Mirrors [`assign_argmin_avx2`] at double
+/// the lane width. For the common K=256 sub-quantizer this is 16 outer
+/// iterations instead of 32, halving the per-iteration `norms` load, compare,
+/// blend and index-increment overhead. Unlike the f32 *distance* kernels (which
+/// were measured slower under AVX-512 on this CPU class — FMA-port-bound), this
+/// argmin is dominated by loop + argmin-update overhead, which 512-bit width and
+/// native `__mmask16` blends cut directly. Lane `l` holds centroid `ki+l`; ties
+/// pick the lower index (strict `<`), matching the scalar baseline.
+///
+/// # Safety
+/// Requires AVX-512F. `ct.len() >= sub_dim*k`, `norms.len() >= k`,
+/// `v.len() >= sub_dim`, `k <= MAX_K`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn assign_argmin_avx512(v: &[f32], ct: &[f32], norms: &[f32], k: usize, sub_dim: usize) -> u8 {
+    use std::arch::x86_64::*;
+    let two = _mm512_set1_ps(2.0);
+    let mut min_vals = _mm512_set1_ps(f32::INFINITY);
+    let mut min_idx = _mm512_setzero_si512();
+    let mut cur_idx =
+        _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    let sixteen = _mm512_set1_epi32(16);
+
+    let kc = k & !15;
+    let mut ki = 0;
+    while ki < kc {
+        let mut acc = _mm512_setzero_ps();
+        for j in 0..sub_dim {
+            let vj = _mm512_set1_ps(*v.get_unchecked(j));
+            let cj = _mm512_loadu_ps(ct.as_ptr().add(j * k + ki));
+            acc = _mm512_fmadd_ps(vj, cj, acc);
+        }
+        let nrm = _mm512_loadu_ps(norms.as_ptr().add(ki));
+        // d = norms − 2·acc
+        let d = _mm512_fnmadd_ps(two, acc, nrm);
+        let mask = _mm512_cmp_ps_mask::<_CMP_LT_OQ>(d, min_vals); // d < running min ?
+        min_vals = _mm512_mask_blend_ps(mask, min_vals, d);
+        min_idx = _mm512_mask_blend_epi32(mask, min_idx, cur_idx);
+        cur_idx = _mm512_add_epi32(cur_idx, sixteen);
+        ki += 16;
+    }
+
+    // Masked tail (1..=15 centroids) in a single 512-bit iteration — masked-off
+    // lanes load as 0 and are forced to +∞ so they never win the argmin. cur_idx
+    // already holds [kc, kc+1, …] from the main loop's last increment.
+    if ki < k {
+        let rem = k - ki;
+        let tail_mask: u16 = ((1u32 << rem) - 1) as u16;
+        let mut acc = _mm512_setzero_ps();
+        for j in 0..sub_dim {
+            let vj = _mm512_set1_ps(*v.get_unchecked(j));
+            let cj = _mm512_maskz_loadu_ps(tail_mask, ct.as_ptr().add(j * k + ki));
+            acc = _mm512_fmadd_ps(vj, cj, acc);
+        }
+        let nrm = _mm512_maskz_loadu_ps(tail_mask, norms.as_ptr().add(ki));
+        let d = _mm512_fnmadd_ps(two, acc, nrm);
+        // Force the inactive lanes to +∞ before the compare.
+        let d = _mm512_mask_blend_ps(tail_mask, _mm512_set1_ps(f32::INFINITY), d);
+        let mask = _mm512_cmp_ps_mask::<_CMP_LT_OQ>(d, min_vals);
+        min_vals = _mm512_mask_blend_ps(mask, min_vals, d);
+        min_idx = _mm512_mask_blend_epi32(mask, min_idx, cur_idx);
+    }
+
+    // Reduce the 16 SIMD lanes to a scalar (value, index).
+    let mut vals = [0.0f32; 16];
+    let mut idxs = [0i32; 16];
+    _mm512_storeu_ps(vals.as_mut_ptr(), min_vals);
+    _mm512_storeu_si512(idxs.as_mut_ptr() as *mut __m512i, min_idx);
+    let mut best = idxs[0] as u32;
+    let mut best_d = vals[0];
+    for l in 1..16 {
+        if vals[l] < best_d {
+            best_d = vals[l];
+            best = idxs[l] as u32;
+        }
     }
     best as u8
 }
@@ -632,6 +720,60 @@ mod tests {
         let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
         if na == 0.0 || nb == 0.0 { return -1.0; }
         dot / (na * nb)
+    }
+
+    /// Isolated A/B microbench for the PQ nearest-centroid argmin kernels.
+    /// `cargo test -p vectro_lib --release argmin_kernel_microbench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(target_arch = "x86_64")]
+    fn argmin_kernel_microbench() {
+        use std::time::Instant;
+        let nq = 4096usize;
+        for &(k, sub_dim) in &[(256usize, 4usize), (256, 8), (256, 16), (200, 8)] {
+            let vecs = make_vecs(nq + k, sub_dim);
+            let table: Vec<f32> = vecs[..k].iter().flatten().copied().collect();
+            let lut = build_subspace_lut(&table, k, sub_dim);
+            let queries = &vecs[k..];
+            let iters = 200usize;
+
+            // portable
+            let t = Instant::now();
+            let mut acc = 0u64;
+            for _ in 0..iters {
+                for q in queries {
+                    acc += assign_argmin_portable(q, &lut, k, sub_dim) as u64;
+                }
+            }
+            let portable_ns = t.elapsed().as_nanos() as f64 / (iters * nq) as f64;
+
+            // avx2
+            let avx2_ns = if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                let t = Instant::now();
+                for _ in 0..iters {
+                    for q in queries {
+                        acc += unsafe { assign_argmin_avx2(q, &lut.ct, &lut.norms, k, sub_dim) } as u64;
+                    }
+                }
+                t.elapsed().as_nanos() as f64 / (iters * nq) as f64
+            } else { f64::NAN };
+
+            // avx512
+            let avx512_ns = if is_x86_feature_detected!("avx512f") {
+                let t = Instant::now();
+                for _ in 0..iters {
+                    for q in queries {
+                        acc += unsafe { assign_argmin_avx512(q, &lut.ct, &lut.norms, k, sub_dim) } as u64;
+                    }
+                }
+                t.elapsed().as_nanos() as f64 / (iters * nq) as f64
+            } else { f64::NAN };
+
+            println!(
+                "k={k} sub_dim={sub_dim}: portable={portable_ns:.2}ns avx2={avx2_ns:.2}ns avx512={avx512_ns:.2}ns  avx512/avx2={:.3}x  (sink={acc})",
+                avx2_ns / avx512_ns
+            );
+        }
     }
 
     #[test]

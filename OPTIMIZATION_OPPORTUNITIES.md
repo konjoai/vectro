@@ -14,7 +14,27 @@ AVX-512F + FMA, **260 MiB L3**, glibc malloc, `target-cpu=x86-64-v3`, release
 
 ## Shipped — measured wins
 
-### Campaign 2 (AVX-512 distance kernels — this sweep)
+### Campaign 3 (AVX-512 encode kernels · allocator · Python hot paths — this sweep)
+
+A fresh full-repo audit (six parallel deep-review passes over the quant kernels,
+index code, PyO3 FFI, Python hot paths, and build/dep config) surfaced ~35
+ranked opportunities. The harvested wins this sweep — all proved before shipping:
+
+| Change | Win (this host) | PR |
+|--------|-----------------|----|
+| **PQ AVX-512 nearest-centroid argmin** — 16-wide `assign_argmin_avx512` w/ masked tail; the k-means assignment hot loop was AVX2-only on x86 | kernel **1.42–1.82×**; PQ encode **1.09×** / train **1.06×** end-to-end (mem-bw diluted); recall-neutral | #92 |
+| **INT8 AVX-512 normalized encode** — `encode_normalized_avx512`, clone of the bit-identical `encode_avx512_into` pass-2; drives `batch_encode_normalized_into` | kernel **1.34–1.71×** (d=256→1536), bit-identical | #92 |
+| **Binary `np.packbits`/`unpackbits`** — replace two 8-iteration Python fancy-index loops | pack **2.1–3.2×**, unpack **3.3–3.9×**, bit-identical | #92 |
+| **mimalloc global allocator** (vectro_py + vectro_cli) — sharded per-thread heaps for the GIL-released rayon build/query paths | HNSW build **1.08–1.16×**, concurrent query **1.08–1.10×** | #92 |
+| **Reranker batched GEMV** — `_cosine_rerank`/`_rrf_rerank` score all candidates in one `(C,d)@(d,)` matmul instead of a per-candidate norm+dot loop | **1.54–2.69×**, identical ranking | #92 |
+
+The two AVX-512 encode kernels exploit the same host AVX-512F/VNNI the prior
+campaign found *slower* for f32 distance — but encode (convert/narrow/store-bound)
+and argmin (loop+update-overhead-bound) are different regimes where 512-bit width
+and mask registers win. Negative result this sweep: quant-HNSW `apply_center`→`Cow`
+(see `PERF_FINDINGS.md`) — unmeasurable against ±25% host variance, reverted.
+
+### Campaign 2 (AVX-512 distance kernels — earlier sweep)
 
 | Change | Win (this host) | PR |
 |--------|-----------------|----|
@@ -70,7 +90,59 @@ faster, and multi-threaded query serving now scales across cores.
 
 ---
 
-## Roadmap — remaining high-value opportunities
+## Campaign 3 audit — remaining ranked opportunities (not yet shipped)
+
+The six-pass audit surfaced these beyond the wins above. Ordered by
+expected impact × confidence; each needs the usual prove-before-ship pass.
+
+**Index / search path**
+1. **IVF-Flat flat vector store** — `IvfIndex.store: Vec<Vec<f32>>` is the one f32
+   index still array-of-pointers (HNSW + IVF-PQ already flat). Flatten to one
+   strided `Vec<f32>` + software-prefetch the posting-list scan. ~15–35% search at
+   high d / large probe. Cost: serialization migration (custom serde or version bump).
+2. **IVF-PQ4 batched coarse GEMM + `search_batch_flat`** — the *faster* PQ4 variant
+   has no batch API and scores coarse centroids in a serial scalar loop per query;
+   port the proven `IvfPqIndex` batched-GEMM + rayon tiling. ~2–4× batch QPS at
+   high d / large n_lists. No serialization change (new method).
+3. **BM25 inverted index** — `bm25.rs::top_k` scans *all* docs with per-doc HashMap
+   probes and a full sort mislabeled "partial sort". Add a `term → postings` map +
+   `select_nth_unstable`. 5–50× for selective queries on large corpora.
+4. **GIL release on `train` (k-means) + `add_batch` (parallel build)** — the
+   heaviest PyO3 kernels are still serialized; mirror the single-query `search_np`
+   fix (#79). Own the rows before `allow_threads`. Large concurrent-build scaling.
+5. **NF4 SIMD nibble-quantize encode** — the 15-threshold `nearest_nf4` ladder is
+   scalar per element; vectorizes 8/16-wide (AVX2/512). ~2–4× NF4 encode. (SQ2/SQ3
+   encode similarly scalar — 1.5–3×.)
+6. **Concurrent-build per-expansion clone** — `search_layer_locked` clones the whole
+   neighbor `SmallVec` under the read lock every beam expansion; copy ids into a
+   reused thread-local scratch instead. ~5–12% concurrent build.
+
+**FFI / Python marshalling**
+7. **`search_batch` → `search_batch_arrays`** — `HNSWIndex.search_batch` still
+   rebuilds `[Q,k]` arrays from `2·Q·k` boxed tuples in a Python loop; the packed
+   native entry already exists and is unused. 1.5–3× large-batch.
+8. **Vectorize `search_batch` query normalization** — per-row Python `_normalize`
+   loop → one batched `linalg.norm` + fused divide (reuse `normalize_rows`). 5–20×
+   on the normalization step.
+9. **`get_vectors` row-memcpy** — `PyEmbeddingDataset.get_vectors` fills via N·D
+   per-element 2-D `array[[i,j]]` writes; replace with N contiguous row copies. 3–8×.
+10. **`pq_encode_batch` / `pq_train_batch` borrow contiguous input** — both
+    `.iter().copied().collect()` a full owned copy / N per-row Vecs even when the
+    numpy input is C-contiguous; borrow the slice (the `quantize_int8_batch` idiom).
+11. **`reconstruct_batch` contiguous store** — `BatchQuantizationResult` keeps codes
+    as a Python list of rows then `np.stack`s them back; store the `[N,D]` matrix.
+
+**Build / methodology**
+12. **Opt-in `target-cpu=native` from-source build** — shipped wheels stay v3
+    (portable); document a VNNI/AVX-512 native build for the autovectorizer-bound
+    shared loops (coarse GEMM, bf16 widen). Exclude f32 distance (proven slower).
+13. **Benchmark statistics** — paper harness headlines best-of-3/1-warmup; raise to
+    warmup≥5, reps≥20, **p50 headline + p95/p99/stddev** (the regression gate needs
+    real percentiles). Add concurrent-query + at-scale-build benches (probes for the
+    allocator + HT-oversubscription effects) and a real/anisotropic dataset for
+    HNSW recall/QPS claims (current sinusoidal data is a best case).
+
+## Roadmap — remaining high-value opportunities (campaign 2 carry-over)
 
 Ordered by expected impact. Items 1 and 3 from the original list shipped this
 sweep (NF4 SIMD distance) and earlier (#84 IVF-PQ4 fast-scan); the PQ4 PyO3

@@ -10,6 +10,43 @@ glibc malloc, `target-cpu=x86-64-v3`, `--release` (fat LTO, codegen-units=1).
 
 ---
 
+## ❌ Quant-HNSW `apply_center` → `Cow` (drop the no-center query copy) — unmeasurable here (reverted)
+
+**Opportunity (campaign 3):** `QuantHnswIndex::search` does
+`apply_center(&normalize(query))`. For every non-binary quant mode `center` is
+`None`, yet `apply_center` still did `normalized.to_vec()` — so each query
+allocated the d-length buffer **twice** (once in `normalize`, once in the
+pointless copy). Return `Cow<[f32]>` and borrow when there's no center →
+one alloc/query. Also dedup `search_rerank`'s double `normalize(query)` by
+splitting out a `search_normalized` core. Estimated 3–8%.
+
+**Benchmark** (Int8 quant-HNSW, n=50k × d=768, m=16, ef=64, k=10, best-of-5):
+
+| | qps |
+|---|-----|
+| Cow (borrow, 1 alloc) | 11 553 / 14 581 (two runs) |
+| always-copy baseline | 11 787 |
+
+The two `Cow` runs span **11.5k–14.6k qps on identical code** — run-to-run
+variance on this shared 4-core host is ±25%, dwarfing any sub-5% effect. The
+borrow-vs-copy delta sits entirely inside that noise (and the first sample even
+landed slightly *below* baseline).
+
+**Why it didn't work:** same root cause as the reverted scratch-heaps (#74) and
+`dequantize_int8_batch` findings — a single small per-query allocation is
+serviced from the allocator's per-thread cache (now mimalloc's sharded heap)
+essentially for free, and is orders of magnitude below the hundreds of AVX2/512
+distance evals each query runs. The d-length copy is one streaming memcpy that
+the same cache line traffic would touch anyway.
+
+**Resolution:** reverted to keep the diff honest (the change was correct and
+idiomatic, just not a *measured* win). The mechanism would matter only where
+allocation dominates — many-core hosts with allocator contention, or a tail-
+latency (p99) metric, neither demonstrable here. Revisit with a low-variance
+host and p99.
+
+---
+
 ## ❌ `dequantize_int8_batch` uninit-output + GIL release — single-thread neutral (reverted)
 
 **Opportunity:** the batch INT8 decode allocates `vec![0.0f32; n*d]` (serial
