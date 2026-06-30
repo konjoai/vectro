@@ -11,8 +11,10 @@
 //! All datasets are seeded/deterministic so runs are comparable across commits.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use vectro_lib::index::hnsw::HnswIndex;
+use vectro_lib::index::hnsw::{HnswIndex, Metric};
+use vectro_lib::index::ivf::IvfIndex;
 use vectro_lib::quant::int8;
+use vectro_lib::quant::nf4;
 use vectro_lib::quant::pq::{train_pq_codebook, PQCodebook};
 use vectro_lib::quant::rq::{rq_decode_flat, rq_encode_flat, train_rq_codebook, RQCodebook};
 
@@ -143,14 +145,88 @@ fn bench_hnsw_insert(c: &mut Criterion) {
     group.finish();
 }
 
+/// IVF-Flat exact-cosine search throughput (WS-A: flat store + prefetch).
+/// The candidate scan over probed posting lists is the hot path; at high `d`
+/// it is cold-memory bound, where the contiguous layout + software prefetch of
+/// the next vector help most.
+///
+/// Crucially the bench cycles through **many distinct queries** rather than
+/// hammering one — a single repeated query keeps its ~`n_probe·cluster` candidate
+/// vectors resident in L2/L3, which hides the cold-memory latency the prefetch
+/// exists to attack and reduces the bench to pure prefetch instruction overhead.
+fn bench_ivf_search(c: &mut Criterion) {
+    const N: usize = 20_000;
+    const N_LISTS: usize = 256;
+    const N_PROBE: usize = 16;
+    const N_QUERIES: usize = 512;
+    let mut group = c.benchmark_group("ivf_search");
+    for &d in &[128usize, 256, 768] {
+        let vecs = make_vecs(N, d);
+        let mut idx = IvfIndex::new(N_LISTS, N_PROBE);
+        idx.train(&vecs, 10, 42).expect("ivf train failed");
+        idx.add_batch(&vecs);
+        // Distinct queries (offset generator so they differ from stored vectors).
+        let queries: Vec<Vec<f32>> = (0..N_QUERIES)
+            .map(|i| (0..d).map(|j| (((i + 7) * d + j) as f32 * 0.0011_f32).cos()).collect())
+            .collect();
+        let mut qi = 0usize;
+        group.bench_function(format!("search_n20k_d{d}_probe16_k10"), |b| {
+            b.iter(|| {
+                let q = &queries[qi % N_QUERIES];
+                qi += 1;
+                idx.search_with_probe(black_box(q), 10, N_PROBE)
+            })
+        });
+    }
+    group.finish();
+}
+
+/// HNSW concurrent build at higher `d` (WS-D: per-vector `prep` allocation
+/// removed from the bulk build path; L2/IP no longer copy the raw vector).
+fn bench_hnsw_build_highd(c: &mut Criterion) {
+    const N: usize = 3_000;
+    const D: usize = 256;
+    let vecs = make_vecs(N, D);
+    let mut group = c.benchmark_group("hnsw_build_highd");
+    group.sample_size(20);
+    for (label, metric) in [("cosine", Metric::Cosine), ("l2", Metric::L2)] {
+        group.bench_function(format!("build_n3k_d256_{label}"), |b| {
+            b.iter(|| {
+                let mut idx = HnswIndex::with_metric(16, 200, metric);
+                idx.add_batch(black_box(&vecs));
+                idx
+            })
+        });
+    }
+    group.finish();
+}
+
+/// NF4 batch-encode throughput (WS-C: SIMD nibble search). The nearest-level
+/// search is a 15-way threshold sum, vectorised across lanes on aarch64.
+fn bench_nf4_encode(c: &mut Criterion) {
+    const N: usize = 2_000;
+    let mut group = c.benchmark_group("nf4_encode");
+    for &d in &[256usize, 768] {
+        let vecs = make_vecs(N, d);
+        group.throughput(Throughput::Elements((N * d) as u64));
+        group.bench_function(format!("encode_batch_n2k_d{d}"), |b| {
+            b.iter(|| nf4::encode_batch(black_box(&vecs)))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_nf4_encode,
     bench_pq_train,
     bench_rq_train,
     bench_rq_decode,
     bench_rq_encode,
     bench_pq_encode,
     bench_int8_decode,
-    bench_hnsw_insert
+    bench_hnsw_insert,
+    bench_ivf_search,
+    bench_hnsw_build_highd
 );
 criterion_main!(benches);
