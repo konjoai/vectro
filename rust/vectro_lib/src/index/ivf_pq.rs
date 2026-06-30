@@ -339,6 +339,15 @@ impl IvfPqIndex {
         global_id
     }
 
+    /// Insert a batch of vectors; returns their global IDs.
+    ///
+    /// Generic over `AsRef<[f32]>` so callers can pass borrowed row slices
+    /// (e.g. `&[&[f32]]` over a contiguous buffer) without an owning copy —
+    /// the zero-copy path the PyO3 bindings take on contiguous arrays.
+    pub fn add_batch<V: AsRef<[f32]>>(&mut self, vectors: &[V]) -> Vec<usize> {
+        vectors.iter().map(|v| self.add(v.as_ref())).collect()
+    }
+
     /// Search for the `k` nearest neighbours using ADC scoring.
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(usize, f32)> {
         self.search_with_probe(query, k, self.n_probe)
@@ -472,14 +481,15 @@ impl IvfPqIndex {
 
     /// Serialize to a file at `path`.
     pub fn save(&self, path: &str) -> std::io::Result<()> {
-        let bytes = bincode::serialize(self).expect("serialization failed");
+        let bytes = bincode::serialize(self).map_err(std::io::Error::other)?;
         std::fs::write(path, bytes)
     }
 
     /// Deserialize from a file at `path`.
     pub fn load(path: &str) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
-        let index: Self = bincode::deserialize(&bytes).expect("deserialization failed");
+        let index: Self = bincode::deserialize(&bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         Ok(index)
     }
 

@@ -567,13 +567,19 @@ impl PyPQCodebook {
 
     fn train(
         &mut self,
+        py: Python<'_>,
         training_data: Vec<Vec<f32>>,
         n_subspaces: usize,
         n_centroids: usize,
         max_iter: usize,
         seed: u64,
     ) -> PyResult<()> {
-        let cb = pq::train_pq_codebook(&training_data, n_subspaces, n_centroids, max_iter, seed)
+        // Heavy k-means runs with the GIL released so other Python threads
+        // (e.g. a concurrent codebook training) keep making progress.
+        let cb = py
+            .allow_threads(|| {
+                pq::train_pq_codebook(&training_data, n_subspaces, n_centroids, max_iter, seed)
+            })
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         self.codebook = Some(cb);
         Ok(())
@@ -636,15 +642,18 @@ impl PyHnswIndex {
         self.inner.add(&vector);
     }
 
-    fn add_batch(&mut self, vectors: Vec<Vec<f32>>) {
-        self.inner.add_batch(&vectors);
+    fn add_batch(&mut self, py: Python<'_>, vectors: Vec<Vec<f32>>) {
+        // Parallel graph build runs with the GIL released.
+        py.allow_threads(|| {
+            self.inner.add_batch(&vectors);
+        });
     }
 
     /// Batch insert from a numpy array (shape [N, D]).
     ///
     /// Routed through `add_batch` (not per-row `add`) so a large first batch
     /// uses the parallel graph build.
-    fn add_np(&mut self, array: PyReadonlyArray2<f32>) -> PyResult<()> {
+    fn add_np(&mut self, py: Python<'_>, array: PyReadonlyArray2<f32>) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
         let rows: Vec<Vec<f32>> = if let Some(flat) = arr.as_slice() {
@@ -652,7 +661,10 @@ impl PyHnswIndex {
         } else {
             arr.rows().into_iter().map(|row| row.iter().copied().collect()).collect()
         };
-        self.inner.add_batch(&rows);
+        // `rows` is owned Rust data; the graph build runs GIL-free.
+        py.allow_threads(|| {
+            self.inner.add_batch(&rows);
+        });
         Ok(())
     }
 
@@ -833,26 +845,27 @@ impl PyIvfIndex {
     }
 
     /// Train the coarse quantizer from example vectors.
-    fn train(&mut self, vectors: Vec<Vec<f32>>, max_iter: usize, seed: u64) -> PyResult<()> {
-        self.inner
-            .train(&vectors, max_iter, seed)
+    fn train(&mut self, py: Python<'_>, vectors: Vec<Vec<f32>>, max_iter: usize, seed: u64) -> PyResult<()> {
+        py.allow_threads(|| self.inner.train(&vectors, max_iter, seed))
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Zero-copy train from a numpy array (shape [N, D]).
-    fn train_np(&mut self, array: PyReadonlyArray2<f32>, max_iter: usize, seed: u64) -> PyResult<()> {
+    fn train_np(&mut self, py: Python<'_>, array: PyReadonlyArray2<f32>, max_iter: usize, seed: u64) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
         // Borrow contiguous rows directly; only copy when the array is strided.
+        // k-means runs with the GIL released — the readonly borrow on `array`
+        // outlives the closure, so the slices stay valid.
         match arr.as_slice() {
             Some(flat) => {
                 let rows: Vec<&[f32]> = (0..n).map(|i| &flat[i * d..(i + 1) * d]).collect();
-                self.inner.train(&rows, max_iter, seed)
+                py.allow_threads(|| self.inner.train(&rows, max_iter, seed))
             }
             None => {
                 let owned: Vec<Vec<f32>> =
                     arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
-                self.inner.train(&owned, max_iter, seed)
+                py.allow_threads(|| self.inner.train(&owned, max_iter, seed))
             }
         }
         .map_err(pyo3::exceptions::PyValueError::new_err)
@@ -864,17 +877,24 @@ impl PyIvfIndex {
     }
 
     /// Zero-copy batch insert from a numpy array (shape [N, D]).
-    fn add_np(&mut self, array: PyReadonlyArray2<f32>) -> PyResult<()> {
+    fn add_np(&mut self, py: Python<'_>, array: PyReadonlyArray2<f32>) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
-        if let Some(flat) = arr.as_slice() {
-            for i in 0..n {
-                self.inner.add(&flat[i * d..(i + 1) * d]);
+        // Centroid assignment + store runs with the GIL released so concurrent
+        // Python threads make progress during a large ingest.
+        match arr.as_slice() {
+            Some(flat) => {
+                let rows: Vec<&[f32]> = (0..n).map(|i| &flat[i * d..(i + 1) * d]).collect();
+                py.allow_threads(|| {
+                    self.inner.add_batch(&rows);
+                });
             }
-        } else {
-            for row in arr.rows() {
-                let v: Vec<f32> = row.iter().copied().collect();
-                self.inner.add(&v);
+            None => {
+                let owned: Vec<Vec<f32>> =
+                    arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
+                py.allow_threads(|| {
+                    self.inner.add_batch(&owned);
+                });
             }
         }
         Ok(())
@@ -975,20 +995,21 @@ impl PyIvfPqIndex {
     /// Train the coarse quantizer and PQ codebook.
     fn train(
         &mut self,
+        py: Python<'_>,
         vectors: Vec<Vec<f32>>,
         n_subspaces: usize,
         n_centroids: usize,
         max_iter: usize,
         seed: u64,
     ) -> PyResult<()> {
-        self.inner
-            .train(&vectors, n_subspaces, n_centroids, max_iter, seed)
+        py.allow_threads(|| self.inner.train(&vectors, n_subspaces, n_centroids, max_iter, seed))
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Zero-copy train from a numpy array (shape [N, D]).
     fn train_np(
         &mut self,
+        py: Python<'_>,
         array: PyReadonlyArray2<f32>,
         n_subspaces: usize,
         n_centroids: usize,
@@ -998,15 +1019,16 @@ impl PyIvfPqIndex {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
         // Borrow contiguous rows directly; only copy when the array is strided.
+        // Coarse k-means + PQ codebook training run with the GIL released.
         match arr.as_slice() {
             Some(flat) => {
                 let rows: Vec<&[f32]> = (0..n).map(|i| &flat[i * d..(i + 1) * d]).collect();
-                self.inner.train(&rows, n_subspaces, n_centroids, max_iter, seed)
+                py.allow_threads(|| self.inner.train(&rows, n_subspaces, n_centroids, max_iter, seed))
             }
             None => {
                 let owned: Vec<Vec<f32>> =
                     arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
-                self.inner.train(&owned, n_subspaces, n_centroids, max_iter, seed)
+                py.allow_threads(|| self.inner.train(&owned, n_subspaces, n_centroids, max_iter, seed))
             }
         }
         .map_err(pyo3::exceptions::PyValueError::new_err)
@@ -1018,17 +1040,23 @@ impl PyIvfPqIndex {
     }
 
     /// Zero-copy batch insert from a numpy array (shape [N, D]).
-    fn add_np(&mut self, array: PyReadonlyArray2<f32>) -> PyResult<()> {
+    fn add_np(&mut self, py: Python<'_>, array: PyReadonlyArray2<f32>) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
-        if let Some(flat) = arr.as_slice() {
-            for i in 0..n {
-                self.inner.add(&flat[i * d..(i + 1) * d]);
+        // Centroid assignment + PQ encode runs with the GIL released.
+        match arr.as_slice() {
+            Some(flat) => {
+                let rows: Vec<&[f32]> = (0..n).map(|i| &flat[i * d..(i + 1) * d]).collect();
+                py.allow_threads(|| {
+                    self.inner.add_batch(&rows);
+                });
             }
-        } else {
-            for row in arr.rows() {
-                let v: Vec<f32> = row.iter().copied().collect();
-                self.inner.add(&v);
+            None => {
+                let owned: Vec<Vec<f32>> =
+                    arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
+                py.allow_threads(|| {
+                    self.inner.add_batch(&owned);
+                });
             }
         }
         Ok(())
@@ -1137,8 +1165,11 @@ macro_rules! quant_hnsw_pyclass {
                 self.inner.add(&vector);
             }
 
-            fn add_batch(&mut self, vectors: Vec<Vec<f32>>) {
-                self.inner.add_batch(&vectors);
+            fn add_batch(&mut self, py: Python<'_>, vectors: Vec<Vec<f32>>) {
+                // Graph build runs with the GIL released.
+                py.allow_threads(|| {
+                    self.inner.add_batch(&vectors);
+                });
             }
 
             /// Batch insert from a numpy array (shape [N, D]).
@@ -1146,7 +1177,7 @@ macro_rules! quant_hnsw_pyclass {
             /// Routed through `add_batch` (not per-row `add`) so quantizers that
             /// derive a per-index transform from the batch — e.g. binary
             /// mean-centering — can establish it before insertion.
-            fn add_np(&mut self, array: PyReadonlyArray2<f32>) -> PyResult<()> {
+            fn add_np(&mut self, py: Python<'_>, array: PyReadonlyArray2<f32>) -> PyResult<()> {
                 let arr = array.as_array();
                 let (n, d) = (arr.nrows(), arr.ncols());
                 let rows: Vec<Vec<f32>> = if let Some(flat) = arr.as_slice() {
@@ -1154,7 +1185,10 @@ macro_rules! quant_hnsw_pyclass {
                 } else {
                     arr.rows().into_iter().map(|row| row.iter().copied().collect()).collect()
                 };
-                self.inner.add_batch(&rows);
+                // `rows` is owned Rust data; the graph build runs GIL-free.
+                py.allow_threads(|| {
+                    self.inner.add_batch(&rows);
+                });
                 Ok(())
             }
 
