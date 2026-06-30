@@ -106,10 +106,12 @@ impl Nf4Vector {
 
     /// Encode using a platform-optimised abs-max pass when available.
     ///
-    /// On x86-64 with AVX2 the abs-max scan uses 256-bit SIMD (8-wide).
-    /// The nibble quantisation loop stays scalar because it is a table lookup
-    /// that doesn't benefit from float SIMD.  Falls back to `encode` on other
-    /// targets.
+    /// On x86-64 with AVX2 the abs-max scan uses 256-bit SIMD (8-wide); the
+    /// nibble quantisation stays scalar there. On aarch64 BOTH the abs-max and
+    /// the nibble search are SIMD: the nearest-level search is a 15-way
+    /// threshold sum (`#{ i : x ≥ MIDS[i] }`) that vectorises cleanly across
+    /// lanes — the per-element table lookup does *not* block it. Falls back to
+    /// scalar `encode` on other targets.
     pub fn encode_fast(v: &[f32]) -> Self {
         #[cfg(target_arch = "x86_64")]
         {
@@ -119,17 +121,19 @@ impl Nf4Vector {
                 return Self::encode_with_absmax(v, abs_max);
             }
         }
-        // aarch64 NEON: use fold-based abs-max (compiler auto-vectorises well)
         #[cfg(target_arch = "aarch64")]
         {
             let abs_max = v.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
-            return Self::encode_with_absmax(v, abs_max);
+            // SAFETY: NEON is part of the aarch64 baseline — always present.
+            return unsafe { Self::encode_with_absmax_neon(v, abs_max) };
         }
         #[allow(unreachable_code)]
         Self::encode(v)
     }
 
-    /// Internal: encode given a pre-computed abs-max.
+    /// Internal: encode given a pre-computed abs-max (x86 AVX2 abs-max path;
+    /// aarch64 uses the SIMD `encode_with_absmax_neon` instead).
+    #[cfg(target_arch = "x86_64")]
     fn encode_with_absmax(v: &[f32], abs_max: f32) -> Self {
         let dim = v.len();
         let scale = if abs_max == 0.0 { 1.0 } else { abs_max };
@@ -139,6 +143,78 @@ impl Nf4Vector {
         let mut packed = vec![0u8; bytes_per_vec];
 
         let mut i = 0;
+        while i + 1 < dim {
+            let lo = nearest_nf4((v[i] * inv).clamp(-1.0, 1.0));
+            let hi = nearest_nf4((v[i + 1] * inv).clamp(-1.0, 1.0));
+            packed[i / 2] = lo | (hi << 4);
+            i += 2;
+        }
+        if dim % 2 == 1 {
+            let lo = nearest_nf4((v[dim - 1] * inv).clamp(-1.0, 1.0));
+            packed[bytes_per_vec - 1] = lo;
+        }
+
+        Self { packed, scale, dim }
+    }
+
+    /// NEON nibble-search encode given a pre-computed abs-max. Produces
+    /// **bit-identical** output to `encode_with_absmax` (verified by
+    /// `encode_fast_matches_scalar`), at ~SIMD-width throughput.
+    ///
+    /// Per 4-lane chunk: `clamp(x·inv, -1, 1)` then accumulate the 15 midpoint
+    /// comparisons. `vcgeq_f32` sets true lanes to `0xFFFF_FFFF` (= -1 as i32),
+    /// so `acc -= cmp` adds 1 per met threshold — yielding the level index
+    /// `#{ i : x ≥ MIDS[i] }` exactly as the scalar `nearest_nf4`.
+    ///
+    /// # Safety
+    /// Requires the `neon` feature (guaranteed on the aarch64 baseline).
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "neon")]
+    unsafe fn encode_with_absmax_neon(v: &[f32], abs_max: f32) -> Self {
+        use std::arch::aarch64::*;
+        let dim = v.len();
+        let scale = if abs_max == 0.0 { 1.0 } else { abs_max };
+        let inv = 1.0 / scale;
+        let bytes_per_vec = dim.div_ceil(2);
+        let mut packed = vec![0u8; bytes_per_vec];
+
+        let ptr = v.as_ptr();
+        let vinv = vdupq_n_f32(inv);
+        let vlo = vdupq_n_f32(-1.0);
+        let vhi = vdupq_n_f32(1.0);
+        // Broadcast each midpoint once (loop-invariant).
+        let mut mids = [vdupq_n_f32(0.0); 15];
+        for (m, slot) in mids.iter_mut().enumerate() {
+            *slot = vdupq_n_f32(NF4_MIDS[m]);
+        }
+
+        // 8 contiguous elements → 8 nibble indices → 4 packed bytes per step.
+        let mut i = 0usize;
+        while i + 8 <= dim {
+            let mut idx = [0u8; 8];
+            for h in 0..2 {
+                let x = vld1q_f32(ptr.add(i + h * 4));
+                let x = vminq_f32(vmaxq_f32(vmulq_f32(x, vinv), vlo), vhi);
+                let mut acc = vdupq_n_s32(0);
+                for m in &mids {
+                    let cmp = vcgeq_f32(x, *m);
+                    acc = vsubq_s32(acc, vreinterpretq_s32_u32(cmp));
+                }
+                let mut tmp = [0i32; 4];
+                vst1q_s32(tmp.as_mut_ptr(), acc);
+                idx[h * 4] = tmp[0] as u8;
+                idx[h * 4 + 1] = tmp[1] as u8;
+                idx[h * 4 + 2] = tmp[2] as u8;
+                idx[h * 4 + 3] = tmp[3] as u8;
+            }
+            let b = i / 2;
+            packed[b] = idx[0] | (idx[1] << 4);
+            packed[b + 1] = idx[2] | (idx[3] << 4);
+            packed[b + 2] = idx[4] | (idx[5] << 4);
+            packed[b + 3] = idx[6] | (idx[7] << 4);
+            i += 8;
+        }
+        // Scalar tail — identical pairing to the reference encoder.
         while i + 1 < dim {
             let lo = nearest_nf4((v[i] * inv).clamp(-1.0, 1.0));
             let hi = nearest_nf4((v[i + 1] * inv).clamp(-1.0, 1.0));
@@ -489,6 +565,39 @@ mod tests {
         assert_eq!(dec.len(), 768);
         let cos = cosine(&v, &dec);
         assert!(cos >= 0.985, "cosine {cos} < 0.985 (NF4 parity spec)");
+    }
+
+    /// `encode_fast` (SIMD: NEON on aarch64, AVX2 abs-max on x86) must be
+    /// byte-for-byte identical to the scalar `encode` — including adversarial
+    /// 1e6-magnitude spikes, odd dims, and the SIMD-tail boundaries (dims that
+    /// are/aren't multiples of 8).
+    #[test]
+    fn encode_fast_matches_scalar() {
+        // xorshift64 — deterministic, no rand dependency.
+        let mut state = 0x9E3779B97F4A7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for &dim in &[1usize, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 33, 128, 255, 256, 767, 768] {
+            for trial in 0..16 {
+                let v: Vec<f32> = (0..dim)
+                    .map(|_| {
+                        let r = (next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5; // ~[-0.5, 0.5)
+                        // Occasional 1e6-magnitude spike to stress abs-max + clamp.
+                        let mag = if next() & 0xF == 0 { 1.0e6 } else { 1.0 };
+                        r * 2.0 * mag
+                    })
+                    .collect();
+                let s = Nf4Vector::encode(&v);
+                let f = Nf4Vector::encode_fast(&v);
+                assert_eq!(s.packed, f.packed, "packed mismatch dim={dim} trial={trial}");
+                assert_eq!(s.scale, f.scale, "scale mismatch dim={dim} trial={trial}");
+                assert_eq!(s.dim, f.dim);
+            }
+        }
     }
 
     #[test]

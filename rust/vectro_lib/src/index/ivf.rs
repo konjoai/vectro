@@ -150,6 +150,7 @@ fn kmeans_lloyd(data: &[&[f32]], k: usize, d: usize, max_iter: usize, seed: u64)
 /// pressure, use [`crate::index::ivf_pq::IvfPqIndex`] which stores PQ codes
 /// instead of raw vectors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "IvfIndexWire", into = "IvfIndexWire")]
 pub struct IvfIndex {
     /// Number of Voronoi cells (coarse centroids).
     pub n_lists: usize,
@@ -159,15 +160,77 @@ pub struct IvfIndex {
     centroids: Vec<f32>,
     /// Per-list global vector IDs.
     posting_lists: Vec<Vec<usize>>,
-    /// All raw vectors stored as unit-norm f32.
-    store: Vec<Vec<f32>>,
-    /// Soft-deletion tombstones, aligned to `store`.
+    /// All unit-norm vectors in **one contiguous buffer**, row `i` at
+    /// `store[i*dim .. (i+1)*dim]`. Flat layout (was `Vec<Vec<f32>>`): removes a
+    /// pointer-chase + per-vector `Vec` header per candidate and lets the search
+    /// loop software-prefetch the next vector while scoring the current one.
+    store: Vec<f32>,
+    /// Soft-deletion tombstones, one per stored vector.
     #[serde(default)]
     deleted: Vec<bool>,
     /// Vector dimension (set at training time).
     dim: usize,
     /// Whether the index has been trained.
     trained: bool,
+}
+
+/// On-disk shadow of [`IvfIndex`] that preserves the original nested-`Vec`
+/// store layout as the wire format. `IvfIndex` serializes *into* this and
+/// deserializes *from* it (see the `#[serde(from/into)]` above), so the bincode
+/// bytes are byte-identical to pre-flat-store releases — old `.bin` files load
+/// unchanged, with no schema-version bump.
+#[derive(Serialize, Deserialize)]
+struct IvfIndexWire {
+    n_lists: usize,
+    n_probe: usize,
+    centroids: Vec<f32>,
+    posting_lists: Vec<Vec<usize>>,
+    store: Vec<Vec<f32>>,
+    #[serde(default)]
+    deleted: Vec<bool>,
+    dim: usize,
+    trained: bool,
+}
+
+impl From<IvfIndexWire> for IvfIndex {
+    fn from(w: IvfIndexWire) -> Self {
+        // Flatten the nested per-vector rows into one contiguous buffer.
+        let mut store = Vec::with_capacity(w.store.len() * w.dim);
+        for row in &w.store {
+            store.extend_from_slice(row);
+        }
+        Self {
+            n_lists: w.n_lists,
+            n_probe: w.n_probe,
+            centroids: w.centroids,
+            posting_lists: w.posting_lists,
+            store,
+            deleted: w.deleted,
+            dim: w.dim,
+            trained: w.trained,
+        }
+    }
+}
+
+impl From<IvfIndex> for IvfIndexWire {
+    fn from(idx: IvfIndex) -> Self {
+        // Re-chunk the flat store back into per-vector rows for the wire format.
+        let rows = if idx.dim == 0 { 0 } else { idx.store.len() / idx.dim };
+        let mut store = Vec::with_capacity(rows);
+        for i in 0..rows {
+            store.push(idx.store[i * idx.dim..(i + 1) * idx.dim].to_vec());
+        }
+        Self {
+            n_lists: idx.n_lists,
+            n_probe: idx.n_probe,
+            centroids: idx.centroids,
+            posting_lists: idx.posting_lists,
+            store,
+            deleted: idx.deleted,
+            dim: idx.dim,
+            trained: idx.trained,
+        }
+    }
 }
 
 impl IvfIndex {
@@ -196,7 +259,11 @@ impl IvfIndex {
 
     /// Number of vectors currently stored.
     pub fn len(&self) -> usize {
-        self.store.len()
+        if self.dim == 0 {
+            0
+        } else {
+            self.store.len() / self.dim
+        }
     }
 
     /// True when no vectors have been inserted after training.
@@ -257,6 +324,33 @@ impl IvfIndex {
         self.deleted.get(id).copied().unwrap_or(false)
     }
 
+    /// Borrow stored vector `id` from the flat store.
+    #[inline]
+    fn vec(&self, id: usize) -> &[f32] {
+        &self.store[id * self.dim..(id + 1) * self.dim]
+    }
+
+    /// Prefetch every cache line spanning stored vector `id` into L1. The
+    /// candidate scan is cold-memory-bound at high dimension; issuing the whole
+    /// span a couple of vectors ahead keeps the next vector streaming while the
+    /// current cosine computes (mirrors the HNSW search path).
+    #[inline(always)]
+    fn prefetch_vec(&self, id: usize) {
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: callers only pass posting-list ids, so `id < len()` and
+        // `id*dim .. id*dim+dim` is in-bounds; `prfm` never faults regardless.
+        unsafe {
+            let base = self.store.as_ptr().add(id * self.dim);
+            let lines = self.dim.div_ceil(16); // 64-byte lines = 16 f32 each
+            for l in 0..lines {
+                let p = base.add(l * 16);
+                core::arch::asm!("prfm pldl1keep, [{p}]", p = in(reg) p, options(nostack, preserves_flags, readonly));
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = id;
+    }
+
     // ──────────────────────────── public API ────────────────────────────────
 
     /// Train the coarse quantizer on `training_data`.
@@ -299,10 +393,10 @@ impl IvfIndex {
     pub fn add(&mut self, vector: &[f32]) -> usize {
         assert!(self.trained, "IvfIndex must be trained before calling add()");
         let norm_vec = Self::normalize(vector);
-        let id = self.store.len();
+        let id = self.len();
         let (ci, _) = self.nearest_centroid(&norm_vec);
         self.posting_lists[ci].push(id);
-        self.store.push(norm_vec);
+        self.store.extend_from_slice(&norm_vec);
         self.deleted.push(false);
         id
     }
@@ -332,15 +426,25 @@ impl IvfIndex {
         let q = Self::normalize(query);
         let probe_lists = self.top_centroids(&q, n_probe);
 
-        // Collect candidates from all probed posting lists.
+        // Collect candidates from all probed posting lists. Within each list we
+        // software-prefetch a couple of vectors ahead so the next cold vector is
+        // streaming in while the current cosine computes (flat store + prefetch).
+        const PREFETCH_AHEAD: usize = 2;
         let mut candidates: Vec<(usize, f32)> = probe_lists
             .par_iter()
             .flat_map(|&ci| {
-                self.posting_lists[ci]
-                    .iter()
-                    .filter(|&&id| !self.is_deleted(id))
-                    .map(|&id| (id, Self::cosine_dist(&q, &self.store[id])))
-                    .collect::<Vec<_>>()
+                let list = &self.posting_lists[ci];
+                let mut out: Vec<(usize, f32)> = Vec::with_capacity(list.len());
+                for (j, &id) in list.iter().enumerate() {
+                    if let Some(&nid) = list.get(j + PREFETCH_AHEAD) {
+                        self.prefetch_vec(nid);
+                    }
+                    if self.is_deleted(id) {
+                        continue;
+                    }
+                    out.push((id, Self::cosine_dist(&q, self.vec(id))));
+                }
+                out
             })
             .collect();
 
@@ -407,7 +511,7 @@ impl IvfIndex {
         }
 
         // Build old_id → new_id mapping.
-        let mut mapping: Vec<Option<usize>> = Vec::with_capacity(self.store.len());
+        let mut mapping: Vec<Option<usize>> = Vec::with_capacity(self.len());
         let mut new_id = 0usize;
         for &del in &self.deleted {
             if del {
@@ -418,14 +522,14 @@ impl IvfIndex {
             }
         }
 
-        // Compact the vector store.
-        let new_store: Vec<Vec<f32>> = self
-            .store
-            .iter()
-            .zip(self.deleted.iter())
-            .filter(|(_, &d)| !d)
-            .map(|(v, _)| v.clone())
-            .collect();
+        // Compact the vector store into a fresh contiguous buffer.
+        let survivors = self.len() - deleted_count;
+        let mut new_store: Vec<f32> = Vec::with_capacity(survivors * self.dim);
+        for id in 0..self.len() {
+            if !self.deleted[id] {
+                new_store.extend_from_slice(self.vec(id));
+            }
+        }
 
         // Remap all posting lists (filter deleted, translate IDs).
         for list in &mut self.posting_lists {
@@ -433,7 +537,7 @@ impl IvfIndex {
         }
 
         self.store = new_store;
-        self.deleted = vec![false; self.store.len()];
+        self.deleted = vec![false; survivors];
         deleted_count
     }
 
@@ -469,7 +573,7 @@ impl IvfIndex {
                 self.posting_lists[ci]
                     .iter()
                     .filter(|&&id| !self.is_deleted(id) && filter(id))
-                    .map(|&id| (id, Self::cosine_dist(&q, &self.store[id])))
+                    .map(|&id| (id, Self::cosine_dist(&q, self.vec(id))))
                     .collect::<Vec<_>>()
             })
             .collect();

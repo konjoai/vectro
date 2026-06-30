@@ -283,6 +283,18 @@ impl HnswIndex {
         }
     }
 
+    /// Append the metric-appropriate prepared form of `v` directly into `out`,
+    /// skipping the temporary `Vec` that `prep` allocates. `metric` is taken by
+    /// value so callers can pass `out = &mut self.vectors` without aliasing
+    /// `self` (the borrow checker treats the two fields as disjoint).
+    #[inline]
+    fn prep_into_buf(metric: Metric, v: &[f32], out: &mut Vec<f32>) {
+        match metric {
+            Metric::Cosine => Self::normalize_into(v, out),
+            Metric::L2 | Metric::InnerProduct => out.extend_from_slice(v),
+        }
+    }
+
     /// Prefetch **every** cache line spanning a stored vector, not just the first.
     /// At high dimension a single-line hint barely helps — the distance loop then
     /// demand-loads the other ~`dim/16` lines and stalls on each. Issuing the whole
@@ -337,13 +349,23 @@ impl HnswIndex {
         }
     }
 
-    fn normalize(v: &[f32]) -> Vec<f32> {
+    /// Unit-normalise `v`, appending the result into `out` in a single pass
+    /// (no temporary allocation). Zero vectors are copied through unchanged.
+    #[inline]
+    fn normalize_into(v: &[f32], out: &mut Vec<f32>) {
         let sq: f32 = v.iter().map(|x| x * x).sum();
         if sq == 0.0 {
-            return v.to_vec();
+            out.extend_from_slice(v);
+        } else {
+            let inv = 1.0 / sq.sqrt();
+            out.extend(v.iter().map(|x| x * inv));
         }
-        let inv = 1.0 / sq.sqrt();
-        v.iter().map(|x| x * inv).collect()
+    }
+
+    fn normalize(v: &[f32]) -> Vec<f32> {
+        let mut out = Vec::with_capacity(v.len());
+        Self::normalize_into(v, &mut out);
+        out
     }
 
     #[inline]
@@ -522,12 +544,15 @@ impl HnswIndex {
             }
             self.neighbors.push(nb_id, lc, node_id as NodeId);
             if self.neighbors.len_at(nb_id, lc) > max_m {
-                let nb_vec = self.vec(nb_id).to_vec();
+                // Borrow the stored vector read-only: the scoring loop and
+                // `select_heuristic` only read it, and the mutating `set` below
+                // runs after this borrow ends — so no `to_vec` copy is needed.
+                let nb_vec = self.vec(nb_id);
                 let mut scored: Vec<(f32, usize)> = self
                     .neighbors
                     .neighbors(nb_id, lc)
                     .iter()
-                    .map(|&n| (self.dist(&nb_vec, self.vec(n as usize)), n as usize))
+                    .map(|&n| (self.dist(nb_vec, self.vec(n as usize)), n as usize))
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let kept: Vec<NodeId> =
@@ -541,18 +566,23 @@ impl HnswIndex {
 
     /// Insert a single vector into the index (normalised internally).
     pub fn add(&mut self, vector: &[f32]) {
+        // main's bf16-nav store must be invalidated on mutation; the prepared
+        // vector itself is appended in-place below (WS-D), not via `prep`.
         self.invalidate_nav();
-        let norm_vec = self.prep(vector);
         let node_id = self.len();
         let node_level = self.random_level();
 
         if self.dim == 0 {
-            self.dim = norm_vec.len();
+            self.dim = vector.len();
         }
-        self.vectors.extend_from_slice(&norm_vec);
+        // Append the prepared vector straight into the flat store — no temporary
+        // `Vec`. The stored slice (`self.vec(node_id)`) is the query for the build.
+        let start = self.vectors.len();
+        Self::prep_into_buf(self.metric, vector, &mut self.vectors);
         // Keep the L2 norm cache aligned with `vectors` (see `dist_q`).
         if self.metric == Metric::L2 {
-            self.norms_sq.push(Self::dot(&norm_vec, &norm_vec));
+            let v = &self.vectors[start..start + self.dim];
+            self.norms_sq.push(Self::dot(v, v));
         }
         self.neighbors.add_node(node_level);
         self.deleted.push(false);
@@ -568,19 +598,22 @@ impl HnswIndex {
 
                 // Greedy descent from top down to node_level + 1 (ef = 1).
                 for lc in (node_level + 1..=max_l).rev() {
-                    let res = self.search_layer(&norm_vec, &curr_ep, 1, lc);
+                    let res = self.search_layer(self.vec(node_id), &curr_ep, 1, lc);
                     if !res.is_empty() {
-                        curr_ep = vec![res[0].1];
+                        curr_ep.clear();
+                        curr_ep.push(res[0].1);
                     }
                 }
 
                 // ef_construction-width search from min(node_level, max_l) → 0.
                 for lc in (0..=node_level.min(max_l)).rev() {
                     let candidates =
-                        self.search_layer(&norm_vec, &curr_ep, self.ef_construction, lc);
+                        self.search_layer(self.vec(node_id), &curr_ep, self.ef_construction, lc);
                     let max_m = if lc == 0 { self.m0 } else { self.m };
                     self.connect(node_id, lc, max_m, &candidates);
-                    curr_ep = candidates.into_iter().map(|(_, id)| id).collect();
+                    // Reuse `curr_ep`'s allocation across layers.
+                    curr_ep.clear();
+                    curr_ep.extend(candidates.into_iter().map(|(_, id)| id));
                 }
 
                 if node_level > max_l {
@@ -635,7 +668,8 @@ impl HnswIndex {
         self.dim = vectors.first().map(|v| v.as_ref().len()).unwrap_or(0);
         let mut flat = Vec::with_capacity(n * self.dim);
         for v in vectors {
-            flat.extend_from_slice(&self.prep(v.as_ref()));
+            // Prepare straight into the flat buffer — no per-vector temp `Vec`.
+            Self::prep_into_buf(self.metric, v.as_ref(), &mut flat);
         }
         self.vectors = flat;
         self.deleted = vec![false; n];
@@ -697,7 +731,8 @@ impl HnswIndex {
         for lc in (node_level + 1..=max_l).rev() {
             let res = self.search_layer_locked(q, &curr_ep, 1, lc, graph);
             if !res.is_empty() {
-                curr_ep = vec![res[0].1];
+                curr_ep.clear();
+                curr_ep.push(res[0].1);
             }
         }
 
@@ -706,7 +741,9 @@ impl HnswIndex {
             let candidates = self.search_layer_locked(q, &curr_ep, self.ef_construction, lc, graph);
             let max_m = if lc == 0 { self.m0 } else { self.m };
             self.connect_locked(node_id, lc, max_m, &candidates, graph);
-            curr_ep = candidates.into_iter().map(|(_, id)| id).collect();
+            // Reuse `curr_ep`'s allocation across layers.
+            curr_ep.clear();
+            curr_ep.extend(candidates.into_iter().map(|(_, id)| id));
         }
 
         // Raise the entry point if this node introduced a new top level.
