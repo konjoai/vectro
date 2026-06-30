@@ -256,7 +256,13 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
     /// exact distance (high-quality graph); at query time (`use_f32 = false`,
     /// or after `finalize`) the asymmetric quantized distance is used.
     #[inline]
-    fn node_dist(&self, id: usize, query: &[f32], use_f32: bool) -> f32 {
+    fn node_dist(
+        &self,
+        id: usize,
+        query: &[f32],
+        prepared: Option<&Q::Prepared>,
+        use_f32: bool,
+    ) -> f32 {
         if use_f32 {
             if let Some(v) = self.build_vectors.get(id) {
                 if !v.is_empty() {
@@ -264,7 +270,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                 }
             }
         }
-        Q::dist_to_query(&self.encoded[id], query)
+        match prepared {
+            // Query-time fast path: prepared (e.g. VNNI-quantised) query.
+            Some(p) => Q::dist_to_prepared(&self.encoded[id], p),
+            None => Q::dist_to_query(&self.encoded[id], query),
+        }
     }
 
     /// Core beam search with an optional per-node inclusion predicate.
@@ -284,6 +294,12 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
     ) -> Vec<(f32, usize)> {
         // Reusable thread-local epoch visited set (see `super::scratch`): O(1)
         // mark/check, allocated once per thread instead of once per layer call.
+        // Prepare the query once for the whole search (query-time only). For
+        // INT8 this quantises the query for the VNNI integer dot; for other
+        // codecs it owns the f32 query. The build path scores against
+        // `build_vectors` in f32, so no preparation is needed there.
+        let prepared = if use_f32 { None } else { Some(Q::prepare(query)) };
+        let prepared = prepared.as_ref();
         super::scratch::with_visited(self.encoded.len(), |visited| {
             // Packed-u64 heaps (see super::pack_key): native integer ordering,
             // no per-comparison f32 branch.
@@ -291,7 +307,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             let mut window: BinaryHeap<u64> = BinaryHeap::new();
 
             for &ep in entry_points {
-                let d = self.node_dist(ep, query, use_f32);
+                let d = self.node_dist(ep, query, prepared, use_f32);
                 visited.visit(ep);
                 cands.push(std::cmp::Reverse(pack_key(d, ep)));
                 if !self.is_deleted(ep) && filter(ep) {
@@ -311,12 +327,32 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                 }
                 // Iterate adjacency by reference — `neighbors` and `encoded` are
                 // distinct shared borrows of `self`, so no clone is needed here.
-                for &nb in &self.neighbors[c][layer] {
+                let nbrs = &self.neighbors[c][layer];
+                // Software-pipelined prefetch of the (cold, separately-allocated)
+                // code rows: prime the first PF neighbours, then stay PF ahead so
+                // each code streams in while the previous distance computes. Only
+                // at query time (`!use_f32`) — the build path scores against the
+                // f32 `build_vectors`, not `encoded`. Mirrors `hnsw.rs`.
+                #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+                const PF: usize = 2;
+                #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+                if !use_f32 {
+                    for &pf in nbrs.iter().take(PF) {
+                        Q::prefetch(&self.encoded[pf as usize]);
+                    }
+                }
+                for (i, &nb) in nbrs.iter().enumerate() {
+                    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+                    if !use_f32 {
+                        if let Some(&fut) = nbrs.get(i + PF) {
+                            Q::prefetch(&self.encoded[fut as usize]);
+                        }
+                    }
                     let nb = nb as usize;
                     if !visited.visit(nb) {
                         continue;
                     }
-                    let d_nb = self.node_dist(nb, query, use_f32);
+                    let d_nb = self.node_dist(nb, query, prepared, use_f32);
                     let worst2 = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
                     if d_nb < worst2 || window.len() < ef {
                         cands.push(std::cmp::Reverse(pack_key(d_nb, nb)));
@@ -414,7 +450,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                     .unwrap_or_else(|| Q::decode(&self.encoded[nb_id], 0));
                 let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
                     .iter()
-                    .map(|&n| (self.node_dist(n as usize, &nb_query, use_f32), n as usize))
+                    .map(|&n| (self.node_dist(n as usize, &nb_query, None, use_f32), n as usize))
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let kept = self.select_heuristic(&scored, max_m, use_f32);
@@ -618,7 +654,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
             let mut window: BinaryHeap<u64> = BinaryHeap::new();
 
             for &ep in entry_points {
-                let d = self.node_dist(ep, query, true);
+                let d = self.node_dist(ep, query, None, true);
                 visited.visit(ep);
                 cands.push(std::cmp::Reverse(pack_key(d, ep)));
                 window.push(pack_key(d, ep));
@@ -643,7 +679,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                     if !visited.visit(nb) {
                         continue;
                     }
-                    let d_nb = self.node_dist(nb, query, true);
+                    let d_nb = self.node_dist(nb, query, None, true);
                     let worst2 = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
                     if d_nb < worst2 || window.len() < ef {
                         cands.push(std::cmp::Reverse(pack_key(d_nb, nb)));
@@ -701,7 +737,7 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                 let nb_query = &self.build_vectors[nb_id];
                 let mut scored: Vec<(f32, usize)> = lock
                     .iter()
-                    .map(|&nbr| (self.node_dist(nbr as usize, nb_query, true), nbr as usize))
+                    .map(|&nbr| (self.node_dist(nbr as usize, nb_query, None, true), nbr as usize))
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let kept = self.select_heuristic(&scored, max_m, true);

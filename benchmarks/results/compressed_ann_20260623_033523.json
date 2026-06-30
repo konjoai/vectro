@@ -1,0 +1,77 @@
+{
+  "benchmark": "compressed_ann_tradeoff",
+  "generated_utc": "2026-06-23T03:35:23.354332+00:00",
+  "config": {
+    "n": 200000,
+    "d": 768,
+    "q": 500,
+    "k": 10,
+    "m": 16,
+    "ef": 100,
+    "ef_construction": 200,
+    "rerank_k": 100,
+    "n_lists": 1024,
+    "m_pq": 64,
+    "n_probe": 32,
+    "reps": 4,
+    "dataset": "synthetic-clustered(seed=42)"
+  },
+  "hardware": {
+    "platform": "Linux-6.18.5-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "python": "3.11.15",
+    "cpus": 4
+  },
+  "results": [
+    {
+      "method": "vectro-HNSW-fp32",
+      "recall": 0.9996,
+      "qps": 8898.9,
+      "bytes_per_vec": 3200,
+      "build_s": 34.11
+    },
+    {
+      "method": "vectro-HNSW-INT8",
+      "recall": 0.9358,
+      "qps": 4358.4,
+      "bytes_per_vec": 900,
+      "build_s": 42.14
+    },
+    {
+      "method": "vectro-NF4-HNSW+rerank",
+      "recall": 0.9362,
+      "qps": 4547.9,
+      "bytes_per_vec": 1288,
+      "build_s": 39.66
+    },
+    {
+      "method": "vectro-Binary-HNSW+rerank",
+      "recall": 0.6348,
+      "qps": 1099.8,
+      "bytes_per_vec": 996,
+      "build_s": 44.56
+    },
+    {
+      "method": "vectro-IVF-PQ",
+      "recall": 0.1254,
+      "qps": 2202.1,
+      "bytes_per_vec": 87.7,
+      "build_s": 74.36
+    },
+    {
+      "method": "faiss-HNSW-fp32",
+      "recall": 0.9994,
+      "qps": 5239.3,
+      "bytes_per_vec": 3200,
+      "build_s": 54.67
+    },
+    {
+      "method": "faiss-IVF-PQ",
+      "recall": 0.1746,
+      "qps": 4163.2,
+      "bytes_per_vec": 87.7,
+      "build_s": 66.84
+    }
+  ],
+  "note": "bytes/vec is analytic steady-state (codes + ~2M int32 graph links + re-rank store); ratios are the durable signal on shared hosts."
+}

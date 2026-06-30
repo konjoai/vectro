@@ -12,6 +12,11 @@ pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"] }
 numpy = { version = "0.20", features = ["half"] }
 ndarray = "0.15"
 half = "2.4"
+# Sharded per-thread allocator — beats glibc arena-locking on the alloc-heavy
+# HNSW concurrent build / multi-thread query paths (see vectro_lib's
+# examples/alloc_bench.rs: ~1.1-1.16x build, ~1.08-1.1x concurrent query on a
+# 4-core x86 host). Applies to all Rust-side allocations in the extension.
+mimalloc = { version = "0.1", default-features = false }
 
 [features]
 default = []

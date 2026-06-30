@@ -197,3 +197,61 @@ def test_save_load_roundtrip_rust(tmp_path):
     after = [loaded.search(q, k=10, ef=150)[0].tolist() for q in queries]
     # Deterministic native graph → identical results after reload.
     assert before == after
+
+
+# ─────────────────────────── batch search ─────────────────────────────────
+
+
+def test_search_batch_matches_per_query_rust():
+    corpus, queries = _data(600, 48, seed=20), _data(40, 48, seed=21)
+    idx = HNSWIndex(M=16, ef_construction=200, backend="rust")
+    idx.add(corpus)
+
+    bidx, bdst = idx.search_batch(queries, k=10, ef=150)
+    assert bidx.shape == (40, 10)
+    assert bdst.shape == (40, 10)
+    for i, q in enumerate(queries):
+        sidx, _ = idx.search(q, k=10, ef=150)
+        # Native single and batch entries share the same kernel → identical IDs.
+        assert bidx[i].tolist() == sidx.tolist()
+
+
+def test_search_batch_1d_query_treated_as_single_row():
+    corpus = _data(300, 32, seed=22)
+    idx = HNSWIndex(backend="rust")
+    idx.add(corpus)
+    bidx, _ = idx.search_batch(corpus[0], k=5, ef=100)
+    assert bidx.shape == (1, 5)
+    assert bidx[0, 0] == 0  # a vector is its own nearest neighbour
+
+
+def test_search_batch_filter_fallback():
+    corpus = _data(300, 32, seed=23)
+    idx = HNSWIndex(backend="rust")
+    meta = [{"tag": "a" if i % 2 == 0 else "b"} for i in range(len(corpus))]
+    idx.add(corpus, metadata=meta)
+    bidx, _ = idx.search_batch(corpus[:5], k=8, ef=100, filter={"tag": "a"})
+    assert bidx.shape == (5, 8)
+    for row in bidx:
+        for nid in row:
+            if nid >= 0:  # ignore -1 padding
+                assert int(nid) % 2 == 0
+
+
+def test_search_batch_python_backend():
+    corpus, queries = _data(300, 32, seed=24), _data(15, 32, seed=25)
+    idx = HNSWIndex(backend="python")
+    idx.add(corpus)
+    bidx, _ = idx.search_batch(queries, k=10, ef=120)
+    assert bidx.shape == (15, 10)
+    for i, q in enumerate(queries):
+        sidx, _ = idx.search(q, k=10, ef=120)
+        assert bidx[i].tolist() == sidx.tolist()
+
+
+def test_search_batch_empty_index_padded():
+    idx = HNSWIndex(backend="rust")
+    bidx, bdst = idx.search_batch(_data(3, 16, seed=26), k=5, ef=50)
+    assert bidx.shape == (3, 5)
+    assert (bidx == -1).all()
+    assert np.isinf(bdst).all()

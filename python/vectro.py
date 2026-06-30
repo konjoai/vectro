@@ -32,7 +32,7 @@ from .profiles_api import (
     get_compression_profile,
 )
 
-__version__ = "5.18.0"
+__version__ = "5.24.0"
 __author__ = "Wesley Scholl"
 __license__ = "MIT"
 __description__ = "Ultra-High-Performance LLM Embedding Compressor"
@@ -286,7 +286,12 @@ class Vectro:
         if vectors.size == 0:
             raise ValueError("vectors must be non-empty")
 
-        vectors = vectors.astype(np.float32)
+        # `asarray` is a no-op when the input is already float32 (the common
+        # case), whereas `astype` unconditionally copies the whole [N, D] batch.
+        # Downstream Rust entries handle contiguity themselves, so only the dtype
+        # needs ensuring here. compress() never mutates `vectors`, so sharing the
+        # buffer with the caller is safe.
+        vectors = np.asarray(vectors, dtype=np.float32)
 
         # Determine if single vector or batch
         if vectors.ndim == 1:

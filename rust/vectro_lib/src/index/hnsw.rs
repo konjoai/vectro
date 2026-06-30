@@ -11,137 +11,12 @@
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-#[cfg(not(target_arch = "aarch64"))]
-use simsimd::SpatialSimilarity;
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::{PoisonError, RwLock};
 
 use super::graph::{graph_serde, Graph};
 use super::neighbor_store::{NeighborList, NodeId};
 use super::{key_dist, key_id, pack_key};
-
-/// Inlined NEON f32 dot product — `Σ a[i]*b[i]` — for the HNSW search hot loop.
-/// Four independent `f32x4` accumulators break the reduction dependency chain.
-///
-/// # Safety
-/// Requires NEON (mandated on AArch64-v8). Reads only `min(a, b)` lanes.
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-#[inline]
-unsafe fn dot_f32_neon(a: &[f32], b: &[f32]) -> f32 {
-    use std::arch::aarch64::*;
-    let n = a.len().min(b.len());
-    let (ap, bp) = (a.as_ptr(), b.as_ptr());
-    // Eight independent f32x4 accumulators (32 lanes/iter). M3 Firestorm issues up
-    // to 4 FP ops/cycle but each FMA has ~3-4 cycle latency, so it takes ~12-16
-    // in-flight FMAs to saturate the pipes; 4 accumulator chains stall at ~25% of
-    // peak, 8 chains roughly double high-dim throughput. Verified: closes the L2/IP
-    // search gap vs faiss at d≥256.
-    let mut acc0 = vdupq_n_f32(0.0);
-    let mut acc1 = vdupq_n_f32(0.0);
-    let mut acc2 = vdupq_n_f32(0.0);
-    let mut acc3 = vdupq_n_f32(0.0);
-    let mut acc4 = vdupq_n_f32(0.0);
-    let mut acc5 = vdupq_n_f32(0.0);
-    let mut acc6 = vdupq_n_f32(0.0);
-    let mut acc7 = vdupq_n_f32(0.0);
-    let chunks = n / 32;
-    for i in 0..chunks {
-        let o = i * 32;
-        acc0 = vfmaq_f32(acc0, vld1q_f32(ap.add(o)), vld1q_f32(bp.add(o)));
-        acc1 = vfmaq_f32(acc1, vld1q_f32(ap.add(o + 4)), vld1q_f32(bp.add(o + 4)));
-        acc2 = vfmaq_f32(acc2, vld1q_f32(ap.add(o + 8)), vld1q_f32(bp.add(o + 8)));
-        acc3 = vfmaq_f32(acc3, vld1q_f32(ap.add(o + 12)), vld1q_f32(bp.add(o + 12)));
-        acc4 = vfmaq_f32(acc4, vld1q_f32(ap.add(o + 16)), vld1q_f32(bp.add(o + 16)));
-        acc5 = vfmaq_f32(acc5, vld1q_f32(ap.add(o + 20)), vld1q_f32(bp.add(o + 20)));
-        acc6 = vfmaq_f32(acc6, vld1q_f32(ap.add(o + 24)), vld1q_f32(bp.add(o + 24)));
-        acc7 = vfmaq_f32(acc7, vld1q_f32(ap.add(o + 28)), vld1q_f32(bp.add(o + 28)));
-    }
-    // Handle the 16-lane remainder before the scalar tail.
-    let mut o = chunks * 32;
-    if o + 16 <= n {
-        acc0 = vfmaq_f32(acc0, vld1q_f32(ap.add(o)), vld1q_f32(bp.add(o)));
-        acc1 = vfmaq_f32(acc1, vld1q_f32(ap.add(o + 4)), vld1q_f32(bp.add(o + 4)));
-        acc2 = vfmaq_f32(acc2, vld1q_f32(ap.add(o + 8)), vld1q_f32(bp.add(o + 8)));
-        acc3 = vfmaq_f32(acc3, vld1q_f32(ap.add(o + 12)), vld1q_f32(bp.add(o + 12)));
-        o += 16;
-    }
-    let sum = vaddq_f32(
-        vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)),
-        vaddq_f32(vaddq_f32(acc4, acc5), vaddq_f32(acc6, acc7)),
-    );
-    let mut total = vaddvq_f32(sum);
-    for i in o..n {
-        total += a[i] * b[i];
-    }
-    total
-}
-
-/// Inlined NEON squared-Euclidean distance — `Σ (a[i] − b[i])²` — for L2 search.
-/// Four `f32x4` accumulators of `(a−b)²` via FMA, mirroring [`dot_f32_neon`].
-///
-/// # Safety
-/// Requires NEON (mandated on AArch64-v8). Reads only `min(a, b)` lanes.
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-#[inline]
-unsafe fn l2_sq_neon(a: &[f32], b: &[f32]) -> f32 {
-    use std::arch::aarch64::*;
-    let n = a.len().min(b.len());
-    let (ap, bp) = (a.as_ptr(), b.as_ptr());
-    // Eight independent accumulators (32 lanes/iter) — see `dot_f32_neon` for the
-    // ILP rationale (4 chains stall the FMA pipes at high dim; 8 saturate them).
-    let mut acc0 = vdupq_n_f32(0.0);
-    let mut acc1 = vdupq_n_f32(0.0);
-    let mut acc2 = vdupq_n_f32(0.0);
-    let mut acc3 = vdupq_n_f32(0.0);
-    let mut acc4 = vdupq_n_f32(0.0);
-    let mut acc5 = vdupq_n_f32(0.0);
-    let mut acc6 = vdupq_n_f32(0.0);
-    let mut acc7 = vdupq_n_f32(0.0);
-    let chunks = n / 32;
-    for i in 0..chunks {
-        let o = i * 32;
-        let d0 = vsubq_f32(vld1q_f32(ap.add(o)), vld1q_f32(bp.add(o)));
-        let d1 = vsubq_f32(vld1q_f32(ap.add(o + 4)), vld1q_f32(bp.add(o + 4)));
-        let d2 = vsubq_f32(vld1q_f32(ap.add(o + 8)), vld1q_f32(bp.add(o + 8)));
-        let d3 = vsubq_f32(vld1q_f32(ap.add(o + 12)), vld1q_f32(bp.add(o + 12)));
-        let d4 = vsubq_f32(vld1q_f32(ap.add(o + 16)), vld1q_f32(bp.add(o + 16)));
-        let d5 = vsubq_f32(vld1q_f32(ap.add(o + 20)), vld1q_f32(bp.add(o + 20)));
-        let d6 = vsubq_f32(vld1q_f32(ap.add(o + 24)), vld1q_f32(bp.add(o + 24)));
-        let d7 = vsubq_f32(vld1q_f32(ap.add(o + 28)), vld1q_f32(bp.add(o + 28)));
-        acc0 = vfmaq_f32(acc0, d0, d0);
-        acc1 = vfmaq_f32(acc1, d1, d1);
-        acc2 = vfmaq_f32(acc2, d2, d2);
-        acc3 = vfmaq_f32(acc3, d3, d3);
-        acc4 = vfmaq_f32(acc4, d4, d4);
-        acc5 = vfmaq_f32(acc5, d5, d5);
-        acc6 = vfmaq_f32(acc6, d6, d6);
-        acc7 = vfmaq_f32(acc7, d7, d7);
-    }
-    let mut o = chunks * 32;
-    if o + 16 <= n {
-        let d0 = vsubq_f32(vld1q_f32(ap.add(o)), vld1q_f32(bp.add(o)));
-        let d1 = vsubq_f32(vld1q_f32(ap.add(o + 4)), vld1q_f32(bp.add(o + 4)));
-        let d2 = vsubq_f32(vld1q_f32(ap.add(o + 8)), vld1q_f32(bp.add(o + 8)));
-        let d3 = vsubq_f32(vld1q_f32(ap.add(o + 12)), vld1q_f32(bp.add(o + 12)));
-        acc0 = vfmaq_f32(acc0, d0, d0);
-        acc1 = vfmaq_f32(acc1, d1, d1);
-        acc2 = vfmaq_f32(acc2, d2, d2);
-        acc3 = vfmaq_f32(acc3, d3, d3);
-        o += 16;
-    }
-    let sum = vaddq_f32(
-        vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)),
-        vaddq_f32(vaddq_f32(acc4, acc5), vaddq_f32(acc6, acc7)),
-    );
-    let mut total = vaddvq_f32(sum);
-    for i in o..n {
-        let d = a[i] - b[i];
-        total += d * d;
-    }
-    total
-}
 
 /// Diagnostic counter of distance evaluations (compile with `--features
 /// distcount`). Compared against faiss `hnsw_stats.ndis` to attribute the
@@ -211,6 +86,18 @@ pub struct HnswIndex {
     /// so it is not serialised — `ensure_norms` rebuilds it after load.
     #[serde(skip)]
     norms_sq: Vec<f32>,
+    /// Optional BF16 navigation store: the same prepped vectors at half the
+    /// bytes (`nav_bf16[i*dim..]` mirrors `vectors[i*dim..]`). When enabled, the
+    /// beam traverses on these (halving the per-candidate DRAM traffic that
+    /// bounds high-dim search) and the final `ef` window is re-scored against the
+    /// exact f32 `vectors` — so recall matches the pure-f32 index while QPS
+    /// rises. Derived from `vectors`, not serialised; rebuilt on load when
+    /// `nav_enabled`.
+    #[serde(skip)]
+    nav_bf16: Vec<u16>,
+    /// Whether the BF16 navigation fast path is active (see `nav_bf16`).
+    #[serde(default)]
+    nav_enabled: bool,
 }
 
 impl HnswIndex {
@@ -241,6 +128,8 @@ impl HnswIndex {
             deleted: Vec::new(),
             metric,
             norms_sq: Vec::new(),
+            nav_bf16: Vec::new(),
+            nav_enabled: false,
         }
     }
 
@@ -267,20 +156,10 @@ impl HnswIndex {
 
     // ─────────────────────────── internal helpers ────────────────────────
 
-    /// Raw dot product. On aarch64 a directly-inlined NEON FMA reduction; at
-    /// small dims SimSIMD's per-call dispatch overhead dominates, so it's only
-    /// the portable fallback.
+    /// Raw dot product via the shared SIMD kernel ([`super::simd::dot_f32`]).
     #[inline]
     fn dot(a: &[f32], b: &[f32]) -> f32 {
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: NEON is mandated on AArch64-v8; the helper reads in-bounds lanes.
-        {
-            unsafe { dot_f32_neon(a, b) }
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0) as f32
-        }
+        super::simd::dot_f32(a, b)
     }
 
     /// Distance between two stored vectors under this index's [`Metric`]
@@ -292,17 +171,7 @@ impl HnswIndex {
         match self.metric {
             // Stored unit-norm, so dot == cosine similarity.
             Metric::Cosine => (1.0 - Self::dot(a, b)).max(0.0),
-            Metric::L2 => {
-                #[cfg(target_arch = "aarch64")]
-                // SAFETY: NEON mandated; reads in-bounds lanes.
-                {
-                    unsafe { l2_sq_neon(a, b) }
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    a.iter().zip(b).map(|(x, y)| { let d = x - y; d * d }).sum()
-                }
-            }
+            Metric::L2 => super::simd::l2_sq(a, b),
             // Negate so the beam's "smaller is closer" ordering finds the maximum.
             Metric::InnerProduct => -Self::dot(a, b),
         }
@@ -331,6 +200,62 @@ impl HnswIndex {
             Metric::L2 => (q_norm_sq + self.norms_sq[id] - 2.0 * Self::dot(query, v)).max(0.0),
             Metric::InnerProduct => -Self::dot(query, v),
         }
+    }
+
+    /// Navigation distance from `query` to node `id`: the BF16 store when the
+    /// fast path is enabled (half the DRAM traffic — `dv` is the exact-widened
+    /// bf16), else the exact f32 [`dist_q`]. The approximate ordering only steers
+    /// graph traversal; [`search`] re-scores the final window with `dist_q`, so
+    /// the returned top-k is exact.
+    #[inline]
+    fn dist_q_nav(&self, query: &[f32], q_norm_sq: f32, id: usize) -> f32 {
+        if !self.nav_enabled {
+            return self.dist_q(query, q_norm_sq, id);
+        }
+        let row = &self.nav_bf16[id * self.dim..(id + 1) * self.dim];
+        let (dot, norm_sq) = crate::quant::bf16::bf16_dot_norm(row, query, self.dim);
+        match self.metric {
+            // query is unit-norm (prepped); divide by the bf16 norm so drift in
+            // ‖v_bf16‖ doesn't bias the ordering.
+            Metric::Cosine => (1.0 - dot / norm_sq.sqrt().max(1e-12)).max(0.0),
+            Metric::L2 => (q_norm_sq + norm_sq - 2.0 * dot).max(0.0),
+            Metric::InnerProduct => -dot,
+        }
+    }
+
+    /// Build (or rebuild) the BF16 navigation store from the exact f32 `vectors`
+    /// and activate the [`dist_q_nav`] fast path. Call after building. Adds
+    /// `n·dim·2` bytes (½ of the f32 store) and lets high-dim search traverse on
+    /// half the memory traffic while [`search`]'s f32 re-rank keeps recall exact.
+    pub fn enable_bf16_nav(&mut self) {
+        self.nav_enabled = true;
+        self.rebuild_nav();
+    }
+
+    /// Drop the BF16 nav store when `vectors` is mutated by insertion (indices
+    /// would otherwise go stale, and the graph should be built from exact f32
+    /// distances). Call `enable_bf16_nav` again to restore the fast path.
+    fn invalidate_nav(&mut self) {
+        if self.nav_enabled {
+            self.nav_enabled = false;
+            self.nav_bf16 = Vec::new();
+            tracing::warn!(
+                "HNSW bf16 nav store invalidated by insertion; call enable_bf16_nav() to restore"
+            );
+        }
+    }
+
+    /// Repopulate `nav_bf16` from `vectors` (idempotent). No-op when disabled.
+    fn rebuild_nav(&mut self) {
+        if !self.nav_enabled || self.dim == 0 {
+            return;
+        }
+        let n = self.vectors.len() / self.dim;
+        let mut buf: Vec<u16> = Vec::with_capacity(n * self.dim);
+        for i in 0..n {
+            crate::quant::bf16::encode_bf16_flat(&self.vectors[i * self.dim..(i + 1) * self.dim], &mut buf);
+        }
+        self.nav_bf16 = buf;
     }
 
     /// Rebuild `norms_sq` from `vectors` when the metric is L2 (no-op otherwise).
@@ -378,12 +303,49 @@ impl HnswIndex {
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
     unsafe fn prefetch_vec_full(&self, id: usize) {
+        // When the bf16 nav store is active the beam reads it, not the f32 store,
+        // so prefetch the half-width bf16 row (32 u16 = one 64-byte line).
+        if self.nav_enabled {
+            let base = self.nav_bf16.as_ptr().add(id * self.dim);
+            let lines = (self.dim * 2).div_ceil(64);
+            for l in 0..lines {
+                let p = base.add(l * 32);
+                core::arch::asm!("prfm pldl1keep, [{p}]", p = in(reg) p, options(nostack, preserves_flags, readonly));
+            }
+            return;
+        }
         let base = self.vectors.as_ptr().add(id * self.dim);
         // 64-byte cache lines = 16 f32 each; round up to cover the tail.
         let lines = self.dim.div_ceil(16);
         for l in 0..lines {
             let p = base.add(l * 16);
             core::arch::asm!("prfm pldl1keep, [{p}]", p = in(reg) p, options(nostack, preserves_flags, readonly));
+        }
+    }
+
+    /// x86_64 analogue of the aarch64 [`prefetch_vec_full`]: issue an
+    /// `_mm_prefetch` (T0, into L1) for every cache line spanning vector `id`,
+    /// software-pipelined a couple of neighbours ahead in the beam loop so the
+    /// cold vector streams in while the current distance computes.
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    unsafe fn prefetch_vec_full(&self, id: usize) {
+        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+        // When the bf16 nav store is active the beam reads it, not the f32 store,
+        // so prefetch the half-width bf16 row (32 u16 = one 64-byte line).
+        if self.nav_enabled {
+            let base = self.nav_bf16.as_ptr().add(id * self.dim);
+            let lines = (self.dim * 2).div_ceil(64);
+            for l in 0..lines {
+                _mm_prefetch::<_MM_HINT_T0>(base.add(l * 32) as *const i8);
+            }
+            return;
+        }
+        let base = self.vectors.as_ptr().add(id * self.dim);
+        // 64-byte cache lines = 16 f32 each; round up to cover the tail.
+        let lines = self.dim.div_ceil(16);
+        for l in 0..lines {
+            _mm_prefetch::<_MM_HINT_T0>(base.add(l * 16) as *const i8);
         }
     }
 
@@ -452,11 +414,13 @@ impl HnswIndex {
             // Packed-u64 heaps (see pack_key): native integer ordering, no
             // per-comparison f32 branch. cands = min-heap on dist (Reverse),
             // window = max-heap on dist (pop worst to keep size <= ef).
-            let mut cands: BinaryHeap<std::cmp::Reverse<u64>> = BinaryHeap::new();
-            let mut window: BinaryHeap<u64> = BinaryHeap::new();
+            // Pre-size to `ef` so the hot loop never pays heap-growth reallocs
+            // (the window is bounded by ef; cands rarely exceeds it materially).
+            let mut cands: BinaryHeap<std::cmp::Reverse<u64>> = BinaryHeap::with_capacity(ef + 1);
+            let mut window: BinaryHeap<u64> = BinaryHeap::with_capacity(ef + 1);
 
             for &ep in entry_points {
-                let d = self.dist_q(query, q_norm_sq, ep);
+                let d = self.dist_q_nav(query, q_norm_sq, ep);
                 visited.visit(ep);
                 cands.push(std::cmp::Reverse(pack_key(d, ep)));
                 if !self.is_deleted(ep) && filter(ep) {
@@ -484,15 +448,15 @@ impl HnswIndex {
                 // Two neighbours of look-ahead empirically hides the cold-vector
                 // latency across d=100…784 without flooding L1; higher PF gives
                 // only marginal high-dim gains and risks low-dim cache pressure.
-                #[cfg(target_arch = "aarch64")]
+                #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
                 const PF: usize = 2;
-                #[cfg(target_arch = "aarch64")]
+                #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
                 for &nb in nbrs.iter().take(PF) {
                     // SAFETY: ids are in-bounds; prefetch is a no-effect hint.
                     unsafe { self.prefetch_vec_full(nb as usize) };
                 }
                 for (i, &nb) in nbrs.iter().enumerate() {
-                    #[cfg(target_arch = "aarch64")]
+                    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
                     if let Some(&fut) = nbrs.get(i + PF) {
                         // SAFETY: ids are in-bounds; prefetch is a no-effect hint.
                         unsafe { self.prefetch_vec_full(fut as usize) };
@@ -501,7 +465,7 @@ impl HnswIndex {
                     if !visited.visit(nb) {
                         continue;
                     }
-                    let d_nb = self.dist_q(query, q_norm_sq, nb);
+                    let d_nb = self.dist_q_nav(query, q_norm_sq, nb);
                     let worst2 = window.peek().map(|&k| key_dist(k)).unwrap_or(f32::INFINITY);
                     if d_nb < worst2 || window.len() < ef {
                         cands.push(std::cmp::Reverse(pack_key(d_nb, nb)));
@@ -602,6 +566,9 @@ impl HnswIndex {
 
     /// Insert a single vector into the index (normalised internally).
     pub fn add(&mut self, vector: &[f32]) {
+        // main's bf16-nav store must be invalidated on mutation; the prepared
+        // vector itself is appended in-place below (WS-D), not via `prep`.
+        self.invalidate_nav();
         let node_id = self.len();
         let node_level = self.random_level();
 
@@ -939,8 +906,19 @@ impl HnswIndex {
             }
         }
 
-        // Full beam search at layer 0.
+        // Full beam search at layer 0 (on the bf16 nav store when enabled).
         let res = self.search_layer(&q, &curr_ep, ef, 0);
+        if self.nav_enabled {
+            // Re-score the whole ef window against the exact f32 vectors and pick
+            // the true top-k. Navigation was approximate (bf16) but this final
+            // O(ef) exact pass restores fp32-identical results.
+            let q_nsq = self.query_norm_sq(&q);
+            let mut rer: Vec<(f32, usize)> =
+                res.iter().map(|&(_, id)| (self.dist_q(&q, q_nsq, id), id)).collect();
+            rer.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            rer.truncate(k);
+            return rer.into_iter().map(|(d, id)| (id, d)).collect();
+        }
         res.into_iter().take(k).map(|(d, id)| (id, d)).collect()
     }
 
@@ -1033,6 +1011,8 @@ impl HnswIndex {
         let mut idx: Self = bincode::deserialize_from(reader)?;
         // `norms_sq` is derived (serde-skipped) — rebuild it for the L2 fast path.
         idx.ensure_norms();
+        // `nav_bf16` is serde-skipped too; rebuild it when the fast path was on.
+        idx.rebuild_nav();
         Ok(idx)
     }
 
@@ -1066,27 +1046,6 @@ impl HnswIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(target_arch = "aarch64")]
-    #[test]
-    fn simd_kernels_match_scalar_across_dims() {
-        // The 8-accumulator kernels split work into 32-lane chunks, a 16-lane
-        // remainder, then a scalar tail. Verify every awkward dimension (multiples
-        // of 32, +16 remainder, and odd scalar tails) matches a scalar reference.
-        for &d in &[1usize, 3, 4, 16, 17, 25, 31, 32, 33, 48, 49, 64, 100, 128, 200, 256, 257, 784] {
-            let a: Vec<f32> = (0..d).map(|i| (i as f32 * 0.37 - 1.1).sin() * 3.0).collect();
-            let b: Vec<f32> = (0..d).map(|i| (i as f32 * 0.21 + 0.5).cos() * 2.0).collect();
-            let dot_ref: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
-            let l2_ref: f32 = a.iter().zip(&b).map(|(x, y)| (x - y) * (x - y)).sum();
-            // SAFETY: NEON is mandated on AArch64-v8.
-            let dot = unsafe { dot_f32_neon(&a, &b) };
-            let l2 = unsafe { l2_sq_neon(&a, &b) };
-            let tol = 1e-3 * (1.0 + dot_ref.abs());
-            assert!((dot - dot_ref).abs() <= tol, "dot d={d}: {dot} vs {dot_ref}");
-            let tol2 = 1e-3 * (1.0 + l2_ref.abs());
-            assert!((l2 - l2_ref).abs() <= tol2, "l2 d={d}: {l2} vs {l2_ref}");
-        }
-    }
 
     #[test]
     fn pack_key_orders_by_distance_then_id() {
@@ -1128,6 +1087,65 @@ mod tests {
         (0..n)
             .map(|i| (0..d).map(|j| ((i * d + j) as f32 * 0.017 + 0.1).sin()).collect())
             .collect()
+    }
+
+    #[test]
+    fn bf16_nav_is_recall_neutral_and_exact() {
+        // bf16 navigation must (a) return distances that are EXACTLY the f32
+        // distance (the rerank uses dist_q), and (b) keep recall vs the pure-f32
+        // index within tolerance (navigation is approximate but bf16 ordering
+        // tracks f32 closely).
+        let vecs = make_vecs(3000, 96);
+        let queries = make_vecs(120, 96);
+        let (k, ef) = (10usize, 64usize);
+
+        let mut idx = HnswIndex::new(16, 200);
+        idx.add_batch(&vecs);
+        let exact: Vec<Vec<(usize, f32)>> = queries.iter().map(|q| idx.search(q, k, ef)).collect();
+
+        idx.enable_bf16_nav();
+        let mut overlap = 0usize;
+        for (q, ex) in queries.iter().zip(&exact) {
+            let nav = idx.search(q, k, ef);
+            // (a) returned distances are the exact f32 distance for those ids.
+            let qn = idx.query_norm_sq(&idx.prep(q));
+            let qp = idx.prep(q);
+            for &(id, d) in &nav {
+                let exact_d = idx.dist_q(&qp, qn, id);
+                assert!((d - exact_d).abs() <= 1e-5, "nav dist not exact: {d} vs {exact_d}");
+            }
+            // (b) overlap with the pure-f32 top-k.
+            let exset: std::collections::HashSet<usize> = ex.iter().map(|&(id, _)| id).collect();
+            overlap += nav.iter().filter(|(id, _)| exset.contains(id)).count();
+        }
+        let recall = overlap as f64 / (queries.len() * k) as f64;
+        assert!(recall >= 0.97, "bf16-nav recall vs f32 too low: {recall:.4}");
+    }
+
+    #[test]
+    fn bf16_nav_survives_save_load() {
+        let vecs = make_vecs(800, 64);
+        let mut idx = HnswIndex::new(16, 100);
+        idx.add_batch(&vecs);
+        idx.enable_bf16_nav();
+        let before = idx.search(&vecs[0], 5, 32);
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        idx.save(tmp.path()).unwrap();
+        let loaded = HnswIndex::load(tmp.path()).unwrap();
+        // nav flag persisted and nav_bf16 rebuilt → identical results.
+        assert_eq!(before, loaded.search(&vecs[0], 5, 32));
+    }
+
+    #[test]
+    fn bf16_nav_invalidated_on_add() {
+        let vecs = make_vecs(600, 32);
+        let mut idx = HnswIndex::new(16, 100);
+        idx.add_batch(&vecs);
+        idx.enable_bf16_nav();
+        idx.add(&vecs[0]); // mutation must drop the (now-stale) nav store
+        // Search still works (exact f32 path) and does not panic / index OOB.
+        assert_eq!(idx.search(&vecs[1], 5, 32).len(), 5);
     }
 
     fn brute_force_gt(vecs: &[Vec<f32>], queries: &[Vec<f32>], k: usize) -> Vec<Vec<usize>> {

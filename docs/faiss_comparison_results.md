@@ -1,3 +1,14 @@
+> **⚠️ This page is a historical record (March 2026, v3.5.0, Apple M3 + Mojo SIMD).**
+> For the **current** status, head-to-head benchmarks, wins/ties/losses ledger,
+> the 100M+ at-scale test plan, competitor benchmark scales, and the
+> publication/licensing analysis, see **[STATUS_AND_BENCHMARKS.md](./STATUS_AND_BENCHMARKS.md)**.
+>
+> **Current highlights (v5.19.0, Rust kernels, x86 — indicative):**
+> INT8 quantize **6.2× faster than FAISS** (was 4.6× on Mojo/M3) · PQ-96 encode
+> **~0.88× FAISS** after the AVX2 kernel (was ~5× behind) · HNSW recall@10
+> **0.917**, leading hnswlib (0.899) and faiss `IndexHNSWFlat` (0.904) at matched
+> params. Largest validated scale remains ~1.18M (GloVe-100); 100M+ is planned.
+
 # Faiss Comparison Results — March 12, 2026
 
 ## Backend: Mojo SIMD (v3.5.0)

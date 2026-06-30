@@ -83,13 +83,16 @@ def quantize_nf4(
     if _mojo_bridge.is_available():
         return _mojo_bridge.nf4_encode(vectors)
 
-    # Second-tier: Rust SIMD via vectro_py.encode_nf4_fast (per-vector loop).
-    # Faster than pure NumPy for small-to-medium batches; falls through to
-    # NumPy for environments without the extension.
+    # Second-tier: Rust SIMD via vectro_py. Prefer the zero-copy batched entry
+    # (one borrow + rayon-parallel encode); fall back to the per-row loop only
+    # for older extensions that predate ``quantize_nf4_batch``.
     if _HAS_VECTRO_PY:
         if vectors.ndim == 1:
             vectors = vectors[np.newaxis]
         vectors = np.ascontiguousarray(vectors, dtype=np.float32)
+        if hasattr(_vectro_py, "quantize_nf4_batch"):
+            packed, scales = _vectro_py.quantize_nf4_batch(vectors)
+            return packed, scales
         n, d = vectors.shape
         packed_rows = []
         scales = np.empty(n, dtype=np.float32)

@@ -13,6 +13,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use vectro_lib::index::hnsw::{HnswIndex, Metric};
 use vectro_lib::index::ivf::IvfIndex;
+use vectro_lib::index::ivf_pq::IvfPqIndex;
 use vectro_lib::quant::int8;
 use vectro_lib::quant::nf4;
 use vectro_lib::quant::pq::{train_pq_codebook, PQCodebook};
@@ -216,6 +217,70 @@ fn bench_nf4_encode(c: &mut Criterion) {
     group.finish();
 }
 
+/// IVF-PQ search throughput — the query-time ADC scan path.
+///
+/// Exercises the flat `pq_codes` layout + bounded top-k selection. The dataset is
+/// large enough (per-list ≈ N/n_lists, scanned over n_probe lists) that the ADC
+/// gather and the top-k step both dominate, so a regression here flags either the
+/// cache-locality or the selection change.
+fn bench_ivfpq_search(c: &mut Criterion) {
+    const N: usize = 20_000;
+    const D: usize = 128;
+    const N_LISTS: usize = 256;
+    const N_PROBE: usize = 16;
+    let vecs = make_vecs(N, D);
+
+    let mut idx = IvfPqIndex::new(N_LISTS, N_PROBE);
+    idx.train(&vecs, 8, 256, 10, 42).expect("ivfpq train failed");
+    for v in &vecs {
+        idx.add(v);
+    }
+    // A fixed batch of queries drawn from the dataset (deterministic).
+    let queries: Vec<&Vec<f32>> = (0..64).map(|i| &vecs[i * 137 % N]).collect();
+
+    let mut group = c.benchmark_group("ivfpq_search");
+    group.throughput(Throughput::Elements(queries.len() as u64));
+    group.bench_function("search_n20k_d128_lists256_probe16_k10", |b| {
+        b.iter(|| {
+            for q in &queries {
+                black_box(idx.search_with_probe(black_box(q), 10, N_PROBE));
+            }
+        })
+    });
+    group.finish();
+}
+
+/// IVF-PQ batch search throughput — the `search_batch_flat` path used by the
+/// Python/FFI batch API. Exercises the batched coarse scan + parallel ADC. d=768
+/// so the coarse-quantizer dots (q × n_lists full-dim) dominate, matching the
+/// realistic embedding regime where the GEMM coarse scan pays off.
+fn bench_ivfpq_search_batch(c: &mut Criterion) {
+    const N: usize = 20_000;
+    const D: usize = 768;
+    const N_LISTS: usize = 1024;
+    const N_PROBE: usize = 32;
+    const Q: usize = 256;
+    let vecs = make_vecs(N, D);
+
+    let mut idx = IvfPqIndex::new(N_LISTS, N_PROBE);
+    idx.train(&vecs, 64, 256, 10, 42).expect("ivfpq train failed");
+    for v in &vecs {
+        idx.add(v);
+    }
+    // Flat query buffer drawn deterministically from the dataset.
+    let mut flat: Vec<f32> = Vec::with_capacity(Q * D);
+    for i in 0..Q {
+        flat.extend_from_slice(&vecs[i * 137 % N]);
+    }
+
+    let mut group = c.benchmark_group("ivfpq_search_batch");
+    group.throughput(Throughput::Elements(Q as u64));
+    group.bench_function("batch_q256_n20k_d768_lists1024_probe32_k10", |b| {
+        b.iter(|| black_box(idx.search_batch_flat(black_box(&flat), D, 10, N_PROBE)))
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_nf4_encode,
@@ -227,6 +292,8 @@ criterion_group!(
     bench_int8_decode,
     bench_hnsw_insert,
     bench_ivf_search,
-    bench_hnsw_build_highd
+    bench_hnsw_build_highd,
+    bench_ivfpq_search,
+    bench_ivfpq_search_batch
 );
 criterion_main!(benches);

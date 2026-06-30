@@ -11,11 +11,10 @@
 //! let results = idx.search(&query, 10);
 //! ```
 
-use crate::quant::int8::encode_scalar_into;
 use crate::quant::pq::{pq_distance_table, train_pq_codebook, PQCodebook};
+use ndarray::{Array2, ArrayView2};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use simsimd::SpatialSimilarity;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -27,63 +26,98 @@ fn lcg_next(state: u64) -> u64 {
         .wrapping_add(1_442_695_040_888_963_407)
 }
 
+/// Indices of the `n_probe` centroids with the highest cosine similarity in a
+/// query's coarse-scan row. Mirrors `top_coarse` (closest centroids first) but
+/// reads pre-computed similarities from the batched GEMM. Uses
+/// `select_nth_unstable` so the selection is O(n_lists) rather than a full sort.
+pub(crate) fn top_probe_from_sims(sims: &[f32], n_probe: usize) -> Vec<usize> {
+    let n = sims.len();
+    let take = n_probe.min(n);
+    if take == 0 {
+        return Vec::new();
+    }
+    let mut idx: Vec<usize> = (0..n).collect();
+    if take < n {
+        // Partition so the `take` highest similarities sit first (descending).
+        idx.select_nth_unstable_by(take - 1, |&a, &b| {
+            sims[b].partial_cmp(&sims[a]).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        idx.truncate(take);
+    }
+    idx
+}
+
 /// Cosine distance (1 − cosine similarity) using SimSIMD.
 #[inline]
-fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f64 = <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0);
-    (1.0 - dot as f32).max(0.0)
+pub(crate) fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
+    // Unit-norm vectors → cosine distance is 1 − dot. The shared SIMD kernel
+    // avoids SimSIMD's per-call dispatch, which dominated the coarse-quantiser
+    // scan (called over every centroid, per query) and k-means assignment.
+    (1.0 - super::simd::dot_f32(a, b)).max(0.0)
 }
 
 /// K-means++ initialisation — returns `k` centroids from `data`.
+///
+/// Maintains a running per-point squared distance to the *nearest chosen*
+/// centroid, updated against only the newly added centroid each round
+/// (parallel). This is the standard O(n·k·d) algorithm; the previous version
+/// recomputed distances to *all* chosen centroids every round — O(n·k²·d) and
+/// serial — which dominated IVF training time (≈k/2 = hundreds× more work at
+/// k=512).
 fn kmeans_pp_init(data: &[Vec<f32>], k: usize, d: usize, seed: u64) -> Vec<f32> {
     let n = data.len();
     let mut rng = seed;
     let mut centroids = Vec::with_capacity(k * d);
 
-    // First centroid: random pick
+    // First centroid: random pick.
     rng = lcg_next(rng);
     let first = (rng as usize) % n;
     centroids.extend_from_slice(&data[first]);
 
-    for c_idx in 1..k {
-        let chosen_centroids = &centroids[..c_idx * d];
+    // Running squared distance from each point to its nearest chosen centroid.
+    let mut min_d2: Vec<f32> = data
+        .par_iter()
+        .map(|v| {
+            let dd = cosine_dist(v, &data[first]);
+            dd * dd
+        })
+        .collect();
 
-        // Compute D² distances from each point to its nearest chosen centroid
-        let dists: Vec<f32> = data
-            .iter()
-            .map(|v| {
-                let mut best = f32::MAX;
-                for ci in 0..c_idx {
-                    let cent = &chosen_centroids[ci * d..(ci + 1) * d];
-                    let dist = cosine_dist(v, cent);
-                    if dist < best {
-                        best = dist;
-                    }
-                }
-                best * best
-            })
-            .collect();
-
-        let total: f32 = dists.iter().sum();
+    for _ in 1..k {
+        let total: f32 = min_d2.iter().sum();
         rng = lcg_next(rng);
         let mut target = (rng as f64 / u64::MAX as f64) as f32 * total;
         let mut picked = n - 1;
-        for (i, &d2) in dists.iter().enumerate() {
+        for (i, &d2) in min_d2.iter().enumerate() {
             target -= d2;
             if target <= 0.0 {
                 picked = i;
                 break;
             }
         }
-        centroids.extend_from_slice(&data[picked]);
+        let new_cent = data[picked].clone();
+        centroids.extend_from_slice(&new_cent);
+
+        // Refresh the running minimum against only the new centroid (parallel).
+        min_d2
+            .par_iter_mut()
+            .zip(data.par_iter())
+            .for_each(|(m, v)| {
+                let dd = cosine_dist(v, &new_cent);
+                let d2 = dd * dd;
+                if d2 < *m {
+                    *m = d2;
+                }
+            });
     }
     centroids
 }
 
 /// Lloyd's k-means over `data` (unit-norm vectors, cosine distance).
 ///
-/// Returns centroids as a flat `[k * d]` slice.
-fn kmeans_lloyd(
+/// Returns centroids as a flat `[k * d]` slice. `pub(crate)` so the coarse
+/// quantiser is shared with [`super::pq4`]'s IVF-PQ4 fast-scan index.
+pub(crate) fn kmeans_lloyd(
     data: &[Vec<f32>],
     k: usize,
     d: usize,
@@ -165,8 +199,12 @@ pub struct IvfPqIndex {
     posting_lists: Vec<Vec<usize>>,
     /// Trained PQ codebook.
     codebook: PQCodebook,
-    /// PQ codes keyed by global id, length M each.
-    pq_codes: Vec<Vec<u8>>,
+    /// PQ codes for every vector, stored flat and row-major as `[n_vectors * M]`
+    /// (`M = codebook.n_subspaces`). A single contiguous buffer — rather than one
+    /// heap `Vec<u8>` per vector — keeps a candidate's codes on one cache line and
+    /// lets the ADC scan stream sequentially instead of pointer-chasing scattered
+    /// allocations. The number of stored vectors is tracked by `deleted.len()`.
+    pq_codes: Vec<u8>,
     /// Soft-deletion tombstones.
     #[serde(default)]
     deleted: Vec<bool>,
@@ -174,22 +212,6 @@ pub struct IvfPqIndex {
     dim: usize,
     /// True after `train` succeeds.
     trained: bool,
-    /// Opt-in rerank store: unit-normalised vectors kept as **INT8** (1 byte/dim,
-    /// fixed 1/127 scale) alongside the PQ codes, so `search_rerank` can re-score
-    /// PQ candidates with near-exact cosine. PQ alone tops out ~0.6 recall on hard
-    /// data; reranking a wider pool (`k·k_factor`) against these codes lifts it to
-    /// 0.95+ at 1 byte/dim — a quarter of the fp32 cost, which is what makes a
-    /// high-recall 100M index fit on commodity RAM. Empty unless enabled.
-    /// Per-vector **abs-max** scaling (not a fixed scale) so the full int8 range
-    /// is used even for small-magnitude normalised components — near-fp32 recall.
-    #[serde(default)]
-    rerank_codes: Vec<i8>,
-    /// Per-vector decode scale (`abs_max / 127`) for `rerank_codes`.
-    #[serde(default)]
-    rerank_scales: Vec<f32>,
-    /// Whether `rerank_vectors` is being populated (set before the first add).
-    #[serde(default)]
-    rerank: bool,
 }
 
 impl IvfPqIndex {
@@ -212,23 +234,7 @@ impl IvfPqIndex {
             deleted: Vec::new(),
             dim: 0,
             trained: false,
-            rerank_codes: Vec::new(),
-            rerank_scales: Vec::new(),
-            rerank: false,
         }
-    }
-
-    /// Enable the exact-rerank store. Must be called **before** any `add`, since
-    /// it changes what each insert records. Trades memory (`N·dim·4` bytes for the
-    /// normalised vectors) for a large recall gain via [`search_rerank`].
-    pub fn enable_rerank(&mut self) {
-        assert!(self.pq_codes.is_empty(), "enable_rerank must be called before adding vectors");
-        self.rerank = true;
-    }
-
-    /// Whether the rerank store is active.
-    pub fn has_rerank(&self) -> bool {
-        self.rerank
     }
 
     /// Number of coarse clusters.
@@ -285,18 +291,8 @@ impl IvfPqIndex {
         self.coarse_centroids = kmeans_lloyd(&normed, self.n_lists, d, max_iter, seed);
         self.dim = d;
 
-        // --- Train PQ codebook on coarse residuals (not raw vectors) ---
-        // Each training vector contributes `v − centroid[assigned]`; the codebook
-        // then models the in-cell residual distribution, which is much tighter and
-        // gives substantially higher recall at the same byte budget.
-        let residuals: Vec<Vec<f32>> = normed
-            .iter()
-            .map(|v| {
-                let list = self.nearest_coarse(v);
-                self.residual(v, list)
-            })
-            .collect();
-        self.codebook = train_pq_codebook(&residuals, n_subspaces, n_centroids, max_iter, seed)
+        // --- Train PQ codebook on the full normalised training set ---
+        self.codebook = train_pq_codebook(&normed, n_subspaces, n_centroids, max_iter, seed)
             .map_err(|e| e.to_string())?;
         self.trained = true;
         Ok(())
@@ -322,20 +318,13 @@ impl IvfPqIndex {
         // Assign to nearest coarse centroid
         let list_id = self.nearest_coarse(&v_norm);
 
-        // PQ-encode the residual against the assigned centroid (see `residual`).
-        let codes = self.pq_encode_single(&self.residual(&v_norm, list_id));
+        // PQ-encode (encode_batch expects a slice of vecs)
+        let codes = self.pq_encode_single(&v_norm);
 
-        let global_id = self.pq_codes.len();
-        self.pq_codes.push(codes);
+        let global_id = self.deleted.len();
+        self.pq_codes.extend_from_slice(&codes);
         self.deleted.push(false);
         self.posting_lists[list_id].push(global_id);
-        if self.rerank {
-            let mut codes = vec![0i8; self.dim];
-            // abs-max int8 (range_factor 1.0): scale = abs_max; decode = code·scale/127.
-            let scale = encode_scalar_into(&v_norm, &mut codes, 1.0);
-            self.rerank_codes.extend_from_slice(&codes);
-            self.rerank_scales.push(scale / 127.0);
-        }
         global_id
     }
 
@@ -346,6 +335,14 @@ impl IvfPqIndex {
     /// the zero-copy path the PyO3 bindings take on contiguous arrays.
     pub fn add_batch<V: AsRef<[f32]>>(&mut self, vectors: &[V]) -> Vec<usize> {
         vectors.iter().map(|v| self.add(v.as_ref())).collect()
+    }
+
+    /// The PQ code row for global id `gid`: a contiguous `M`-byte slice into the
+    /// flat `pq_codes` buffer.
+    #[inline]
+    fn code_row(&self, gid: usize) -> &[u8] {
+        let m = self.codebook.n_subspaces;
+        &self.pq_codes[gid * m..gid * m + m]
     }
 
     /// Search for the `k` nearest neighbours using ADC scoring.
@@ -369,77 +366,120 @@ impl IvfPqIndex {
         let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
         let q_norm: Vec<f32> = query.iter().map(|x| x / norm).collect();
 
-        // Find top-n_probe coarse centroids
+        // Find top-n_probe coarse centroids, then ADC-rank the vectors they hold.
         let probe_lists = self.top_coarse(&q_norm, n_probe);
+        self.adc_rank(&q_norm, &probe_lists, k)
+    }
 
+    /// ADC-rank the vectors in `probe_lists` against a normalised query, returning
+    /// the top-`k` `(id, distance)` pairs ascending. Shared by the single-query
+    /// (`search_with_probe`) and batch (`search_batch_flat`) paths so both compute
+    /// distances identically — only how `probe_lists` is chosen differs.
+    fn adc_rank(&self, q_norm: &[f32], probe_lists: &[usize], k: usize) -> Vec<(usize, f32)> {
+        if k == 0 {
+            return Vec::new();
+        }
+        // Build ADC table once for this query.
+        let dist_table = pq_distance_table(q_norm, &self.codebook);
         let m = self.codebook.n_subspaces;
         let kc = self.codebook.n_centroids;
 
-        // Scan posting lists — collect (dist, id) pairs. The ADC table is rebuilt
-        // **per list** from the query residual `q − centroid[list]`, since codes
-        // are residual-encoded (the residual depends on which cell we are in).
+        // Scan posting lists — collect (dist, id) pairs.
         let mut candidates: Vec<(f32, usize)> = Vec::new();
-
-        for &list_id in &probe_lists {
-            let q_res = self.residual(&q_norm, list_id);
-            let dist_table = pq_distance_table(&q_res, &self.codebook);
+        for &list_id in probe_lists {
             for &gid in &self.posting_lists[list_id] {
                 if self.deleted[gid] {
                     continue;
                 }
-                let codes = &self.pq_codes[gid];
-                let adc_dist: f32 = (0..m)
-                    .map(|mi| dist_table[mi * kc + codes[mi] as usize])
-                    .sum();
+                let codes = self.code_row(gid);
+                let adc_dist = crate::quant::pq::adc_distance(&dist_table, codes, m, kc);
                 candidates.push((adc_dist, gid));
             }
         }
 
-        // Sort ascending by ADC distance, deduplicate, take top-k
+        // Top-k by ADC distance. Each vector belongs to exactly one posting list
+        // and `probe_lists` is a distinct set, so a gid appears at most once —
+        // no dedup needed. `select_nth_unstable_by` partitions the k smallest in
+        // O(C) instead of fully sorting all C candidates (O(C log C)); only the
+        // retained k are then sorted.
+        if candidates.len() > k {
+            candidates.select_nth_unstable_by(k - 1, |a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            candidates.truncate(k);
+        }
         candidates.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        candidates.dedup_by_key(|(_, id)| *id);
-        candidates.truncate(k);
         candidates.into_iter().map(|(d, id)| (id, d)).collect()
     }
 
-    /// Search with PQ candidate generation **plus exact rerank**.
-    ///
-    /// Retrieves `k · k_factor` candidates by ADC (cheap, approximate), then
-    /// re-scores them with the true cosine distance from the [`enable_rerank`]
-    /// store and returns the best `k`. This recovers the recall PQ alone loses
-    /// (≈0.6 → 0.95+); `k_factor` trades a wider, more accurate candidate pool
-    /// for a little more rerank work. Requires `enable_rerank` before adding.
-    pub fn search_rerank(
+    /// Batch search over a flat `[q * dim]` query buffer, parallelised across
+    /// queries (rayon). `search_with_probe` is `&self`/read-only, so this is
+    /// lock-free. Returns one `(id, dist)` result list per query row — the
+    /// throughput path that avoids per-query Python/FFI call overhead.
+    pub fn search_batch_flat(
         &self,
-        query: &[f32],
+        flat: &[f32],
+        dim: usize,
         k: usize,
         n_probe: usize,
-        k_factor: usize,
-    ) -> Vec<(usize, f32)> {
-        if !self.rerank || self.pq_codes.is_empty() {
-            // No rerank store — fall back to plain PQ search.
-            return self.search_with_probe(query, k, n_probe);
+    ) -> Vec<Vec<(usize, f32)>> {
+        if dim == 0 {
+            return Vec::new();
         }
-        let pool = (k * k_factor.max(1)).max(k);
-        let cands = self.search_with_probe(query, pool, n_probe);
+        let q = flat.len() / dim;
+        if !self.trained || self.pq_codes.is_empty() {
+            return vec![Vec::new(); q];
+        }
+        assert_eq!(dim, self.dim, "query dim mismatch");
+        if q == 0 {
+            return Vec::new();
+        }
 
-        let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
-        let q_norm: Vec<f32> = query.iter().map(|x| x / norm).collect();
-        let d = self.dim;
-        // Re-score against the INT8 rerank codes: cosine ≈ 1 − scaleᵢ·Σ qⱼ·codeⱼ
-        // (stored vectors are unit-norm, so a plain dot is the cosine).
-        let mut rescored: Vec<(f32, usize)> = cands
-            .into_iter()
-            .map(|(gid, _)| {
-                let codes = &self.rerank_codes[gid * d..(gid + 1) * d];
-                let dot: f32 = q_norm.iter().zip(codes).map(|(q, &c)| q * (c as f32)).sum::<f32>()
-                    * self.rerank_scales[gid];
-                ((1.0 - dot).max(0.0), gid)
-            })
-            .collect();
-        rescored.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        rescored.truncate(k);
-        rescored.into_iter().map(|(dist, id)| (id, dist)).collect()
+        // ── Batched coarse scan as one matrix multiply ──────────────────────────
+        // Per query the coarse step compares the query to every centroid — at
+        // d=768 those `q × n_lists` full-dim dots dominate the search. Computing
+        // them as `Q · Cᵀ` (pure-Rust matrixmultiply via ndarray) reuses the
+        // centroid matrix across all queries instead of re-streaming it per query,
+        // the way FAISS routes its coarse quantiser through GEMM. Both queries and
+        // centroids are unit-norm, so the dot product *is* cosine similarity.
+        let mut qnorm = vec![0.0f32; q * dim];
+        for i in 0..q {
+            let row = &flat[i * dim..(i + 1) * dim];
+            let norm = row.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+            let inv = 1.0 / norm;
+            for (j, &x) in row.iter().enumerate() {
+                qnorm[i * dim + j] = x * inv;
+            }
+        }
+        let cmat = ArrayView2::from_shape((self.n_lists, dim), &self.coarse_centroids)
+            .expect("centroid shape");
+
+        // ── Tile queries; each tile runs its own coarse GEMM + ADC in parallel ──
+        // A whole-batch single GEMM would be cache-efficient but single-threaded,
+        // surrendering the per-query rayon parallelism. Tiling keeps both: each
+        // worker computes `Q_tile · Cᵀ` (centroid matrix reused across the tile)
+        // and then ADC-ranks the tile's queries. CHUNK is sized so a tile's sim
+        // block stays cache-resident.
+        const CHUNK: usize = 32;
+        let mut results: Vec<Vec<(usize, f32)>> = vec![Vec::new(); q];
+        results
+            .par_chunks_mut(CHUNK)
+            .enumerate()
+            .for_each(|(c, out)| {
+                let lo = c * CHUNK;
+                let rows = out.len();
+                let qtile = ArrayView2::from_shape((rows, dim), &qnorm[lo * dim..(lo + rows) * dim])
+                    .expect("query tile shape");
+                let sims: Array2<f32> = qtile.dot(&cmat.t()); // (rows, n_lists)
+                for (r, slot) in out.iter_mut().enumerate() {
+                    let srow = sims.row(r);
+                    let probe_lists =
+                        top_probe_from_sims(srow.as_slice().expect("contig row"), n_probe);
+                    let qi = lo + r;
+                    *slot = self.adc_rank(&qnorm[qi * dim..(qi + 1) * dim], &probe_lists, k);
+                }
+            });
+        results
     }
 
     /// Soft-delete a vector by global id.  Out-of-bounds ids are ignored.
@@ -469,10 +509,10 @@ impl IvfPqIndex {
             .zip(ground_truth.iter())
             .map(|(q, gt)| {
                 let results = self.search_with_probe(q, k, n_probe);
-                let found = results
-                    .iter()
-                    .filter(|(id, _)| gt.contains(id))
-                    .count();
+                // Hash the ground-truth ids once (O(k)) rather than a linear
+                // `gt.contains` per result (O(k²) per query).
+                let gt_set: std::collections::HashSet<usize> = gt.iter().copied().collect();
+                let found = results.iter().filter(|(id, _)| gt_set.contains(id)).count();
                 found as f32 / gt.len() as f32
             })
             .sum();
@@ -505,7 +545,7 @@ impl IvfPqIndex {
         }
 
         // Build old_id → new_id mapping.
-        let mut mapping: Vec<Option<usize>> = Vec::with_capacity(self.pq_codes.len());
+        let mut mapping: Vec<Option<usize>> = Vec::with_capacity(self.deleted.len());
         let mut new_id = 0usize;
         for &del in &self.deleted {
             if del {
@@ -516,37 +556,22 @@ impl IvfPqIndex {
             }
         }
 
-        // Compact PQ codes.
-        let new_codes: Vec<Vec<u8>> = self
-            .pq_codes
-            .iter()
-            .zip(self.deleted.iter())
-            .filter(|(_, &d)| !d)
-            .map(|(c, _)| c.clone())
-            .collect();
+        // Compact the flat PQ-code buffer, copying surviving rows contiguously.
+        let m = self.codebook.n_subspaces;
+        let mut new_codes: Vec<u8> = Vec::with_capacity(new_id * m);
+        for (gid, &del) in self.deleted.iter().enumerate() {
+            if !del {
+                new_codes.extend_from_slice(&self.pq_codes[gid * m..gid * m + m]);
+            }
+        }
 
         // Remap posting lists.
         for list in &mut self.posting_lists {
             *list = list.iter().filter_map(|&id| mapping[id]).collect();
         }
 
-        // Compact the rerank store in lockstep (keyed by global id).
-        if self.rerank {
-            let d = self.dim;
-            let mut new_rr = Vec::with_capacity(new_codes.len() * d);
-            let mut new_sc = Vec::with_capacity(new_codes.len());
-            for (gid, &del) in self.deleted.iter().enumerate() {
-                if !del {
-                    new_rr.extend_from_slice(&self.rerank_codes[gid * d..(gid + 1) * d]);
-                    new_sc.push(self.rerank_scales[gid]);
-                }
-            }
-            self.rerank_codes = new_rr;
-            self.rerank_scales = new_sc;
-        }
-
         self.pq_codes = new_codes;
-        self.deleted = vec![false; self.pq_codes.len()];
+        self.deleted = vec![false; new_id];
         deleted_count
     }
 
@@ -585,17 +610,6 @@ impl IvfPqIndex {
     // ── private helpers ──────────────────────────────────────────────────────
 
     /// Index of the nearest coarse centroid (cosine distance on unit-norm `v`).
-    /// Residual of a (normalised) vector against its assigned coarse centroid:
-    /// `v − centroid[list]`. PQ encodes this residual rather than the raw vector,
-    /// so the codebook only has to model the spread *within* a coarse cell — far
-    /// less variance than the whole space, which is what lifts recall.
-    #[inline]
-    fn residual(&self, v: &[f32], list_id: usize) -> Vec<f32> {
-        let d = self.dim;
-        let cent = &self.coarse_centroids[list_id * d..(list_id + 1) * d];
-        v.iter().zip(cent).map(|(a, b)| a - b).collect()
-    }
-
     fn nearest_coarse(&self, v: &[f32]) -> usize {
         let d = self.dim;
         let mut best_c = 0usize;
@@ -620,12 +634,21 @@ impl IvfPqIndex {
                 (cosine_dist(v, cent), ci)
             })
             .collect();
+        // Partial selection: when n_probe ≪ n_lists (the usual case) a full
+        // sort of all centroids is wasted work. `select_nth_unstable` is O(n),
+        // then only the probed prefix is sorted.
+        let probe = n_probe.min(self.n_lists);
+        if probe == 0 {
+            return Vec::new();
+        }
+        if probe < scored.len() {
+            scored.select_nth_unstable_by(probe - 1, |a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored.truncate(probe);
+        }
         scored.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored
-            .into_iter()
-            .take(n_probe.min(self.n_lists))
-            .map(|(_, ci)| ci)
-            .collect()
+        scored.into_iter().map(|(_, ci)| ci).collect()
     }
 
     /// PQ-encode a single (already-normalised) vector.
@@ -686,7 +709,29 @@ mod tests {
         for v in &data {
             idx.add(v);
         }
-        assert_eq!(idx.pq_codes.len(), 200);
+        assert_eq!(idx.deleted.len(), 200); // 200 vectors stored
+        assert_eq!(idx.pq_codes.len(), 200 * idx.codebook.n_subspaces);
+    }
+
+    #[test]
+    fn kmeans_pp_init_picks_k_distinct_data_points() {
+        // Regression guard for the O(n·k·d) running-min rewrite: init must return
+        // exactly k centroids, each an actual data row (k-means++ seeds from the
+        // data), with no duplicate picks for well-separated points.
+        let data = random_unit_vecs(500, 8, 3);
+        let (k, d) = (32usize, 8usize);
+        let cents = kmeans_pp_init(&data, k, d, 11);
+        assert_eq!(cents.len(), k * d);
+        let mut picks = Vec::new();
+        for ci in 0..k {
+            let c = &cents[ci * d..(ci + 1) * d];
+            let found = data.iter().position(|v| v.as_slice() == c);
+            assert!(found.is_some(), "centroid {ci} is not a data row");
+            picks.push(found.unwrap());
+        }
+        picks.sort_unstable();
+        picks.dedup();
+        assert_eq!(picks.len(), k, "k-means++ picked duplicate seeds");
     }
 
     #[test]
@@ -697,6 +742,92 @@ mod tests {
         // No vectors added → search must return empty
         let res = idx.search(&data[0], 5);
         assert!(res.is_empty());
+    }
+
+    #[test]
+    fn search_k_zero_returns_empty() {
+        // Guard the bounded top-k path: k == 0 must yield no results, not the
+        // full candidate set (the select_nth_unstable fast path only runs k > 0).
+        let data = random_unit_vecs(100, 32, 9);
+        let mut idx = IvfPqIndex::new(4, 4);
+        idx.train(&data, 4, 8, 5, 9).unwrap();
+        for v in &data {
+            idx.add(v);
+        }
+        assert!(idx.search(&data[0], 0).is_empty());
+    }
+
+    #[test]
+    fn search_topk_matches_full_sort() {
+        // The select_nth_unstable top-k must return exactly the same ids/order as
+        // a full sort of every candidate's ADC distance (quality-neutral change).
+        let data = random_unit_vecs(300, 32, 11);
+        let mut idx = IvfPqIndex::new(8, 8); // full probe → deterministic candidate set
+        idx.train(&data, 4, 16, 10, 11).unwrap();
+        for v in &data {
+            idx.add(v);
+        }
+        for v in data.iter().take(10) {
+            let got: Vec<usize> = idx.search(v, 5).into_iter().map(|(id, _)| id).collect();
+            // Reference: brute-force ADC over all vectors, full sort, take 5.
+            let q_norm = {
+                let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+                v.iter().map(|x| x / n).collect::<Vec<f32>>()
+            };
+            let table = pq_distance_table(&q_norm, &idx.codebook);
+            let m = idx.codebook.n_subspaces;
+            let kc = idx.codebook.n_centroids;
+            let mut all: Vec<(f32, usize)> = (0..data.len())
+                .map(|gid| {
+                    let codes = idx.code_row(gid);
+                    let d = crate::quant::pq::adc_distance(&table, codes, m, kc);
+                    (d, gid)
+                })
+                .collect();
+            all.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let want: Vec<usize> = all.into_iter().take(5).map(|(_, id)| id).collect();
+            assert_eq!(got, want, "top-k selection diverged from full sort");
+        }
+    }
+
+    #[test]
+    fn search_batch_matches_single_query() {
+        // The batched GEMM coarse scan must agree with the per-query path. Both
+        // pick the n_probe highest-similarity centroids and ADC-rank identically;
+        // f32 summation order differs between matrixmultiply and the SIMD dot, so
+        // a handful of queries may break a centroid tie differently. Require
+        // top-1 identical and ≥ k-1 of k overlap — looser than bit-equality, but
+        // it catches any real divergence in the coarse selection or ADC path.
+        let data = random_unit_vecs(2_000, 64, 21);
+        let mut idx = IvfPqIndex::new(64, 8);
+        idx.train(&data, 8, 64, 12, 21).unwrap();
+        for v in &data {
+            idx.add(v);
+        }
+        let k = 10;
+        let flat: Vec<f32> = data.iter().take(50).flatten().copied().collect();
+        let batch = idx.search_batch_flat(&flat, 64, k, 8);
+        for (i, brow) in batch.iter().enumerate() {
+            let single = idx.search_with_probe(&data[i], k, 8);
+            assert_eq!(brow.len(), single.len(), "row {i} length differs");
+            assert_eq!(brow[0].0, single[0].0, "row {i} top-1 differs");
+            let bset: std::collections::HashSet<usize> = brow.iter().map(|&(id, _)| id).collect();
+            let overlap = single.iter().filter(|&&(id, _)| bset.contains(&id)).count();
+            assert!(
+                overlap >= k - 1,
+                "row {i}: batch/single overlap {overlap}/{k} too low"
+            );
+        }
+    }
+
+    #[test]
+    fn search_batch_empty_and_untrained() {
+        // Untrained index → one empty result per query, never a panic.
+        let idx = IvfPqIndex::new(8, 4);
+        let flat = vec![0.0f32; 3 * 16];
+        let res = idx.search_batch_flat(&flat, 16, 5, 4);
+        assert_eq!(res.len(), 3);
+        assert!(res.iter().all(|r| r.is_empty()));
     }
 
     #[test]
@@ -720,26 +851,6 @@ mod tests {
             hits >= 14,
             "only {hits}/20 self-nearest hits with full probe"
         );
-    }
-
-    #[test]
-    fn rerank_beats_plain_pq_recall() {
-        // Exact rerank of a wider PQ candidate pool must recover recall that plain
-        // ADC loses. Compare self-recall@1 over full probe.
-        let data = random_unit_vecs(800, 32, 11);
-        let mut idx = IvfPqIndex::new(16, 16);
-        idx.enable_rerank();
-        idx.train(&data, 8, 16, 12, 11).unwrap();
-        for v in &data {
-            idx.add(v);
-        }
-        let n = 80;
-        let plain = (0..n).filter(|&i| idx.search(&data[i], 1).first().map(|r| r.0) == Some(i)).count();
-        let rr = (0..n)
-            .filter(|&i| idx.search_rerank(&data[i], 1, 16, 16).first().map(|r| r.0) == Some(i))
-            .count();
-        assert!(rr >= plain, "rerank {rr} should be ≥ plain {plain}");
-        assert!(rr >= n * 9 / 10, "rerank self-recall {rr}/{n} too low");
     }
 
     #[test]

@@ -6,9 +6,12 @@ pub(crate) mod graph;
 pub mod hnsw;
 pub mod ivf;
 pub mod ivf_pq;
+pub mod ivf_pq4;
 pub(crate) mod neighbor_store;
+pub mod pq4;
 pub mod quant_hnsw;
 pub(crate) mod scratch;
+pub(crate) mod simd;
 
 pub use bm25::BM25Index;
 

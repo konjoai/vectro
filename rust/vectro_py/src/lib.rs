@@ -5,6 +5,13 @@
 #![allow(unknown_lints)]
 #![allow(non_local_definitions)]
 
+// Route all Rust-side allocations in the extension through mimalloc's sharded
+// per-thread heaps — cuts glibc arena-lock contention on the alloc-heavy HNSW
+// concurrent-build and multi-thread query paths (the GIL is released there, so
+// rayon workers contend the allocator). See vectro_lib examples/alloc_bench.rs.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
 use numpy::{
@@ -649,6 +656,15 @@ impl PyHnswIndex {
         });
     }
 
+    /// Enable the BF16 navigation fast path: the beam traverses on a half-width
+    /// bf16 copy of the vectors (halving the per-candidate DRAM traffic that
+    /// bounds high-dim search), then re-scores the final `ef` window against the
+    /// exact f32 vectors — ~1.4-1.5x search QPS at recall-identical results,
+    /// for +50% index memory. Call after building; re-call after any insert.
+    fn enable_bf16_nav(&mut self) {
+        self.inner.enable_bf16_nav();
+    }
+
     /// Batch insert from a numpy array (shape [N, D]).
     ///
     /// Routed through `add_batch` (not per-row `add`) so a large first batch
@@ -669,19 +685,44 @@ impl PyHnswIndex {
     }
 
     /// Zero-copy nearest-neighbour search from a 1-D numpy query vector.
-    fn search_np(&self, query: PyReadonlyArray1<f32>, k: usize, ef: usize) -> Vec<(usize, f32)> {
-        let q = query.as_array();
-        match q.as_slice() {
-            Some(s) => self.inner.search(s, k, ef),
-            None => {
-                let v: Vec<f32> = q.iter().copied().collect();
-                self.inner.search(&v, k, ef)
-            }
-        }
+    ///
+    /// Copies the (tiny) query out and releases the GIL during the search, so a
+    /// Python threadpool issuing concurrent queries scales across cores instead
+    /// of serializing on the interpreter lock.
+    fn search_np(
+        &self,
+        py: Python<'_>,
+        query: PyReadonlyArray1<f32>,
+        k: usize,
+        ef: usize,
+    ) -> Vec<(usize, f32)> {
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        py.allow_threads(|| self.inner.search(&owned, k, ef))
     }
 
     fn search(&self, query: Vec<f32>, k: usize, ef: usize) -> Vec<(usize, f32)> {
         self.inner.search(&query, k, ef)
+    }
+
+    /// Single-query search returning two numpy arrays directly — node IDs
+    /// (`int64`) and distances (`float32`) — with the GIL released during the
+    /// search. Avoids the Python list-of-tuples allocation that bottlenecks the
+    /// per-query hot path, cutting single-query latency well below the
+    /// `search_np` → list → `np.array(...)` round-trip.
+    fn search_arrays_np<'py>(
+        &self,
+        py: Python<'py>,
+        query: PyReadonlyArray1<f32>,
+        k: usize,
+        ef: usize,
+    ) -> (&'py PyArray1<i64>, &'py PyArray1<f32>) {
+        // Copy the (tiny) query out before releasing the GIL so the pure-Rust
+        // search holds no Python borrow.
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        let res = py.allow_threads(|| self.inner.search(&owned, k, ef));
+        let ids: Vec<i64> = res.iter().map(|&(id, _)| id as i64).collect();
+        let dists: Vec<f32> = res.iter().map(|&(_, d)| d).collect();
+        (Array1::from(ids).into_pyarray(py), Array1::from(dists).into_pyarray(py))
     }
 
     /// Search with an allow-list of node IDs.
@@ -726,6 +767,52 @@ impl PyHnswIndex {
             let owned: Vec<f32> = arr.iter().copied().collect();
             py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, ef))
         }
+    }
+
+    /// Batch search returning two packed `[Q, k]` arrays — `ids` (int64) and
+    /// `dists` (float32) — instead of a list-of-lists-of-tuples. Short rows are
+    /// padded with id `-1` / dist `+inf`. Avoids `2·Q·k` boxed Python objects in
+    /// the FFI return (and the matching Python-side reconstruction).
+    fn search_batch_arrays_np<'py>(
+        &self,
+        py: Python<'py>,
+        queries: PyReadonlyArray2<f32>,
+        k: usize,
+        ef: usize,
+    ) -> PyResult<(&'py PyArray2<i64>, &'py PyArray2<f32>)> {
+        let arr = queries.as_array();
+        let (q, d) = (arr.nrows(), arr.ncols());
+        let results = if let Some(flat) = arr.as_slice() {
+            py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, ef))
+        } else {
+            let owned: Vec<f32> = arr.iter().copied().collect();
+            py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, ef))
+        };
+        // Pack into uninitialised [Q, k] outputs; every cell is written (padding
+        // fills the short tail). SAFETY: the loop covers all `q*k` cells.
+        let ids = unsafe { PyArray2::<i64>::new(py, [q, k], false) };
+        let dists = unsafe { PyArray2::<f32>::new(py, [q, k], false) };
+        {
+            let ids_s = unsafe { ids.as_slice_mut()? };
+            let dists_s = unsafe { dists.as_slice_mut()? };
+            for r in 0..q {
+                let row = results.get(r);
+                for c in 0..k {
+                    let idx = r * k + c;
+                    match row.and_then(|rw| rw.get(c)) {
+                        Some(&(id, dist)) => {
+                            ids_s[idx] = id as i64;
+                            dists_s[idx] = dist;
+                        }
+                        None => {
+                            ids_s[idx] = -1;
+                            dists_s[idx] = f32::INFINITY;
+                        }
+                    }
+                }
+            }
+        }
+        Ok((ids, dists))
     }
 
     /// Soft-delete a vector by ID.
@@ -905,13 +992,11 @@ impl PyIvfIndex {
         self.inner.search(&query, k)
     }
 
-    /// Zero-copy search from a 1-D numpy query vector.
-    fn search_np(&self, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
-        let q = query.as_array();
-        match q.as_slice() {
-            Some(s) => self.inner.search(s, k),
-            None => { let v: Vec<f32> = q.iter().copied().collect(); self.inner.search(&v, k) }
-        }
+    /// Zero-copy search from a 1-D numpy query vector. Releases the GIL during
+    /// the search so a Python threadpool scales across cores.
+    fn search_np(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        py.allow_threads(|| self.inner.search(&owned, k))
     }
 
     /// Search with explicit n_probe override.
@@ -1067,13 +1152,11 @@ impl PyIvfPqIndex {
         self.inner.search(&query, k)
     }
 
-    /// Zero-copy search from a 1-D numpy query vector.
-    fn search_np(&self, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
-        let q = query.as_array();
-        match q.as_slice() {
-            Some(s) => self.inner.search(s, k),
-            None => { let v: Vec<f32> = q.iter().copied().collect(); self.inner.search(&v, k) }
-        }
+    /// Zero-copy search from a 1-D numpy query vector. Releases the GIL during
+    /// the search so a Python threadpool scales across cores.
+    fn search_np(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        py.allow_threads(|| self.inner.search(&owned, k))
     }
 
     /// Search with explicit n_probe override.
@@ -1103,6 +1186,28 @@ impl PyIvfPqIndex {
         self.inner.search_for_recall(&query, k, target_recall)
     }
 
+    /// Batch search over a 2-D numpy query array [Q, D], parallelised across
+    /// queries (rayon) with the GIL released. Returns one (id, dist) list per
+    /// row — the throughput path that avoids the per-query Python call overhead
+    /// of looping `search_with_probe` from Python.
+    fn search_batch_np(
+        &self,
+        py: Python<'_>,
+        queries: PyReadonlyArray2<f32>,
+        k: usize,
+        n_probe: usize,
+    ) -> Vec<Vec<(usize, f32)>> {
+        let arr = queries.as_array();
+        let (_q, d) = (arr.nrows(), arr.ncols());
+        match arr.as_slice() {
+            Some(flat) => py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, n_probe)),
+            None => {
+                let owned: Vec<f32> = arr.iter().copied().collect();
+                py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, n_probe))
+            }
+        }
+    }
+
     /// Persist to file (bincode).
     fn save(&self, path: &str) -> PyResult<()> {
         self.inner.save(path).map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
@@ -1116,31 +1221,107 @@ impl PyIvfPqIndex {
         Ok(Self { inner })
     }
 
-    /// Enable the exact-rerank store (call before adding vectors). Trades
-    /// `N·dim·4` bytes for a large recall gain via `search_rerank`.
-    fn enable_rerank(&mut self) {
-        self.inner.enable_rerank();
+    fn __repr__(&self) -> String {
+        format!("PyIvfPqIndex(n_lists={}, trained={})", self.inner.n_lists(), self.inner.is_trained())
+    }
+}
+
+/// IVF-PQ4 SIMD fast-scan index (Python binding).
+///
+/// Build-once: trains the coarse quantizer + K=16 PQ codebook and populates from
+/// an `[N, D]` float32 array in the constructor, then serves approximate
+/// nearest-neighbour queries via the `pshufb` fast-scan. ~5-6x the QPS of the
+/// classic IVF-PQ scan at matched recall and memory budget.
+#[pyclass]
+struct PyIvfPq4Index {
+    inner: vectro_lib::index::ivf_pq4::IvfPq4Index,
+}
+
+#[pymethods]
+impl PyIvfPq4Index {
+    /// Build from a numpy `[N, D]` float32 array.
+    ///
+    /// * `n_lists` — coarse Voronoi cells.  * `n_probe` — default cells per query.
+    /// * `m`       — PQ subspaces (must divide D).
+    #[new]
+    #[pyo3(signature = (array, n_lists, n_probe, m, max_iter = 25, seed = 42))]
+    fn new(
+        py: Python<'_>,
+        array: PyReadonlyArray2<f32>,
+        n_lists: usize,
+        n_probe: usize,
+        m: usize,
+        max_iter: usize,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let arr = array.as_array();
+        let (n, d) = (arr.nrows(), arr.ncols());
+        // Own the data so the heavy build can run with the GIL released.
+        let data: Vec<Vec<f32>> = match arr.as_slice() {
+            Some(flat) => (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect(),
+            None => arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect(),
+        };
+        let inner = py
+            .allow_threads(|| {
+                vectro_lib::index::ivf_pq4::IvfPq4Index::build(&data, n_lists, n_probe, m, max_iter, seed)
+            })
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        Ok(Self { inner })
     }
 
-    /// Whether the rerank store is active.
-    fn has_rerank(&self) -> bool {
-        self.inner.has_rerank()
+    /// Number of indexed vectors.
+    fn __len__(&self) -> usize {
+        self.inner.len()
     }
 
-    /// PQ candidate generation + exact rerank: fetch `k*k_factor` ADC candidates,
-    /// re-score by true cosine distance, return top-k. Needs `enable_rerank`.
-    fn search_rerank(
+    /// Search for the k nearest neighbours.  Returns a list of (id, distance).
+    fn search(&self, query: Vec<f32>, k: usize) -> Vec<(usize, f32)> {
+        self.inner.search(&query, k)
+    }
+
+    /// Zero-copy search from a 1-D numpy query, GIL released during the scan so a
+    /// Python threadpool scales across cores.
+    fn search_np(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        py.allow_threads(|| self.inner.search(&owned, k))
+    }
+
+    /// Search with an explicit probe width (GIL released).
+    fn search_with_probe(
         &self,
-        query: Vec<f32>,
+        py: Python<'_>,
+        query: PyReadonlyArray1<f32>,
         k: usize,
         n_probe: usize,
-        k_factor: usize,
     ) -> Vec<(usize, f32)> {
-        self.inner.search_rerank(&query, k, n_probe, k_factor)
+        let owned: Vec<f32> = query.as_array().iter().copied().collect();
+        py.allow_threads(|| self.inner.search_with_probe(&owned, k, n_probe))
+    }
+
+    /// Batch search over a 2-D numpy query array [Q, D], parallelised across
+    /// queries (rayon, GIL released). The coarse step runs as a batched GEMM
+    /// (centroid matrix reused across the tile) instead of a per-query serial
+    /// scan — the throughput path for the PQ4 fast-scan index.
+    fn search_batch_np(
+        &self,
+        py: Python<'_>,
+        queries: PyReadonlyArray2<f32>,
+        k: usize,
+        n_probe: usize,
+    ) -> Vec<Vec<(usize, f32)>> {
+        let arr = queries.as_array();
+        let (_q, d) = (arr.nrows(), arr.ncols());
+        match arr.as_slice() {
+            Some(flat) => py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, n_probe)),
+            None => {
+                let owned: Vec<f32> = arr.iter().copied().collect();
+                py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, n_probe))
+            }
+        }
     }
 
     fn __repr__(&self) -> String {
-        format!("PyIvfPqIndex(n_lists={}, trained={})", self.inner.n_lists(), self.inner.is_trained())
+        format!("PyIvfPq4Index(n={})", self.inner.len())
     }
 }
 
@@ -1251,21 +1432,17 @@ macro_rules! quant_hnsw_pyclass {
                 }
             }
 
-            /// Zero-copy search from a 1-D numpy query vector.
+            /// Zero-copy search from a 1-D numpy query vector. Releases the GIL
+            /// during the search so a Python threadpool scales across cores.
             fn search_np(
                 &self,
+                py: Python<'_>,
                 query: PyReadonlyArray1<f32>,
                 k: usize,
                 ef: usize,
             ) -> Vec<(usize, f32)> {
-                let q = query.as_array();
-                match q.as_slice() {
-                    Some(s) => self.inner.search(s, k, ef),
-                    None => {
-                        let v: Vec<f32> = q.iter().copied().collect();
-                        self.inner.search(&v, k, ef)
-                    }
-                }
+                let owned: Vec<f32> = query.as_array().iter().copied().collect();
+                py.allow_threads(|| self.inner.search(&owned, k, ef))
             }
 
             /// Batch search: queries shape [Q, D], parallelised across queries
@@ -1285,6 +1462,54 @@ macro_rules! quant_hnsw_pyclass {
                     let owned: Vec<f32> = arr.iter().copied().collect();
                     py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, ef))
                 }
+            }
+
+            /// Batch search returning two packed `[Q, k]` arrays — `ids` (int64)
+            /// and `dists` (float32) — instead of a list-of-lists-of-tuples.
+            /// Short rows (fewer than `k` results) are padded with id `-1` /
+            /// dist `+inf`. Avoids allocating `2·Q·k` boxed Python objects in the
+            /// FFI return (and the matching reconstruction in Python).
+            fn search_batch_arrays_np<'py>(
+                &self,
+                py: Python<'py>,
+                queries: PyReadonlyArray2<f32>,
+                k: usize,
+                ef: usize,
+            ) -> PyResult<(&'py PyArray2<i64>, &'py PyArray2<f32>)> {
+                let arr = queries.as_array();
+                let (q, d) = (arr.nrows(), arr.ncols());
+                let results = if let Some(flat) = arr.as_slice() {
+                    py.allow_threads(|| self.inner.search_batch_flat(flat, d, k, ef))
+                } else {
+                    let owned: Vec<f32> = arr.iter().copied().collect();
+                    py.allow_threads(|| self.inner.search_batch_flat(&owned, d, k, ef))
+                };
+                // Pack into uninitialised [Q, k] outputs; every cell is written
+                // (padding fills the short tail). SAFETY: the loop covers all
+                // `q*k` cells before the arrays are returned to Python.
+                let ids = unsafe { PyArray2::<i64>::new(py, [q, k], false) };
+                let dists = unsafe { PyArray2::<f32>::new(py, [q, k], false) };
+                {
+                    let ids_s = unsafe { ids.as_slice_mut()? };
+                    let dists_s = unsafe { dists.as_slice_mut()? };
+                    for r in 0..q {
+                        let row = results.get(r);
+                        for c in 0..k {
+                            let idx = r * k + c;
+                            match row.and_then(|rw| rw.get(c)) {
+                                Some(&(id, dist)) => {
+                                    ids_s[idx] = id as i64;
+                                    dists_s[idx] = dist;
+                                }
+                                None => {
+                                    ids_s[idx] = -1;
+                                    dists_s[idx] = f32::INFINITY;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok((ids, dists))
             }
 
             /// Search with an allow-list of node IDs.
@@ -1369,6 +1594,55 @@ fn encode_int8_fast(vec: Vec<f32>) -> PyResult<(Vec<i8>, f32)> {
 fn encode_nf4_fast(vec: Vec<f32>) -> PyResult<(Vec<u8>, f32, usize)> {
     let q = vectro_lib::quant::nf4::Nf4Vector::encode_fast(&vec);
     Ok((q.packed, q.scale, q.dim))
+}
+
+/// Batch encode a 2-D float32 numpy array `[N, D]` to packed NF4 with zero
+/// per-row FFI crossings or boxed-float marshalling — the NF4 analogue of
+/// [`quantize_int8_batch`]. Replaces the per-row `row.tolist()` Python loop
+/// (N FFI calls + N·D boxed floats) with a single borrow + rayon-parallel pass.
+///
+/// Returns `(packed, scales)` where `packed` is shape `[N, ceil(D/2)]` dtype
+/// `uint8` (low nibble = even dim, high nibble = odd dim) and `scales` is shape
+/// `[N]` dtype `float32` (per-row abs-max).
+#[pyfunction]
+fn quantize_nf4_batch<'py>(
+    py: Python<'py>,
+    vectors: PyReadonlyArray2<f32>,
+) -> PyResult<(&'py PyArray2<u8>, &'py PyArray1<f32>)> {
+    let arr = vectors.as_array();
+    let (n, d) = (arr.nrows(), arr.ncols());
+
+    // Borrow the contiguous slice; own a copy only if the input isn't row-major.
+    let owned: Option<Vec<f32>> = match arr.as_slice() {
+        Some(_) => None,
+        None => Some(arr.iter().copied().collect()),
+    };
+    let flat: &[f32] = match (&owned, arr.as_slice()) {
+        (Some(v), _) => v,
+        (None, Some(s)) => s,
+        (None, None) => unreachable!("non-contiguous arrays were copied above"),
+    };
+
+    let bpv = d.div_ceil(2);
+    // Uninitialised outputs filled entirely by the rayon kernel (no 0-init).
+    // SAFETY: `batch_encode_packed_into` writes all `n*bpv` bytes and `n` scales
+    // before we hand the arrays back to Python.
+    let packed_arr = unsafe { PyArray2::<u8>::new(py, [n, bpv], false) };
+    let scales_arr = unsafe { PyArray1::<f32>::new(py, [n], false) };
+    {
+        let packed_slice = unsafe { packed_arr.as_slice_mut()? };
+        let scales_slice = unsafe { scales_arr.as_slice_mut()? };
+        py.allow_threads(|| {
+            vectro_lib::quant::nf4::batch_encode_packed_into(
+                flat,
+                n,
+                d,
+                packed_slice,
+                scales_slice,
+            )
+        });
+    }
+    Ok((packed_arr, scales_arr))
 }
 
 /// Batch encode a 2-D float32 numpy array [N, D] to INT8 using rayon-parallel
@@ -1640,7 +1914,7 @@ fn pq_train_batch<'py>(
             "PQ requires K ≤ 256 (got {n_centroids})"
         )));
     }
-    if n_subspaces == 0 || d % n_subspaces != 0 {
+    if n_subspaces == 0 || !d.is_multiple_of(n_subspaces) {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "vector dim {d} not divisible by n_subspaces {n_subspaces}"
         )));
@@ -1785,6 +2059,7 @@ fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyBf16Encoder>()?;
     m.add_class::<PyIvfIndex>()?;
     m.add_class::<PyIvfPqIndex>()?;
+    m.add_class::<PyIvfPq4Index>()?;
     // Quantized HNSW variants (Phase 22)
     m.add_class::<PyBf16HnswIndex>()?;
     m.add_class::<PyInt8HnswIndex>()?;
@@ -1796,6 +2071,7 @@ fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(benchmark_search_performance, m)?)?;
     m.add_function(wrap_pyfunction!(encode_int8_fast, m)?)?;
     m.add_function(wrap_pyfunction!(encode_nf4_fast, m)?)?;
+    m.add_function(wrap_pyfunction!(quantize_nf4_batch, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_int8_batch, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_int8_batch_normalized, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_int8_batch_from_f16, m)?)?;

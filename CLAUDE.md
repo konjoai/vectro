@@ -2,7 +2,7 @@
 
 Ultra-high-performance embedding compression library — INT8 · NF4 · PQ-96 · Binary · HNSW · RQ · VQZ — with Rust kernels, optional Mojo SIMD acceleration, and PyO3 Python bindings.
 
-**v5.18.0** (Python) / **v8.12.0** (Rust) — 1020 Python + 109 Rust tests passing.
+**v5.24.0** (Python) / **v8.17.0** (Rust) — 1452 Python + 230 Rust tests passing.
 
 ## Stack
 Rust 2021 · ndarray · rayon · simsimd · half · PyO3 · anyhow · criterion · Mojo (optional) · Python 3.10+ · NumPy · pixi

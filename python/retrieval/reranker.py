@@ -57,15 +57,23 @@ def _cosine_rerank(
 ) -> List[Tuple[str, Any, float]]:
     """Re-score *candidates* by cosine similarity and return top-*top_k*."""
     q = query_vec / (np.linalg.norm(query_vec) + 1e-10)
-    scored = []
+    # Gather candidate rows once and score them as a single GEMV instead of a
+    # per-candidate Python loop of tiny norm+dot BLAS calls. (vec/‖vec‖)·q ==
+    # (vec·q)/‖vec‖, so one (C,d)@(d,) matmul + one vectorized norm suffices.
+    rows: List[int] = []
+    kept: List[Tuple[str, Any]] = []
     for doc_id, doc, _orig_score in candidates:
         row = id_to_row.get(doc_id)
         if row is None:
             continue
-        vec = store_mat[row]
-        norm = np.linalg.norm(vec) + 1e-10
-        score = float((vec / norm) @ q)
-        scored.append((doc_id, doc, score))
+        rows.append(row)
+        kept.append((doc_id, doc))
+    if not rows:
+        return []
+    sub = store_mat[rows]
+    norms = np.linalg.norm(sub, axis=1) + 1e-10
+    scores = (sub @ q) / norms
+    scored = [(kept[i][0], kept[i][1], float(scores[i])) for i in range(len(kept))]
     scored.sort(key=lambda x: x[2], reverse=True)
     return scored[:top_k]
 
@@ -83,16 +91,25 @@ def _rrf_rerank(
     orig_ranked = sorted(candidates, key=lambda x: x[2], reverse=True)
     orig_rank = {t[0]: i for i, t in enumerate(orig_ranked)}
 
-    # Build cosine re-score ranking
+    # Build cosine re-score ranking — batched GEMV (see _cosine_rerank).
     q = query_vec / (np.linalg.norm(query_vec) + 1e-10)
-    cosine_scores: List[Tuple[str, float]] = []
+    rows: List[int] = []
+    ids_kept: List[str] = []
     for doc_id, _doc, _orig in candidates:
         row = id_to_row.get(doc_id)
         if row is None:
             continue
-        vec = store_mat[row]
-        norm = np.linalg.norm(vec) + 1e-10
-        cosine_scores.append((doc_id, float((vec / norm) @ q)))
+        rows.append(row)
+        ids_kept.append(doc_id)
+    if rows:
+        sub = store_mat[rows]
+        norms = np.linalg.norm(sub, axis=1) + 1e-10
+        cs = (sub @ q) / norms
+        cosine_scores: List[Tuple[str, float]] = [
+            (ids_kept[i], float(cs[i])) for i in range(len(ids_kept))
+        ]
+    else:
+        cosine_scores = []
     cosine_scores.sort(key=lambda x: x[1], reverse=True)
     cosine_rank = {did: i for i, (did, _) in enumerate(cosine_scores)}
 

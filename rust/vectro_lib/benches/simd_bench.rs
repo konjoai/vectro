@@ -16,6 +16,7 @@ use vectro_lib::quant::{int8, nf4};
 use vectro_lib::index::hnsw::HnswIndex;
 use vectro_lib::index::ivf::IvfIndex;
 use vectro_lib::index::ivf_pq::IvfPqIndex;
+use vectro_lib::index::quant_hnsw::{Bf16HnswIndex, Int8HnswIndex, Nf4HnswIndex};
 
 fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
     (0..n)
@@ -65,6 +66,67 @@ fn bench_hnsw_search(c: &mut Criterion) {
     group.throughput(Throughput::Elements(N as u64));
     group.bench_function("search_k10_ef50_n2000_d64", |b| {
         b.iter(|| idx.search(black_box(&query), 10, 50))
+    });
+    group.finish();
+}
+
+/// INT8 quant-HNSW asymmetric search throughput at an embedding-scale dimension.
+/// Exercises the VNNI prepared-query distance kernel (d=768 ⇒ AVX-512-VNNI path
+/// on capable hosts), the flagship INT8 mode's per-candidate hot path.
+fn bench_int8_hnsw_search(c: &mut Criterion) {
+    const N: usize = 5_000;
+    const D: usize = 768;
+    let vecs = make_vecs(N, D);
+    let query = vecs[1].clone();
+
+    let mut idx = Int8HnswIndex::new(16, 200);
+    idx.add_batch(&vecs);
+    idx.finalize();
+
+    let mut group = c.benchmark_group("int8_hnsw_search");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("search_k10_ef100_n5000_d768", |b| {
+        b.iter(|| idx.search(black_box(&query), 10, 100))
+    });
+    group.finish();
+}
+
+/// NF4 quant-HNSW asymmetric search throughput. Exercises the AVX2 in-register
+/// codebook-LUT distance kernel (the former scalar hot path).
+fn bench_nf4_hnsw_search(c: &mut Criterion) {
+    const N: usize = 5_000;
+    const D: usize = 768;
+    let vecs = make_vecs(N, D);
+    let query = vecs[1].clone();
+
+    let mut idx = Nf4HnswIndex::new(16, 200);
+    idx.add_batch(&vecs);
+    idx.finalize();
+
+    let mut group = c.benchmark_group("nf4_hnsw_search");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("search_k10_ef100_n5000_d768", |b| {
+        b.iter(|| idx.search(black_box(&query), 10, 100))
+    });
+    group.finish();
+}
+
+/// BF16 quant-HNSW asymmetric search throughput. Exercises the bf16→f32 widen
+/// distance kernel (AVX-512 16-wide on capable hosts, AVX2 8-wide otherwise).
+fn bench_bf16_hnsw_search(c: &mut Criterion) {
+    const N: usize = 5_000;
+    const D: usize = 768;
+    let vecs = make_vecs(N, D);
+    let query = vecs[1].clone();
+
+    let mut idx = Bf16HnswIndex::new(16, 200);
+    idx.add_batch(&vecs);
+    idx.finalize();
+
+    let mut group = c.benchmark_group("bf16_hnsw_search");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("search_k10_ef100_n5000_d768", |b| {
+        b.iter(|| idx.search(black_box(&query), 10, 100))
     });
     group.finish();
 }
@@ -153,6 +215,9 @@ criterion_group!(
     bench_int8_throughput,
     bench_nf4_throughput,
     bench_hnsw_search,
+    bench_int8_hnsw_search,
+    bench_nf4_hnsw_search,
+    bench_bf16_hnsw_search,
     bench_ivf_search,
     bench_ivfpq_search,
     bench_sq2_decode,

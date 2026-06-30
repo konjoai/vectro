@@ -21,7 +21,6 @@
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use simsimd::SpatialSimilarity;
 
 // ---------------------------------------------------------------------------
 // Internal k-means helpers (identical LCG seed + Lloyd's used by pq.rs)
@@ -29,7 +28,10 @@ use simsimd::SpatialSimilarity;
 
 #[inline]
 fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
+    // Route through the shared SIMD kernel (NEON / AVX2) rather than a scalar
+    // reduction — k-means++ init and Lloyd assignment call this over the whole
+    // dataset per iteration.
+    crate::index::simd::l2_sq(a, b)
 }
 
 /// k-means++ centroid initialisation (D²-weighted sampling, LCG RNG).
@@ -282,8 +284,10 @@ impl IvfIndex {
 
     #[inline]
     fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
-        let dot: f64 = <f32 as SpatialSimilarity>::dot(a, b).unwrap_or(-1.0);
-        (1.0 - dot as f32).max(0.0)
+        // Use the directly-compiled SIMD dot (NEON / AVX2) instead of SimSIMD's
+        // per-call dispatch — this runs over every centroid in the coarse scan
+        // and every candidate in the full scan.
+        (1.0 - crate::index::simd::dot_f32(a, b)).max(0.0)
     }
 
     /// Find the nearest centroid to `v`; returns `(centroid_id, distance)`.

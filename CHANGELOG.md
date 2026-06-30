@@ -7,31 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added (IVF-PQ recall — residual encoding + exact rerank for billion-scale)
-- **Residual PQ encoding** (`rust/vectro_lib/src/index/ivf_pq.rs`). The PQ
-  codebook is now trained on `vector − coarse_centroid` residuals and codes
-  encode the residual; search rebuilds the ADC table per probed list from the
-  query residual. The coarse centroid cancels (`‖q−v‖² = ‖q_res−v_res‖²` within a
-  cell), so the formulation is exact up to PQ quantisation — the standard
-  high-recall IVF-PQ design.
-- **Exact rerank against an INT8 store** (`enable_rerank`,
-  `search_rerank(query, k, n_probe, k_factor)`; Python `PyIvfPqIndex.enable_rerank`
-  / `search_rerank`). Fetches `k·k_factor` ADC candidates, re-scores them with
-  near-exact cosine from an opt-in **abs-max int8** vector store (1 byte/dim,
-  per-vector scale so the full range is used even for small normalised
-  components), returns the best `k`. Pure PQ tops out ~0.6 recall on hard data (a
-  *fundamental* PQ limit — measured identical for faiss IVFPQ at the same bytes);
-  rerank lifts it to **0.95+** at a quarter of fp32's memory.
-  - **glove-100 (100K, cosine), 25-byte PQ codes + int8 rerank:** plain PQ 0.61 →
-    **k_factor=16 / nprobe=128 → 0.969** — matching faiss `IVF,PQ,RFlat` (0.970)
-    while the rerank store is **128 B/vec vs faiss's 512 B fp32** (at d=128).
-  - This is the 100M-on-commodity-RAM enabler: ~15 GB (PQ + int8 rerank) for 0.97
-    recall at 100M, vs ~51 GB for an fp32 rerank store.
-- **Billion-scale benchmarking** — `benchmarks/BILLION_SCALE.md` (standard >1M
-  datasets: BIGANN/SIFT1B, Deep1B, MS-SPACEV/Turing, Text2Image, FB-SSNPP via
-  big-ann-benchmarks; the memory math that makes 100M a *compression* problem)
-  and `scripts/bench_scale.py` (synthetic-streaming + big-ann `.u8bin`/`.fbin`
-  reader; HNSW / IVF-PQ; build time, peak RSS, on-disk, recall-vs-QPS).
+### Performance (IVF-PQ — SIMD coarse scan via a shared distance module)
+- New `rust/vectro_lib/src/index/simd.rs` — a single source of truth for the
+  SIMD f32 `dot_f32` / `l2_sq` kernels (NEON on aarch64, AVX2+FMA on x86_64
+  runtime-detected, SimSIMD fallback). HNSW's private kernels are removed and it
+  now delegates here (dedup, no behaviour change), and **IVF / IVF-PQ's
+  `cosine_dist` now uses it instead of per-call SimSIMD dispatch** — paid over
+  every centroid in the coarse-quantiser scan and on every k-means assignment.
+  Benefits **IVF training / k-means** (assignment is `n_sample·n_lists·d`).
+- **Honest measurement:** this does *not* move IVF-PQ *search* QPS (glove-200K:
+  4,623 vs 4,502 at n_probe=8, within noise). The coarse scan is ~6% of search;
+  the bottleneck is the **ADC table-lookup loop** (memory-bound at K=256). HNSW
+  recall/QPS are unchanged (kernels relocated verbatim, validated by the suite).
+  Net value of this change is the shared-module **dedup** + the **training**
+  speedup; the ADC loop is the dedicated next lever for search throughput.
+
+### Added (IVF-PQ — batched, parallel, GIL-free search)
+- `IvfPqIndex::search_batch_flat` (`rust/vectro_lib/src/index/ivf_pq.rs`) and the
+  `PyIvfPqIndex.search_batch_np(queries, k, n_probe)` binding
+  (`rust/vectro_py/src/lib.rs`): batch IVF-PQ search parallelised across queries
+  with rayon and the **GIL released**, mirroring the HNSW `search_batch_np` path.
+  Replaces the per-query Python loop (a PyO3 call + Python overhead per query) —
+  the throughput path for at-scale serving. `benchmark_ivfpq_scale.py` now drives
+  vectro through this batch entry for an apples-to-apples comparison with FAISS's
+  batched `search`.
+
+### Fixed (IVF-PQ — k-means++ init was O(n·k²·d), now O(n·k·d))
+- `rust/vectro_lib/src/index/ivf_pq.rs` — `kmeans_pp_init` recomputed each
+  point's distance to **every** already-chosen centroid on every round (and ran
+  serially), making IVF training scale as O(n·k²·d). Rewrote it to the standard
+  running-minimum form (update against only the new centroid each round, in
+  parallel), matching the already-correct `ivf.rs` / `pq.rs`. **IVF-PQ training
+  100.1s → 2.4s (42×) at 512 lists on glove-100 (50K train sample, M=50)** —
+  now faster than FAISS `IndexIVFPQ` (2.9s) at matched recall (0.848 vs 0.859).
+
+### Added (IVF-PQ at-scale benchmark — the "fits the machine" story)
+- `benchmarks/benchmark_ivfpq_scale.py` — builds vectro IVF-PQ at a
+  parametrised scale and reports build time, **measured RSS**, the analytic
+  footprint vs float32-flat / HNSW-float32, recall@k vs exact brute-force GT,
+  a QPS `n_probe` sweep, a 100M/1B memory projection, and an optional FAISS
+  `IndexIVFPQ` comparison. Demonstrates the regime where vectro structurally
+  wins: **100M×768 is ~307 GB as float32 but ~10.5 GB as IVF-PQ codes (29×)**,
+  turning an impossible single-machine workload into a routine one, at recall
+  competitive with FAISS (~95%). Plus `tests/test_benchmark_ivfpq_scale.py`.
+- Known follow-ups surfaced by the benchmark: IVF Lloyd assignment is ~3.5×
+  FAISS at high `n_lists` (scalar `cosine_dist`), and IVF-PQ search lacks a
+  batched/parallel binding + PQ fast-scan (single-query Python loop today).
+
+### Performance (HNSW search — x86_64 reaches parity with the aarch64 hot path)
+- **AVX2+FMA dot kernel** (`rust/vectro_lib/src/index/hnsw.rs`, `dot_f32_avx2`) —
+  the search distance hot loop had a hand-rolled NEON dot on aarch64 but fell
+  back to **SimSIMD per-call dispatch on x86_64**, whose indirection dominates at
+  the low dims typical of ANN search (d≈100). Adds the x86 analogue of the NEON
+  kernel (4× `f32x8` FMA accumulators), runtime-detected via
+  `is_x86_feature_detected!`.
+- **x86_64 software prefetch** (`prefetch_vec_full`) — the two-neighbour-ahead
+  full-vector prefetch in the beam loop was aarch64-only; added the `_mm_prefetch`
+  equivalent so cold neighbour vectors stream in while the current distance
+  computes.
+- **Pre-sized candidate heaps** — the beam-search `cands`/`window` heaps now
+  reserve `ef` up front, removing per-query heap-growth reallocations.
+- Net on glove-100 (50K×100, ef=100): **batch search 20,250 → 22,718 QPS (+12%)**
+  at identical recall (~0.918), narrowing the gap to hnswlib/faiss to ~1.4×.
+
+### Added (HNSW — zero-copy single-query results + GIL release)
+- `PyHnswIndex.search_arrays_np` returns `(int64 ids, float32 distances)` numpy
+  arrays directly with the **GIL released** during the search, and
+  `HNSWIndex.search` uses it on the unfiltered rust hot path. Avoids the
+  per-query list-of-tuples allocation and lets multiple Python threads search
+  concurrently: single-query serving scales **4,890 → 8,578 QPS at 4 threads
+  (~1.75×)**. (Single-threaded single-query remains bound by Python per-call
+  overhead — use `search_batch` for maximum throughput.)
+
+### Added (HNSW — batched Python search closes the single-query gap)
+- `HNSWIndex.search_batch(queries, k, ef, filter=None)` (`python/hnsw_api.py`) —
+  a high-throughput multi-query entry point. On a rust-backed cosine index with
+  no metadata filter it delegates to the native `search_batch_np` (rayon-parallel
+  across queries, GIL released), avoiding the per-query Python call overhead that
+  bottlenecks a `search()` loop: **~3.7× higher QPS** measured on glove-100 (50K,
+  ef=100: 5,331 → 19,502 QPS). With a `filter`, or on the pure-Python backend, it
+  falls back to per-query `search` (same results, no batch speedup). Returns
+  `(q, k)` int64 indices / float32 distances, `-1`/`inf`-padded for short rows.
+  Backed by a new `RustHnswBackend.search_batch` wrapper and 5 parity tests.
+
+### Performance (PQ encode — AVX2+FMA nearest-centroid on x86_64)
+- **AVX2+FMA nearest-centroid kernel** (`rust/vectro_lib/src/quant/pq.rs`,
+  `assign_argmin_avx2`). The PQ assignment hot loop (`pq_encode_into` →
+  `assign_nearest`, also k-means training) had a fused NEON kernel for aarch64
+  but fell back to **portable scalar on x86_64** — leaving ~5× on the table vs
+  FAISS's SIMD encoder on Intel/AMD. Mirrors the NEON kernel: computes
+  `dist = ‖c_k‖² − 2·v·c_k` over the transposed centroid LUT, tracking the
+  running argmin in 256-bit registers (8 centroids/step), runtime-detected via
+  `is_x86_feature_detected!`. PQ-96 encode (50K×768, K=256) **40K → 124K vec/s
+  (3.1×), now 0.88× FAISS** (was ~0.2×). Scalar path retained as the
+  correctness baseline; a new `assign_nearest_simd_matches_portable` test
+  asserts distance parity (indices may differ only on genuine FMA-rounding ties).
 
 ### Performance (high-dim search — full-vector prefetch flips the d≥256 loss)
 - **Software-pipelined full-vector prefetch** (`rust/vectro_lib/src/index/hnsw.rs`,

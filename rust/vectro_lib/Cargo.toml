@@ -1,6 +1,6 @@
 [package]
 name = "vectro_lib"
-version = "8.12.0"
+version = "8.17.0"
 edition = "2021"
 authors = ["Wesley Scholl <128409641+wesleyscholl@users.noreply.github.com>"]
 description = "Core Rust library for high-performance vector quantization and search"
@@ -20,9 +20,13 @@ simsimd = "6"
 half = "2.4"
 smallvec = "1.15"
 tracing = "0.1"
+mimalloc = { version = "0.1", default-features = false, optional = true }
 
 [features]
 default = []
+# Bench-only: route the alloc_bench example through the mimalloc global
+# allocator to A/B it against glibc on the HNSW build / concurrent-query paths.
+mimalloc = ["dep:mimalloc"]
 # Diagnostic: count distance evaluations per search (global atomic). Off by
 # default — adds a relaxed increment to the distance hot path. Used to compare
 # vectro's ndis/query against faiss's hnsw_stats.ndis. Never enable in release.
@@ -64,4 +68,8 @@ harness = false
 
 [[bench]]
 name = "train_bench"
+harness = false
+
+[[bench]]
+name = "binary_bench"
 harness = false
