@@ -1,0 +1,41 @@
+# templates/repo-ci.yml
+# The thin per-repo GitHub Actions workflow a consuming repo drops in. The CI plane
+# installs the pinned kiban distribution and runs konjo-gates against the repo's profile.
+# CI never reads ~/.konjo; the gate logic and the eval cassettes come from the installed,
+# version-pinned package. The self_test gate runs the eval through the deterministic
+# replay backend, so CI needs no model and no network for it.
+#
+# Pin KIBAN_REF to a tag or sha so a kiban change rolls out to this repo on a deliberate
+# schedule, not all repos at once.
+
+name: konjo-gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  KIBAN_REF: "v1.1.0"   # the pinned kiban ref for this repo; bump deliberately
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # konjo-gates diffs against the base ref
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Install the whole kiban distribution at the pin. It ships the real engine
+      # (lib, evals) with the konjo-gates entry point and the eval cassettes, so the
+      # orchestrator imports one source of truth and the replay eval needs no model.
+      - name: Install pinned kiban
+        run: pip install "kiban @ git+https://github.com/konjoai/kiban.git@${KIBAN_REF}"
+
+      - name: Run gates against the repo profile
+        run: konjo-gates --profile .konjo/profile.yml --base "origin/${{ github.base_ref || 'main' }}"
