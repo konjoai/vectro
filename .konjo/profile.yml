@@ -7,23 +7,28 @@
 # that state unless marked UNVERIFIED.
 #
 # VECTRO is a vector-search / ANN library: a Rust core (rust/vectro_lib) with Python bindings
-# (rust/vectro_py + python/) and a JS/WASM binding (js/, with TypeScript types). It is a
-# perf-paper repo (benchmarks/, reproduce_paper.sh, PERF_FINDINGS.md).
+# (rust/vectro_py + python/), a JS/WASM binding (js/, with TypeScript types), and a Mojo
+# surface (src/vectro_mojo, experimental/mojo). It is a perf-paper repo (benchmarks/,
+# reproduce_paper.sh, PERF_FINDINGS.md).
 
 repo: vectro
 
 # Confirmed: Cargo.toml is a workspace (vectro_lib, vectro_cli, vectro_py, generators); the
 # pre-commit and konjo-gate.yml G1 run ruff/ruff-format/mypy/vulture over python/; js/ ships a
-# Node binding with index.d.ts (TypeScript) and a js-ci.yml workflow.
+# Node binding with index.d.ts (TypeScript) and a js-ci.yml workflow; and the repo carries a
+# real Mojo surface (src/vectro_mojo, experimental/mojo, Mojo tests; 38 .mojo files) with a
+# Mojo IPC smoke-test in ci.yml.
 stack:
   - rust
   - python
   - typescript
+  - mojo
 
 packs:
   - lang/rust
   - lang/python
   - lang/typescript
+  - lang/mojo
 
 # Confirmed from konjo-gate.yml G1 (cargo fmt --check, clippy with -D warnings -D pedantic
 # -D unwrap_used -D expect_used -D panic -D todo -D dbg_macro; ruff check; ruff format --check;
@@ -62,15 +67,22 @@ mutation: cargo-mutants
 # appended automatically. The lang/python lanes are deferred (empty), so Python diffs lean on
 # the contract gates above.
 # Order matters: the red-team lane embeds the other lanes' findings in this order, and the
-# cassette key depends on it. api-surface is listed last so that, filtered by scope, a Rust
-# diff yields [ownership-lifetimes, error-handling, perf-alloc, concurrency, api-surface] and a
-# TS diff yields [type-soundness, async-correctness, api-surface], each matching its recorded
-# corpus order (rust and typescript). Reordering these would stale the cassettes.
+# cassette key depends on it. api-surface is listed last so that, filtered by scope, each
+# language's worker sequence matches its recorded corpus order:
+#   Rust diff -> [ownership-lifetimes, error-handling, perf-alloc, concurrency, api-surface]
+#   TS   diff -> [type-soundness, async-correctness, api-surface]
+#   Mojo diff -> [concurrency, mojo-memory, mojo-numerics, mojo-perf, api-surface]
+# (concurrency and api-surface are the shared _base lanes that cover SCOPE_MOJO). The Mojo
+# order matches profiles/mojo_example.yml, under which the Mojo cassettes were recorded.
+# Reordering any of these would stale the cassettes.
 specialists:
   - ownership-lifetimes
   - error-handling
   - perf-alloc
   - concurrency
+  - mojo-memory
+  - mojo-numerics
+  - mojo-perf
   - type-soundness
   - async-correctness
   - api-surface
@@ -121,5 +133,6 @@ format_cmd: "cargo fmt --all && ruff format ."
 eval_corpus:
   - rust
   - typescript
+  - mojo
 
 overrides: {}

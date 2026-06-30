@@ -16,7 +16,7 @@ on:
     branches: [main]
 
 env:
-  KIBAN_REF: "v1.0.1"   # the pinned kiban ref for this repo; bump deliberately
+  KIBAN_REF: "v1.1.0"   # the pinned kiban ref for this repo; bump deliberately
 
 jobs:
   gates:
