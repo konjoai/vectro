@@ -1,0 +1,125 @@
+# .konjo/profile.yml
+# VECTRO's Konjo profile. The CI plane installs the pinned kiban distribution (see
+# .konjo/kiban.ref and .github/workflows/konjo-gates.yml) and runs `konjo-gates` against this
+# profile. The profile was reconciled against this repo's real state (Cargo.toml workspace,
+# .pre-commit-config.yaml, .github/workflows/konjo-gate.yml and ci.yml, .konjo/deny.toml,
+# Makefile, reproduce_paper.sh, benchmarks/, PERF_FINDINGS.md). Fields are confirmed against
+# that state unless marked UNVERIFIED.
+#
+# VECTRO is a vector-search / ANN library: a Rust core (rust/vectro_lib) with Python bindings
+# (rust/vectro_py + python/) and a JS/WASM binding (js/, with TypeScript types). It is a
+# perf-paper repo (benchmarks/, reproduce_paper.sh, PERF_FINDINGS.md).
+
+repo: vectro
+
+# Confirmed: Cargo.toml is a workspace (vectro_lib, vectro_cli, vectro_py, generators); the
+# pre-commit and konjo-gate.yml G1 run ruff/ruff-format/mypy/vulture over python/; js/ ships a
+# Node binding with index.d.ts (TypeScript) and a js-ci.yml workflow.
+stack:
+  - rust
+  - python
+  - typescript
+
+packs:
+  - lang/rust
+  - lang/python
+  - lang/typescript
+
+# Confirmed from konjo-gate.yml G1 (cargo fmt --check, clippy with -D warnings -D pedantic
+# -D unwrap_used -D expect_used -D panic -D todo -D dbg_macro; ruff check; ruff format --check;
+# vulture) and .pre-commit-config.yaml (ruff, ruff-format, mypy on ^python/).
+format_lint:
+  - fmt-check
+  - clippy
+  - ruff
+  - ruff-format
+  - mypy
+  - vulture
+
+# Confirmed from konjo-gate.yml. cargo-deny reads .konjo/deny.toml; cargo-audit is the advisory
+# scan; G2 is an 80% line-coverage gate (cargo llvm-cov nextest --fail-under-lines 80 and a
+# pytest coverage run); G4 enforces complexity (cognitive_complexity + radon), the 500-line
+# file-size limit, the dry_check.py duplicate-block gate, and rustdoc missing_docs. unsafe-budget
+# is the kiban-native gate: a net rise in unsafe blocks with no safety comment fails.
+contract_gates:
+  - cargo-deny           # G1: cargo deny check --config .konjo/deny.toml
+  - cargo-audit          # G1: advisory scan
+  - coverage-80          # G2: cargo llvm-cov nextest --fail-under-lines 80, plus pytest --cov
+  - complexity           # G4: cognitive_complexity (Rust) + radon (Python)
+  - file-size-500        # G4: 500-line hard limit per source file
+  - dry                  # G4: dry_check.py, threshold 0.85
+  - rustdoc              # G4: RUSTDOCFLAGS="-D missing_docs"
+  - unsafe-budget        # kiban-native, diff-only
+
+# Confirmed from konjo-gate.yml G3: `cargo mutants --in-diff`.
+mutation: cargo-mutants
+
+# kiban-native review lanes for this stack. The Rust core carries the defect risk: the clippy
+# config already bans unwrap/expect/panic (the mechanical half of error-handling), and the repo
+# is perf-critical (the prove gate plus a perf paper). ownership-lifetimes, error-handling, and
+# perf-alloc come from lang/rust; concurrency and api-surface are the shared _base lanes;
+# type-soundness and async-correctness (lang/typescript) cover the js/ binding. red-team is
+# appended automatically. The lang/python lanes are deferred (empty), so Python diffs lean on
+# the contract gates above.
+# Order matters: the red-team lane embeds the other lanes' findings in this order, and the
+# cassette key depends on it. api-surface is listed last so that, filtered by scope, a Rust
+# diff yields [ownership-lifetimes, error-handling, perf-alloc, concurrency, api-surface] and a
+# TS diff yields [type-soundness, async-correctness, api-surface], each matching its recorded
+# corpus order (rust and typescript). Reordering these would stale the cassettes.
+specialists:
+  - ownership-lifetimes
+  - error-handling
+  - perf-alloc
+  - concurrency
+  - type-soundness
+  - async-correctness
+  - api-surface
+
+# The perf prove gate. Confirmed: VECTRO's headline metric is QPS (queries per second) for ANN
+# search, higher is better, held at a fixed recall@10; the benchmarks also record throughput
+# (vec/sec) and p50 latency. The paper bench is reproduce_paper.sh (also `make bench-all`),
+# which writes results/paper/wave{N}_{platform}_{date}.json per run.
+#
+# min_effect_pct is PENDING USER CONFIRMATION, per the house rule: the "what counts as a real
+# win" threshold must be measured on the bench hardware (PERF_FINDINGS.md records the reference
+# host: x86_64, 4 physical cores, AVX2 + AVX-512F + FMA, target-cpu=x86-64-v3, release fat-LTO),
+# not invented. Until activated, konjo-prove run refuses a verdict (NOT ACTIVATED, exit 3) and
+# the CI prove gate keeps blocking perf changes; it never passes a perf change silently while
+# inert.
+prove:
+  enabled: true
+  baseline: "paper_v5_0_0"           # the v5.0.0 cross-platform paper baseline
+  metric: "qps"                       # queries per second at a fixed recall@10
+  unit: "qps"
+  lower_is_better: false              # throughput: higher is better
+  run_floor: 30
+  min_effect_pct: null                # PENDING: measure jitter on the bench host, then confirm
+  perf_globs:
+    - "rust/**"
+    - "benchmarks/**"
+    - "src/**"
+  bench_cmd: "./reproduce_paper.sh --wave 1 --runs 3"
+  activation_checklist:
+    - "On the bench host (PERF_FINDINGS.md reference: x86_64, 4 cores, AVX-512, x86-64-v3, release fat-LTO), run reproduce_paper.sh enough times that >= 30 paired qps measurements accumulate (RUNS=3 per file)."
+    - "Pin the recall@10 operating point so qps is compared at equal recall (a qps win at lower recall is not a win)."
+    - "Use the harness thermal metadata (--thermal-aware) to confirm thermal fairness across captures."
+    - "Measure run-to-run jitter on the paired qps runs (coefficient of variation, or MAD as a percent of the median)."
+    - "Set min_effect_pct above that noise floor (a win must exceed the bench's own jitter), then confirm the number here."
+    - "Capture the golden: konjo-prove baseline capture --tag paper_v5_0_0 --results baseline.json"
+
+killtest: true
+
+# Confirmed from konjo-gate.yml G2: tests run via cargo-nextest (Rust) and pytest (Python).
+verify_cmd: "cargo nextest run --workspace && python -m pytest tests/ -q"
+
+# Confirmed from konjo-gate.yml G1 (`cargo fmt --all`) and .pre-commit-config.yaml (ruff-format).
+format_cmd: "cargo fmt --all && ruff format ."
+
+# The eval corpus for this repo: the Rust and TypeScript planted-bug fixtures (VECTRO's two
+# reviewed binding surfaces). Scopes the meta-gate so the VECTRO self-test runs only its own
+# corpus, and the squish self-test never runs it.
+eval_corpus:
+  - rust
+  - typescript
+
+overrides: {}
