@@ -924,20 +924,21 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         // near-lossless INT8 store (preserves quality); otherwise from the graph
         // codes. Re-normalise either way.
         let rerank_enabled = self.rerank_codes.is_some();
+        // Borrow the store once; matching on the Option removes the per-element
+        // `expect` (the closure can't otherwise prove the invariant holds).
+        let rerank_codes = self.rerank_codes.as_ref().filter(|_| self.dim > 0);
         let survivors: Vec<Vec<f32>> = (0..self.encoded.len())
             .filter(|&i| !self.deleted[i])
-            .map(|i| {
-                if rerank_enabled && self.dim > 0 {
+            .map(|i| match rerank_codes {
+                Some(codes) => {
                     let base = i * self.dim;
                     let mult = self.rerank_mult[i];
-                    let codes = self.rerank_codes.as_ref().expect("rerank store present");
                     codes[base..base + self.dim]
                         .iter()
                         .map(|&c| c as f32 * mult)
                         .collect()
-                } else {
-                    Self::normalize(&Q::decode(&self.encoded[i], 0))
                 }
+                None => Self::normalize(&Q::decode(&self.encoded[i], 0)),
             })
             .collect();
 
