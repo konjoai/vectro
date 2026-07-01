@@ -16,7 +16,12 @@ on:
     branches: [main]
 
 env:
-  KIBAN_REF: "v1.1.4"   # the pinned kiban ref for this repo; bump deliberately
+  # Pinned to the konjoai/kiban#21 fix commit rather than a tag: v1.1.4 still let
+  # ANSI-colored clippy output (forced by dtolnay/rust-toolchain's CARGO_TERM_COLOR)
+  # and cargo's own build-progress noise ("Checking foo v0.1") register as false
+  # net-new repo:clippy findings (reproduced on PR #104). Swap this to the "v1.1.5"
+  # tag once konjoai/kiban#21 merges and the release workflow cuts it.
+  KIBAN_REF: "0db79f3c75a963aae286783291901e6b3c61ffc0"
 
 jobs:
   gates:
