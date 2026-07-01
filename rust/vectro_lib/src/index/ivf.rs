@@ -88,23 +88,14 @@ fn kmeans_lloyd(data: &[&[f32]], k: usize, d: usize, max_iter: usize, seed: u64)
     let mut cents = kmeans_pp_init(data, k, d, seed);
     let mut assignments = vec![0usize; n];
 
+    // Flatten the data once into a contiguous [n, d] buffer for the GEMM
+    // assignment (centroids are already flat [k, d]).
+    let data_flat: Vec<f32> = data.iter().flat_map(|v| v.iter().copied()).collect();
+
     for _ in 0..max_iter {
-        let new_asgn: Vec<usize> = data
-            .par_iter()
-            .map(|v| {
-                let mut best = 0;
-                let mut best_d = f32::INFINITY;
-                for ki in 0..k {
-                    let c = &cents[ki * d..(ki + 1) * d];
-                    let dist = l2_sq(v, c);
-                    if dist < best_d {
-                        best_d = dist;
-                        best = ki;
-                    }
-                }
-                best
-            })
-            .collect();
+        // Assignment step — one GEMM + parallel argmax (squared-L2 nearest).
+        let new_asgn =
+            super::kmeans::assign_nearest(&data_flat, &cents, n, k, d, super::kmeans::Metric::L2);
 
         if new_asgn == assignments {
             break;

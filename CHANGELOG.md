@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (IVF / IVF-PQ training — GEMM k-means assignment)
+- New `rust/vectro_lib/src/index/kmeans.rs` (`assign_nearest`) replaces the
+  Lloyd **assignment** step's `parallel-over-points, serial-over-k` scan (one
+  distance call per centroid per point, `k` separate dot loops, poor
+  centroid-matrix reuse) with a tiled `[chunk, d]·[d, k]` GEMM + per-row argmax.
+  Both metrics reduce to a per-row argmax: `Cosine` on the raw dot (unit-norm
+  vectors), `L2` on `dot − ½‖c‖²` (the standard centroid-norm trick, for the
+  non-unit PQ sub-vector regime). Wired into `IvfPqIndex`'s coarse k-means
+  (`ivf_pq.rs`, cosine) and `IvfFlat`'s (`ivf.rs`, L2). PQ codebook training
+  (`quant/pq.rs`) already uses a LUT/SIMD-across-K assignment and is unchanged.
+- **Measured (this x86_64 host, n=50k · d=128 · n_lists=512, 25 iters):**
+  IVF-PQ train **2.47s → 1.52s (~1.6×)** at unchanged recall (the full
+  index/recall suite passes; `assign_nearest` is validated byte-for-byte against
+  a scalar oracle for both metrics, x86_64 + `qemu-aarch64`).
+- **Rejected — a single monolithic `.dot()`:** the first cut computed one
+  `[n, d]·[d, k]` GEMM and was **2× slower (5.2s)** than the old scalar scan.
+  ndarray's `matrixmultiply` is single-threaded, so a monolithic GEMM loses the
+  old code's `par_iter`-over-points parallelism *and* materialises the full
+  `[n, k]` (102 MB here) each iteration. Tiling across rayon workers — each
+  running its own small GEMM, mirroring `IvfPqIndex::search_batch_flat` — is
+  what recovers the parallelism and caps live memory at `[chunk, k]`.
+
 ### Performance (PQ4 fast-scan — NEON `vqtbl1q_u8` closes the aarch64 gap)
 - `rust/vectro_lib/src/index/pq4.rs` — the PQ4 fast-scan (`IndexPQFastScan`
   analogue, shared by `Pq4FlatIndex` and `IvfPq4Index`) had an AVX2 `pshufb`
@@ -25,9 +47,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exercises NEON vs the scalar reference (byte-exact `u16` sums) and passes,
   along with `ranking_agrees_with_exact_adc` and the full `ivf_pq4` recall/batch
   suite, cross-compiled to `aarch64-unknown-linux-gnu` and run under
-  `qemu-aarch64`. Throughput on real Apple Silicon is to be measured via the
-  existing `bench-darwin-arm64` harness; the AVX2 twin documents ~22× over the
-  scalar gather on that platform's SIMD.
+  `qemu-aarch64`, and **confirmed on real Apple Silicon** by the green
+  `Rust tests (macos-latest)` (arm64) CI job. A throughput number is still to be
+  captured via the `bench-darwin-arm64` harness; the AVX2 twin documents ~22×
+  over the scalar gather on that platform's SIMD.
+
+### Changed (CI — `konjo-gates` provisions the Rust toolchain)
+- `.github/workflows/konjo-gates.yml` — the kiban gate job installed only Python +
+  kiban, so its `repo:*` Rust gates (`fmt-check`, `clippy`, `cargo-deny`,
+  `cargo-mutants`) had no `cargo` on PATH and no `cargo-deny`/`cargo-mutants`
+  binaries; each shelled out, failed instantly, and was reported as a spurious
+  "net-new findings" (the whole battery finished in ~0.4s, before any real compile
+  could run, returning byte-identical verdicts regardless of the diff). Added a
+  `dtolnay/rust-toolchain@stable` step (rustfmt + clippy), a cargo cache, and
+  `cargo install cargo-deny cargo-mutants` so the gates evaluate the real diff —
+  mirroring the working `konjo-gate.yml` G1/G3 setup. The gate went from failing
+  in ~0.4s to passing in ~3m21s (the runtime is the proof the tools now run).
 
 ### Performance (IVF-PQ — SIMD coarse scan via a shared distance module)
 - New `rust/vectro_lib/src/index/simd.rs` — a single source of truth for the
