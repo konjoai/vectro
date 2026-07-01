@@ -11,6 +11,7 @@
 //! let results = idx.search(&query, 10);
 //! ```
 
+use crate::index::kmeans::{assign_nearest, Metric};
 use crate::quant::pq::{pq_distance_table, train_pq_codebook, PQCodebook};
 use ndarray::{Array2, ArrayView2};
 use rayon::prelude::*;
@@ -124,27 +125,27 @@ pub(crate) fn kmeans_lloyd(
     max_iter: usize,
     seed: u64,
 ) -> Vec<f32> {
-    let _n = data.len();
+    let n = data.len();
     let mut centroids = kmeans_pp_init(data, k, d, seed);
 
+    // Flatten once (not per Lloyd iteration) so the GEMM assignment below can
+    // view `data` as a contiguous [n, d] matrix.
+    let mut flat = vec![0.0f32; n * d];
+    for (row, v) in flat.chunks_exact_mut(d).zip(data.iter()) {
+        row.copy_from_slice(v);
+    }
+    // `n * d == flat.len()` by construction, so this shape can't mismatch;
+    // `.expect()` is banned outside tests by this crate's lint config.
+    let data_view = ArrayView2::from_shape((n, d), &flat)
+        .unwrap_or_else(|_| unreachable!("flat length always matches (n, d)"));
+
     for _ in 0..max_iter {
-        // Assignment step — parallelised
-        let assignments: Vec<usize> = data
-            .par_iter()
-            .map(|v| {
-                let mut best_c = 0usize;
-                let mut best_d = f32::MAX;
-                for ci in 0..k {
-                    let cent = &centroids[ci * d..(ci + 1) * d];
-                    let dist = cosine_dist(v, cent);
-                    if dist < best_d {
-                        best_d = dist;
-                        best_c = ci;
-                    }
-                }
-                best_c
-            })
-            .collect();
+        // Assignment step — a single `data · centroidsᵀ` GEMM (FAISS-style)
+        // followed by a parallel per-row argmax, instead of one dot-product
+        // loop per centroid per point.
+        let cent_view = ArrayView2::from_shape((k, d), &centroids)
+            .unwrap_or_else(|_| unreachable!("centroids length always matches (k, d)"));
+        let assignments = assign_nearest(data_view, cent_view, Metric::Cosine);
 
         // Update step
         let mut new_centroids = vec![0.0f32; k * d];

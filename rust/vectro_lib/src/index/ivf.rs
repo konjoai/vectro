@@ -19,6 +19,8 @@
 //! When the dataset is clustered (`n_probe` << `n_lists`) this is dramatically
 //! faster than brute-force and uses far less RAM than HNSW for large n.
 
+use crate::index::kmeans::{assign_nearest, Metric};
+use ndarray::ArrayView2;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -88,23 +90,24 @@ fn kmeans_lloyd(data: &[&[f32]], k: usize, d: usize, max_iter: usize, seed: u64)
     let mut cents = kmeans_pp_init(data, k, d, seed);
     let mut assignments = vec![0usize; n];
 
+    // Flatten once (not per Lloyd iteration) so the GEMM assignment below can
+    // view `data` as a contiguous [n, d] matrix.
+    let mut flat = vec![0.0f32; n * d];
+    for (row, v) in flat.chunks_exact_mut(d).zip(data.iter()) {
+        row.copy_from_slice(v);
+    }
+    // `n * d == flat.len()` by construction, so this shape can't mismatch;
+    // `.expect()` is banned outside tests by this crate's lint config.
+    let data_view = ArrayView2::from_shape((n, d), &flat)
+        .unwrap_or_else(|_| unreachable!("flat length always matches (n, d)"));
+
     for _ in 0..max_iter {
-        let new_asgn: Vec<usize> = data
-            .par_iter()
-            .map(|v| {
-                let mut best = 0;
-                let mut best_d = f32::INFINITY;
-                for ki in 0..k {
-                    let c = &cents[ki * d..(ki + 1) * d];
-                    let dist = l2_sq(v, c);
-                    if dist < best_d {
-                        best_d = dist;
-                        best = ki;
-                    }
-                }
-                best
-            })
-            .collect();
+        // Assignment step — a single `data · centroidsᵀ` GEMM (FAISS-style)
+        // followed by a parallel per-row argmax, instead of one dot-product
+        // loop per centroid per point.
+        let cent_view = ArrayView2::from_shape((k, d), &cents)
+            .unwrap_or_else(|_| unreachable!("cents length always matches (k, d)"));
+        let new_asgn = assign_nearest(data_view, cent_view, Metric::L2);
 
         if new_asgn == assignments {
             break;

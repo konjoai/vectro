@@ -25,9 +25,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exercises NEON vs the scalar reference (byte-exact `u16` sums) and passes,
   along with `ranking_agrees_with_exact_adc` and the full `ivf_pq4` recall/batch
   suite, cross-compiled to `aarch64-unknown-linux-gnu` and run under
-  `qemu-aarch64`. Throughput on real Apple Silicon is to be measured via the
-  existing `bench-darwin-arm64` harness; the AVX2 twin documents ~22× over the
-  scalar gather on that platform's SIMD.
+  `qemu-aarch64`, **and confirmed on real Apple Silicon** via the merged `Rust
+  tests (macos-latest)` CI job. Throughput on real Apple Silicon is still to be
+  measured via the existing `bench-darwin-arm64` harness; the AVX2 twin
+  documents ~22× over the scalar gather on that platform's SIMD.
+
+### Changed (CI — konjo-gates provisions the Rust toolchain)
+- The kiban `konjo-gates` workflow job installed only Python, so its
+  `repo:*` gates had no `cargo`, `cargo-deny`, or `cargo-mutants` available
+  and failed spuriously as "net-new findings" on every Rust diff. Now sets up
+  the Rust toolchain plus those tools so the gates evaluate the real diff
+  instead of erroring out before they can run (#100).
+
+### Performance (IVF/IVF-PQ training — GEMM k-means assignment)
+- `rust/vectro_lib/src/index/kmeans.rs` (new) — a shared `assign_nearest`
+  helper for Lloyd's k-means assignment step, used by both `ivf_pq.rs`
+  (cosine, coarse-quantiser training) and `ivf.rs` (L2, IVF-Flat training).
+  Both previously scored each point against every centroid with a separate
+  dot-product loop per centroid (`O(n·k·d)` work, `k` passes over the
+  centroid matrix per point). The new helper tiles the point set into
+  rayon-parallel row-chunks and scores each chunk as one
+  `data_tile · centroidsᵀ` GEMM (pure-Rust `matrixmultiply` via `ndarray`,
+  same tiling pattern as `IvfPqIndex::search_batch_flat`'s coarse scan) before
+  a per-row argmax — reusing the centroid matrix across the tile instead of
+  re-streaming it per point. A whole-dataset single GEMM was tried first and
+  measured **slower** (it runs on one thread, losing the per-point
+  parallelism the old loop had); row-chunk tiling keeps both the GEMM's
+  centroid-matrix reuse and rayon-parallel throughput across points.
+  `quant/pq.rs`'s per-subspace k-means already has its own SIMD-across-K
+  (NEON/AVX2/AVX-512) assignment kernel tuned for its small `sub_dim` — left
+  unchanged, since it is a more specialized optimization than a generic GEMM
+  for that shape.
+- **Measured** (release build, n=50,000, d=100, synthetic unit-norm vectors,
+  `IvfPqIndex::train`, M=10 subspaces, K=32, seed 42): IVF-PQ training time
+  at n_lists=128: 0.284s → 0.196s (1.45×); n_lists=512: 0.990s → 0.559s
+  (1.77×); n_lists=1024: 1.909s → 1.152s (1.66×) — the gap widens with
+  `n_lists`, as expected for an `O(n·k·d)` assignment step.
+- **Verification:** new `index::kmeans::tests` (cosine and L2 argmax parity
+  vs the brute-force per-centroid loop, plus a deterministic tie-break case);
+  full `vectro_lib` test suite green (238 tests, including the IVF/IVF-PQ
+  recall and self-nearest parity guards); `aarch64-unknown-linux-gnu` cross
+  `cargo check` clean (the helper is pure safe `ndarray`/`rayon`, no new
+  `unsafe`, so it is inherently arch-agnostic).
 
 ### Performance (IVF-PQ — SIMD coarse scan via a shared distance module)
 - New `rust/vectro_lib/src/index/simd.rs` — a single source of truth for the

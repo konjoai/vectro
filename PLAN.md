@@ -1,7 +1,7 @@
 # Vectro — Plan
 
-> Last updated: 2026-06-18
-> Current version: **5.6.0** (Python) / **8.1.0** (Rust) — INT8 batch path routed through the Rust SIMD kernel with `range_factor` profile parity.
+> Last updated: 2026-07-01
+> Current version: **5.24.0** (Python) / **8.17.0** (Rust) — aarch64 NEON `vqtbl1q_u8` PQ4 fast-scan closes the Apple Silicon gap with the AVX2 `pshufb` kernel.
 
 ---
 
@@ -42,6 +42,44 @@ user impact × implementation cost.
 | **Persistent HNSW on disk** | `save(path)` / `load(path)` upgraded from pickle to numpy `.npz` format — no arbitrary code execution on load, magic-byte detection, backward-compat DeprecationWarning for old pickle files. | ✅ v5.2.0 (HNSW) |
 | **Multi-vector per document** | Multiple embeddings per document ID (title + body), max-pool distances. | ⬜ Planned |
 | **Namespace partitioning** | Logical namespaces within a collection, isolated HNSW graphs, unified cross-namespace search. | ⬜ Planned |
+
+---
+
+## v5.24.0 / v8.17.0 — PQ4 fast-scan NEON `vqtbl1q_u8` for aarch64 ✅ COMPLETE (2026-07-01)
+
+### Summary
+`IndexPQFastScan`'s PQ4 fast-scan (shared by `Pq4FlatIndex` and
+`IvfPq4Index`) had an AVX2 `pshufb` kernel on x86_64 but fell back to the
+scalar gather on aarch64, so Apple Silicon — the flagship
+`bench-darwin-arm64` target — never got the fast-scan win. Added `scan_neon`:
+NEON's `vqtbl1q_u8` is the direct analogue of AVX2 `pshufb`, resolving 16
+candidates' per-subspace distances against the 16-byte LUT in one table
+lookup. Unlike AVX2's `unpack{lo,hi}_epi8` — which permutes candidate order
+within each 128-bit lane and needs a `PERM` table to invert — `vqtbl1q_u8` +
+`vget_{low,high}` preserve candidate order, so results store straight to the
+output with no permute needed. NEON is mandatory in the aarch64 base ISA, so
+the path is unconditional (no runtime detection). Shipped as PR #99; PR #100
+fixed the kiban `konjo-gates` CI workflow so its `repo:*` gates actually
+provision the Rust toolchain and evaluate the diff.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `scan_neon` — NEON `vqtbl1q_u8` PQ4 fast-scan kernel (`rust/vectro_lib/src/index/pq4.rs`) | ✅ |
+| 2 | Dispatcher routes aarch64 unconditionally to `scan_neon` (NEON is baseline, no runtime detection) | ✅ |
+| 3 | Scalar gather retained as the reference kernel for non-AVX2 x86_64 and other targets | ✅ |
+| 4 | Gate-hygiene fixes: `cargo fmt`, `clippy -D warnings`, `# Safety` docs on the new `unsafe` block | ✅ |
+| 5 | CI fix (#100): `konjo-gates` workflow provisions the Rust toolchain so its `repo:*` gates run against the real diff instead of failing as spurious net-new findings | ✅ |
+
+### Results
+- Byte-exact vs the scalar reference (`scan_simd_matches_scalar` property test,
+  `u16` sums) under `qemu-aarch64` cross-compilation, plus the full
+  `ranking_agrees_with_exact_adc` and `ivf_pq4` recall/batch suite.
+- Confirmed green on real Apple Silicon via the merged `Rust tests
+  (macos-latest)` CI job.
+- Throughput number on real Apple Silicon still pending a `bench-darwin-arm64`
+  run; the AVX2 twin documents ~22× over the scalar gather on that platform's
+  SIMD, which the NEON kernel is expected to approach.
 
 ---
 
