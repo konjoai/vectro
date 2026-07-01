@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (PQ4 fast-scan — NEON `vqtbl1q_u8` closes the aarch64 gap)
+- `rust/vectro_lib/src/index/pq4.rs` — the PQ4 fast-scan (`IndexPQFastScan`
+  analogue, shared by `Pq4FlatIndex` and `IvfPq4Index`) had an AVX2 `pshufb`
+  kernel on x86_64 but **fell back to the scalar gather on aarch64**, so Apple
+  Silicon — the flagship `bench-darwin-arm64` target — never got the fast-scan
+  win. Added `scan_neon`: NEON's `vqtbl1q_u8` is the direct analogue of AVX2
+  `pshufb`, resolving 16 candidates' per-subspace distances against the 16-byte
+  LUT in one table lookup (a 32-candidate block is two lookups/subspace). Unlike
+  AVX2's `unpack{lo,hi}_epi8` — which permutes candidate order within each
+  128-bit lane and needs the `PERM` table to invert — `vqtbl1q_u8` +
+  `vget_{low,high}` preserve candidate order, so results store straight to the
+  output with no permute. NEON is mandatory in the aarch64 base ISA, so the path
+  is unconditional (no runtime detection); the scalar reference remains for
+  non-AVX2 x86_64 and other targets.
+- **Verification:** the `scan_simd_matches_scalar` property test now genuinely
+  exercises NEON vs the scalar reference (byte-exact `u16` sums) and passes,
+  along with `ranking_agrees_with_exact_adc` and the full `ivf_pq4` recall/batch
+  suite, cross-compiled to `aarch64-unknown-linux-gnu` and run under
+  `qemu-aarch64`. Throughput on real Apple Silicon is to be measured via the
+  existing `bench-darwin-arm64` harness; the AVX2 twin documents ~22× over the
+  scalar gather on that platform's SIMD.
+
 ### Performance (IVF-PQ — SIMD coarse scan via a shared distance module)
 - New `rust/vectro_lib/src/index/simd.rs` — a single source of truth for the
   SIMD f32 `dot_f32` / `l2_sq` kernels (NEON on aarch64, AVX2+FMA on x86_64

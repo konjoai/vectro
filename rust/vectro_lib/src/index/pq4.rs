@@ -157,17 +157,22 @@ pub(crate) fn quantize_lut(table: &[f32], m: usize) -> (Vec<u8>, f32, f32) {
 }
 
 /// Accumulate `u16` distance sums for every candidate (AVX2 `pshufb` on x86_64
-/// with runtime detection, scalar fallback otherwise).
+/// with runtime detection, NEON `vqtbl1q_u8` on aarch64, scalar fallback
+/// otherwise).
 #[inline]
 pub(crate) fn scan(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out: &mut [u16]) {
     #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") {
-            // SAFETY: gated by the runtime detection; all indices stay in-bounds.
-            unsafe { scan_avx2(lut, codes_il, n_blocks, m, out) };
-            return;
-        }
+    if is_x86_feature_detected!("avx2") {
+        // SAFETY: gated by the runtime detection; all indices stay in-bounds.
+        return unsafe { scan_avx2(lut, codes_il, n_blocks, m, out) };
     }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is mandatory in the aarch64 base ISA, so the feature is
+    // always present; all indices stay in-bounds (see `scan_neon`).
+    return unsafe { scan_neon(lut, codes_il, n_blocks, m, out) };
+
+    // Scalar reference — reached on non-AVX2 x86_64 and any other target.
+    #[allow(unreachable_code)]
     scan_scalar(lut, codes_il, n_blocks, m, out);
 }
 
@@ -271,6 +276,98 @@ unsafe fn scan_avx2(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out:
         for c in 0..BLK {
             out[out_base + c] = tmp[PERM[c]];
         }
+    }
+}
+
+/// NEON `vqtbl1q_u8` fast-scan — the aarch64 analogue of [`scan_avx2`], the hot
+/// path on Apple Silicon and the `bench-darwin-arm64` target. `vqtbl1q_u8`
+/// resolves 16 candidates' per-subspace distances against the 16-byte LUT in one
+/// table lookup, so a block of 32 candidates is two lookups per subspace. Unlike
+/// AVX2's `unpack{lo,hi}_epi8` (which permutes candidate order within each
+/// 128-bit lane, needing `PERM` to invert), `vqtbl1q_u8` + `vget_{low,high}`
+/// preserve candidate order, so results store straight to `out` in place.
+///
+/// One 128-bit load of a packed plane yields 16 candidates' codes for **two**
+/// subspaces (low/high nibble); a 32-candidate block loads the plane as two
+/// halves. Accumulates u8→u16 via `vaddw_u8`; the LUT-quantization scale keeps
+/// the u16 sum from overflowing (see [`quantize_lut`]).
+///
+/// # Safety
+/// Requires NEON (mandatory on aarch64). `codes_il` is `n_blocks * ⌈m/2⌉ * 32`
+/// bytes and `out` is `n_blocks*32` — all accesses stay in-bounds.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// SAFETY: NEON is mandatory on aarch64, so the enabled feature is always present.
+// Callers pass the fast-scan store's own buffers: `codes_il` is
+// `n_blocks * ⌈m/2⌉ * 32` bytes and `out` is `n_blocks * 32`, so every `vld1q_u8`
+// / `vst1q_u16` below stays in-bounds (see the per-access reasoning inline).
+unsafe fn scan_neon(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out: &mut [u16]) {
+    use std::arch::aarch64::*;
+    let lo_mask = vdupq_n_u8(0x0F);
+    let planes = n_planes(m);
+    let pairs = m / 2;
+    // Resolve one subspace's 32 codes (`codes[0]` = candidates 0..15, `codes[1]`
+    // = 16..31) against its LUT and accumulate the widened u16 distances into the
+    // four block accumulators (`acc[0..4]` = candidate ranges 0..7/8..15/16..23/
+    // 24..31). Codes and accumulators are bundled into arrays to keep the arg
+    // count within clippy's `too_many_arguments` limit.
+    //
+    // SAFETY: `sub` indexes a valid LUT subspace (`sub < m`), so `sub * K` starts
+    // a full 16-byte `vld1q_u8` read within the `m * K`-byte `lut`; the `codes`
+    // and `acc` registers are already-loaded values, no memory access.
+    #[inline(always)]
+    unsafe fn accum(
+        lut: &[u8],
+        sub: usize,
+        codes: [std::arch::aarch64::uint8x16_t; 2],
+        acc: &mut [std::arch::aarch64::uint16x8_t; 4],
+    ) {
+        let lut_reg = vld1q_u8(lut.as_ptr().add(sub * K));
+        let looked0 = vqtbl1q_u8(lut_reg, codes[0]); // distances for candidates 0..15
+        let looked1 = vqtbl1q_u8(lut_reg, codes[1]); // distances for candidates 16..31
+        acc[0] = vaddw_u8(acc[0], vget_low_u8(looked0));
+        acc[1] = vaddw_u8(acc[1], vget_high_u8(looked0));
+        acc[2] = vaddw_u8(acc[2], vget_low_u8(looked1));
+        acc[3] = vaddw_u8(acc[3], vget_high_u8(looked1));
+    }
+    for b in 0..n_blocks {
+        // Candidate ranges 0..7, 8..15, 16..23, 24..31.
+        let mut acc = [vdupq_n_u16(0); 4];
+        let blk_base = b * planes * BLK;
+        for t in 0..pairs {
+            let c0 = vld1q_u8(codes_il.as_ptr().add(blk_base + t * BLK));
+            let c1 = vld1q_u8(codes_il.as_ptr().add(blk_base + t * BLK + 16));
+            // Low nibble = subspace 2t; high nibble (u8 shift) = subspace 2t+1.
+            accum(
+                lut,
+                2 * t,
+                [vandq_u8(c0, lo_mask), vandq_u8(c1, lo_mask)],
+                &mut acc,
+            );
+            accum(
+                lut,
+                2 * t + 1,
+                [vshrq_n_u8(c0, 4), vshrq_n_u8(c1, 4)],
+                &mut acc,
+            );
+        }
+        if m & 1 == 1 {
+            let c0 = vld1q_u8(codes_il.as_ptr().add(blk_base + pairs * BLK));
+            let c1 = vld1q_u8(codes_il.as_ptr().add(blk_base + pairs * BLK + 16));
+            accum(
+                lut,
+                m - 1,
+                [vandq_u8(c0, lo_mask), vandq_u8(c1, lo_mask)],
+                &mut acc,
+            );
+        }
+        // `vget_{low,high}` + `vaddw_u8` preserve candidate order, so the four
+        // accumulators map straight to consecutive output slots — no permute.
+        let out_base = b * BLK;
+        vst1q_u16(out.as_mut_ptr().add(out_base), acc[0]);
+        vst1q_u16(out.as_mut_ptr().add(out_base + 8), acc[1]);
+        vst1q_u16(out.as_mut_ptr().add(out_base + 16), acc[2]);
+        vst1q_u16(out.as_mut_ptr().add(out_base + 24), acc[3]);
     }
 }
 
