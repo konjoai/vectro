@@ -45,6 +45,39 @@ pub(crate) fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// Hint the CPU to start fetching `ptr` into L1 cache ahead of a read that
+/// will happen soon. Best-effort only: never traps, never dereferences `ptr`
+/// (an out-of-bounds or otherwise invalid address is safe to pass — worst
+/// case the hint is wasted), and never affects correctness. Used to overlap
+/// the DRAM latency of a soon-needed random-access load with unrelated
+/// compute — see `IvfPqIndex::adc_rank`'s posting-list scan, where each
+/// candidate's PQ code row sits at an essentially random offset in a large
+/// (`n_vectors * n_subspaces`-byte) buffer.
+#[inline]
+pub(crate) fn prefetch_read(ptr: *const u8) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: `_mm_prefetch` is a hint instruction — it never dereferences
+        // `ptr`, so any address (including out-of-bounds) is safe to pass.
+        // SSE is part of the x86_64 baseline, so no runtime feature check.
+        unsafe {
+            std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(ptr.cast());
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: `prfm` is a hint instruction — it never traps or
+        // dereferences `ptr`, so any address is safe to pass.
+        unsafe {
+            std::arch::asm!("prfm pldl1keep, [{0}]", in(reg) ptr, options(nostack, preserves_flags, readonly));
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let _ = ptr;
+    }
+}
+
 /// `Σ (a[i] − b[i])²` over `min(a, b)` lanes — NEON on aarch64, AVX2+FMA on
 /// x86_64 (runtime-detected), SimSIMD / scalar fallback otherwise.
 #[inline]

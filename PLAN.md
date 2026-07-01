@@ -1,7 +1,7 @@
 # Vectro — Plan
 
 > Last updated: 2026-07-01
-> Current version: **5.24.0** (Python) / **8.17.0** (Rust) — aarch64 NEON `vqtbl1q_u8` PQ4 fast-scan closes the Apple Silicon gap with the AVX2 `pshufb` kernel.
+> Current version: **5.24.0** (Python) / **8.17.0** (Rust) — GEMM k-means assignment for IVF/IVF-PQ training plus a prefetch fix for the IVF-PQ ADC scan's dominant DRAM-latency cost.
 
 ---
 
@@ -42,6 +42,36 @@ user impact × implementation cost.
 | **Persistent HNSW on disk** | `save(path)` / `load(path)` upgraded from pickle to numpy `.npz` format — no arbitrary code execution on load, magic-byte detection, backward-compat DeprecationWarning for old pickle files. | ✅ v5.2.0 (HNSW) |
 | **Multi-vector per document** | Multiple embeddings per document ID (title + body), max-pool distances. | ⬜ Planned |
 | **Namespace partitioning** | Logical namespaces within a collection, isolated HNSW graphs, unified cross-namespace search. | ⬜ Planned |
+
+---
+
+## IVF-PQ search — ADC scan prefetch ✅ COMPLETE (2026-07-01)
+
+### Summary
+The CHANGELOG's IVF-PQ coarse-scan entry flagged the ADC table-lookup loop
+as "memory-bound at K=256" and the next lever for search throughput.
+Profiling the actual candidate scan in `adc_rank` traced that cost to
+`code_row(gid)`, not the ADC table gather: `gid` is global insertion order,
+not list-local order, so each candidate's PQ code row sits at an essentially
+random offset across the full `[n_vectors * n_subspaces]`-byte buffer — a
+DRAM-latency miss per candidate at scale — while the small `[M*K]` ADC table
+built once per query stays cache-resident across the whole scan. Added
+`simd::prefetch_read` (NEON `prfm` / x86_64 `_mm_prefetch`) and used it to
+prefetch each candidate's code row 8 candidates ahead of where it's scored,
+overlapping that latency with other candidates' compute instead of stalling
+serially on it. Pure latency hiding — no numeric or ranking change.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `simd::prefetch_read` — cfg-gated NEON/x86_64 cache-prefetch hint, no-op elsewhere | ✅ |
+| 2 | `IvfPqIndex::adc_rank` posting-list scan issues an 8-ahead prefetch for `code_row` | ✅ |
+| 3 | Full `vectro_lib` test suite green; `aarch64-unknown-linux-gnu` cross `cargo check` clean | ✅ |
+
+### Results
+Release build, n=500,000, d=128, n_lists=1024, n_probe=32, M=16, K=256,
+single-query `search`, 2,000 synthetic unit-norm queries: **458 → ~650 qps
+(~1.4×)**, consistent across repeated runs.
 
 ---
 
