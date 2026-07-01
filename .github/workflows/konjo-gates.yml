@@ -26,6 +26,26 @@ jobs:
         with:
           fetch-depth: 0   # konjo-gates diffs against the base ref
 
+      # The repo:* Rust gates (fmt-check, clippy, cargo-deny, cargo-mutants)
+      # shell out to `cargo <subcommand>`. Without a toolchain on PATH every one
+      # of them fails instantly and konjo-gates reports a spurious "net-new
+      # findings" for each (observed: all four failing in ~0.4s, i.e. before any
+      # real compile could run). Provision the toolchain (with the rustfmt +
+      # clippy components) and the two extra cargo subcommands so the gates
+      # evaluate the actual diff — mirroring the working konjo-gate.yml G1/G3.
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "konjo-gates-${{ github.repository }}"
+
+      - name: Install cargo gate tools
+        run: cargo install cargo-deny cargo-mutants --locked
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
