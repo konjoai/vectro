@@ -16,7 +16,7 @@ on:
     branches: [main]
 
 env:
-  KIBAN_REF: "v1.1.1"   # the pinned kiban ref for this repo; bump deliberately
+  KIBAN_REF: "v1.1.2"   # the pinned kiban ref for this repo; bump deliberately
 
 jobs:
   gates:
@@ -28,9 +28,12 @@ jobs:
 
       # The repo:* Rust gates (fmt-check, clippy, cargo-deny, cargo-mutants)
       # shell out to `cargo <subcommand>`. kiban v1.1.1 fixed the bug where these
-      # gates never actually ran the tool (see kiban#17); they now genuinely need
-      # the toolchain on PATH to evaluate the diff. Provision it (with the rustfmt
-      # + clippy components) and the two extra cargo subcommands — mirroring the
+      # gates never actually ran the tool (kiban#17); v1.1.2 fixed a second bug
+      # where a pre-existing (untouched-by-the-diff) finding still looked net-new
+      # because cargo prints absolute paths and the base-ref scan runs from a
+      # different absolute root than HEAD (kiban#18). The gates genuinely need the
+      # toolchain on PATH to evaluate the diff. Provision it (with the rustfmt +
+      # clippy components) and the two extra cargo subcommands — mirroring the
       # working konjo-gate.yml G1/G3.
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
