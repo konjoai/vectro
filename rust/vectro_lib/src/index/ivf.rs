@@ -96,13 +96,17 @@ fn kmeans_lloyd(data: &[&[f32]], k: usize, d: usize, max_iter: usize, seed: u64)
     for (row, v) in flat.chunks_exact_mut(d).zip(data.iter()) {
         row.copy_from_slice(v);
     }
-    let data_view = ArrayView2::from_shape((n, d), &flat).expect("kmeans data shape");
+    // `n * d == flat.len()` by construction, so this shape can't mismatch;
+    // `.expect()` is banned outside tests by this crate's lint config.
+    let data_view = ArrayView2::from_shape((n, d), &flat)
+        .unwrap_or_else(|_| unreachable!("flat length always matches (n, d)"));
 
     for _ in 0..max_iter {
         // Assignment step — a single `data · centroidsᵀ` GEMM (FAISS-style)
         // followed by a parallel per-row argmax, instead of one dot-product
         // loop per centroid per point.
-        let cent_view = ArrayView2::from_shape((k, d), &cents).expect("kmeans centroid shape");
+        let cent_view = ArrayView2::from_shape((k, d), &cents)
+            .unwrap_or_else(|_| unreachable!("cents length always matches (k, d)"));
         let new_asgn = assign_nearest(data_view, cent_view, Metric::L2);
 
         if new_asgn == assignments {

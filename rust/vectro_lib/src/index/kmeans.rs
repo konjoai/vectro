@@ -55,7 +55,12 @@ pub(crate) fn assign_nearest(
     };
 
     let flat = data.as_standard_layout();
-    let flat = flat.as_slice().expect("standard-layout data");
+    // `as_standard_layout()` always yields a C-contiguous array, so `as_slice()`
+    // cannot fail; `.expect()` is banned outside tests by this crate's lint
+    // config, so make the invariant explicit instead.
+    let flat = flat
+        .as_slice()
+        .unwrap_or_else(|| unreachable!("as_standard_layout() is always contiguous"));
 
     let mut assignments = vec![0usize; n];
     assignments
@@ -64,8 +69,10 @@ pub(crate) fn assign_nearest(
         .for_each(|(c, out)| {
             let lo = c * CHUNK;
             let rows = out.len();
+            // `rows * d == (lo + rows) * d - lo * d` always matches the tile slice
+            // length, so this shape construction cannot fail.
             let tile = ArrayView2::from_shape((rows, d), &flat[lo * d..(lo + rows) * d])
-                .expect("assignment tile shape");
+                .unwrap_or_else(|_| unreachable!("tile length always matches (rows, d)"));
             let sims: Array2<f32> = tile.dot(&centroids.t()); // [rows, k]
             for (r, slot) in out.iter_mut().enumerate() {
                 let row = sims.row(r);
