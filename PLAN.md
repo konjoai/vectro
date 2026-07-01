@@ -1,7 +1,67 @@
 # Vectro — Plan
 
-> Last updated: 2026-06-18
-> Current version: **5.6.0** (Python) / **8.1.0** (Rust) — INT8 batch path routed through the Rust SIMD kernel with `range_factor` profile parity.
+> Last updated: 2026-07-01
+> Current version: **5.24.0** (Python) / **8.17.0** (Rust) — PQ4 fast-scan gained a NEON `vqtbl1q_u8` path on aarch64, and IVF/IVF-PQ k-means training now uses a tiled-GEMM assignment (~1.6× faster build at high `n_lists`).
+
+---
+
+## GEMM k-means assignment (IVF / IVF-PQ training) ✅ COMPLETE (2026-07-01)
+
+### Summary
+The Lloyd **assignment** step in IVF and IVF-PQ k-means scanned centroids
+serially per point (`parallel-over-points, serial-over-k`; `k` dot loops per
+point) — the CHANGELOG's "~3.5× slower than FAISS at high `n_lists`" gap. New
+`rust/vectro_lib/src/index/kmeans.rs::assign_nearest` replaces it with a tiled
+`[chunk, d]·[d, k]` GEMM + per-row argmax (Cosine = argmax dot; L2 = argmax
+`dot − ½‖c‖²`), reusing the `search_batch_flat` tiling pattern. PQ codebook
+training already used a LUT/SIMD-across-K assignment and was left unchanged.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `index/kmeans.rs` — `assign_nearest` (tiled GEMM, rayon, both metrics) + parity tests vs a scalar oracle | ✅ |
+| 2 | `ivf_pq.rs` / `ivf.rs` `kmeans_lloyd` assignment steps routed through the helper | ✅ |
+| 3 | Honest A/B — monolithic single-`.dot()` GEMM measured 2× *slower*, rejected in favour of the tiled form | ✅ |
+
+### Results
+- IVF-PQ train (this x86_64 host, n=50k · d=128 · n_lists=512, 25 iters):
+  **2.47s → 1.52s (~1.6×)** at unchanged recall.
+- Full index/recall suite green; `assign_nearest` byte-for-byte vs the scalar
+  oracle on both metrics, x86_64 + `qemu-aarch64`.
+
+---
+
+## NEON PQ4 fast-scan (aarch64) ✅ COMPLETE (2026-07-01)
+
+### Summary
+The PQ4 fast-scan (`IndexPQFastScan` analogue in `rust/vectro_lib/src/index/pq4.rs`,
+shared by `Pq4FlatIndex` and `IvfPq4Index`) had an AVX2 `pshufb` kernel on x86_64
+but fell back to the **scalar gather on aarch64** — so Apple Silicon, the flagship
+`bench-darwin-arm64` target, never got the fast-scan win. Added `scan_neon`, the
+aarch64 twin: NEON's `vqtbl1q_u8` is the direct analogue of AVX2 `pshufb`, resolving
+16 candidates' per-subspace distances against the 16-byte LUT in one table lookup.
+Unlike AVX2's lane-crossing `unpack{lo,hi}_epi8` (which needs the `PERM` table to
+undo the permutation), `vqtbl1q_u8` + `vget_{low,high}` preserve candidate order, so
+the four u16 accumulators store straight to the output with no permute. NEON is
+mandatory in the aarch64 base ISA, so the path is unconditional (no runtime
+detection); the scalar reference remains for non-AVX2 x86_64 and other targets.
+
+### Deliverables
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `scan_neon` NEON `vqtbl1q_u8` fast-scan kernel in `pq4.rs` | ✅ |
+| 2 | `scan` dispatcher routes aarch64 → NEON unconditionally; scalar reference retained for other targets | ✅ |
+| 3 | Konjo gate-hygiene on the diff: rustfmt wrapping, clippy `semicolon_if_nothing_returned`, `// SAFETY:` comments | ✅ (PR #99) |
+| 4 | CI fix: `konjo-gates.yml` provisions the Rust toolchain + `cargo-deny`/`cargo-mutants` so the kiban `repo:*` gates actually run | ✅ (PR #100) |
+
+### Results
+- Byte-exact vs the scalar reference (`scan_simd_matches_scalar`,
+  `ranking_agrees_with_exact_adc`, full `ivf_pq4` recall/batch suite),
+  cross-compiled to `aarch64-unknown-linux-gnu` and run under `qemu-aarch64`.
+- Confirmed on **real Apple Silicon** by the green `Rust tests (macos-latest)`
+  CI job (arm64) on PR #99.
+- Throughput number still pending a `bench-darwin-arm64` run; the AVX2 twin
+  documents ~22× over the scalar gather on that platform's SIMD.
 
 ---
 

@@ -7,6 +7,7 @@ pub mod hnsw;
 pub mod ivf;
 pub mod ivf_pq;
 pub mod ivf_pq4;
+pub(crate) mod kmeans;
 pub(crate) mod neighbor_store;
 pub mod pq4;
 pub mod quant_hnsw;
