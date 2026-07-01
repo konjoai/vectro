@@ -173,7 +173,7 @@ pub(crate) fn scan(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out: 
 
     // Scalar reference — reached on non-AVX2 x86_64 and any other target.
     #[allow(unreachable_code)]
-    scan_scalar(lut, codes_il, n_blocks, m, out)
+    scan_scalar(lut, codes_il, n_blocks, m, out);
 }
 
 /// Scalar reference scan — the correctness baseline the SIMD kernel must match.
@@ -297,6 +297,10 @@ unsafe fn scan_avx2(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out:
 /// bytes and `out` is `n_blocks*32` — all accesses stay in-bounds.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
+// SAFETY: NEON is mandatory on aarch64, so the enabled feature is always present.
+// Callers pass the fast-scan store's own buffers: `codes_il` is
+// `n_blocks * ⌈m/2⌉ * 32` bytes and `out` is `n_blocks * 32`, so every `vld1q_u8`
+// / `vst1q_u16` below stays in-bounds (see the per-access reasoning inline).
 unsafe fn scan_neon(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out: &mut [u16]) {
     use std::arch::aarch64::*;
     let lo_mask = vdupq_n_u8(0x0F);
@@ -307,6 +311,10 @@ unsafe fn scan_neon(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out:
     // four block accumulators (`acc[0..4]` = candidate ranges 0..7/8..15/16..23/
     // 24..31). Codes and accumulators are bundled into arrays to keep the arg
     // count within clippy's `too_many_arguments` limit.
+    //
+    // SAFETY: `sub` indexes a valid LUT subspace (`sub < m`), so `sub * K` starts
+    // a full 16-byte `vld1q_u8` read within the `m * K`-byte `lut`; the `codes`
+    // and `acc` registers are already-loaded values, no memory access.
     #[inline(always)]
     unsafe fn accum(
         lut: &[u8],
@@ -330,13 +338,28 @@ unsafe fn scan_neon(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out:
             let c0 = vld1q_u8(codes_il.as_ptr().add(blk_base + t * BLK));
             let c1 = vld1q_u8(codes_il.as_ptr().add(blk_base + t * BLK + 16));
             // Low nibble = subspace 2t; high nibble (u8 shift) = subspace 2t+1.
-            accum(lut, 2 * t, [vandq_u8(c0, lo_mask), vandq_u8(c1, lo_mask)], &mut acc);
-            accum(lut, 2 * t + 1, [vshrq_n_u8(c0, 4), vshrq_n_u8(c1, 4)], &mut acc);
+            accum(
+                lut,
+                2 * t,
+                [vandq_u8(c0, lo_mask), vandq_u8(c1, lo_mask)],
+                &mut acc,
+            );
+            accum(
+                lut,
+                2 * t + 1,
+                [vshrq_n_u8(c0, 4), vshrq_n_u8(c1, 4)],
+                &mut acc,
+            );
         }
         if m & 1 == 1 {
             let c0 = vld1q_u8(codes_il.as_ptr().add(blk_base + pairs * BLK));
             let c1 = vld1q_u8(codes_il.as_ptr().add(blk_base + pairs * BLK + 16));
-            accum(lut, m - 1, [vandq_u8(c0, lo_mask), vandq_u8(c1, lo_mask)], &mut acc);
+            accum(
+                lut,
+                m - 1,
+                [vandq_u8(c0, lo_mask), vandq_u8(c1, lo_mask)],
+                &mut acc,
+            );
         }
         // `vget_{low,high}` + `vaddw_u8` preserve candidate order, so the four
         // accumulators map straight to consecutive output slots — no permute.
