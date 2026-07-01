@@ -10,6 +10,57 @@ glibc malloc, `target-cpu=x86-64-v3`, `--release` (fat LTO, codegen-units=1).
 
 ---
 
+## ❌ HNSW concurrent-build neighbor-copy scratch buffer — within noise on this host (reverted)
+
+**Opportunity (`OPTIMIZATION_OPPORTUNITIES.md` item 6):** `search_layer_locked`'s
+beam-expansion loop clones the whole per-node `NeighborList`
+(`SmallVec<[NodeId; 32]>`) under a read lock on every candidate expansion, then
+releases the lock before the distance evals. At `M0 = 2·M > 32` (the inline
+capacity), that clone triggers a real heap allocation per expansion — the
+roadmap estimated ~5–12% faster concurrent build from replacing it with a
+reused thread-local `Vec<NodeId>` scratch buffer (mirroring the existing
+`VisitedEpoch` epoch-stamped scratch in `scratch.rs`), amortizing the copy to
+zero allocations once warmed up.
+
+**Implementation:** added `scratch::with_neighbor_scratch` (a `thread_local!
+RefCell<Vec<NodeId>>`, cleared and reused per call) and swapped
+`search_layer_locked`'s `.clone()` for `nbrs.extend_from_slice(&guard)` into
+that buffer, still releasing the lock immediately after the copy.
+
+**Benchmark** (`HnswIndex::add_batch` concurrent build, n=80,000, d=128,
+**M=24 → M0=48 > 32** so the SmallVec spills to heap and the clone actually
+allocates — the regime designed to favor this change):
+
+| Variant | Runs (s) | Median |
+|---|---|---|
+| Baseline (`.clone()`) | 5.40, 4.89, 4.96, 5.59, 4.97 | ~4.97s |
+| Scratch buffer | 5.02, 5.30, 5.21, 5.03, 4.95 | ~5.03s |
+
+No measurable win — the two distributions overlap completely, and the
+"after" median is nominally *slower*. An `M=16` run (`M0=32`, exactly at the
+inline boundary, no heap spill at all) showed the same overlap, as expected
+since there's nothing to save there.
+
+**Why it didn't work:** same root cause as the "HNSW thread-local scratch
+heaps" finding below — on this 4-core host, glibc's tcache already services
+same-size, high-frequency allocations (every `NeighborList` heap spill here is
+the same `M0 * 4`-byte size class) near-for-free; the concurrent build is
+apparently bound elsewhere (RwLock contention on hot nodes, the distance
+kernel itself, or scheduling) rather than on this allocation. Also plausible:
+the ±10–15% run-to-run variance measured on this host (see the 10.5s→5.4s
+first-run outlier before warmup) is large enough to hide a genuine single-digit
+percentage win if one exists.
+
+**Resolution:** reverted (no code change shipped). **When to revisit:** a
+higher-core host where lock contention / allocator pressure is more likely to
+be the actual bottleneck, or a build with much larger `M0` (heavier per-node
+lists mean bigger, less tcache-friendly allocations); worth re-measuring with
+a proper multi-rep/percentile harness (`OPTIMIZATION_OPPORTUNITIES.md` item 13)
+rather than a handful of wall-clock runs, since the signal here — if any — is
+smaller than this host's noise floor.
+
+---
+
 ## ❌ IVF-PQ4 HNSW coarse quantiser — recall-neutral but no batch QPS gain vs the GEMM coarse (reverted)
 
 **Opportunity:** at fine partitioning (large `n_lists` → small posting lists →
