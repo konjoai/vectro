@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (IVF-PQ search — prefetch hides the ADC scan's code-row DRAM latency)
+- `rust/vectro_lib/src/index/ivf_pq.rs` — `adc_rank`'s posting-list scan calls
+  `code_row(gid)` per candidate, indexing the flat `pq_codes` buffer by global
+  insertion id. Since posting lists are grouped by coarse cluster, not
+  insertion order, `gid` lands at an essentially random offset across the
+  whole `[n_vectors * n_subspaces]`-byte buffer — a likely DRAM-latency miss
+  per candidate at scale, unlike the small `[M * K]` ADC distance table built
+  once per query, which stays cache-resident across the whole scan (the
+  actual "memory-bound at K=256" cost flagged in the prior IVF-PQ coarse-scan
+  entry turns out to be dominated by this code-row fetch, not the table
+  gather itself). New `simd::prefetch_read` (NEON `prfm` / x86_64
+  `_mm_prefetch`, no-op elsewhere) issues a hint for the code row 8 candidates
+  ahead of the one currently being scored, overlapping that DRAM latency with
+  the current candidate's (mostly cache-resident) `adc_distance` compute
+  instead of stalling on it serially. Pure latency-hiding — no numeric or
+  ranking change.
+- **Measured** (release build, n=500,000, d=128, n_lists=1024, n_probe=32,
+  M=16, K=256, single-query `search`, 2,000 synthetic unit-norm queries):
+  458 → ~650 qps (**~1.4×**), consistent across repeated runs.
+- **Verification:** full `vectro_lib` test suite green (238 tests, including
+  `ivf_pq` recall/self-nearest/batch-parity guards — the prefetch changes no
+  computed distance or ranking, only memory-access order);
+  `aarch64-unknown-linux-gnu` cross `cargo check` clean (both the NEON `prfm`
+  inline-asm and x86_64 `_mm_prefetch` arms are `#[cfg]`-gated and mutually
+  exclusive, each with a `SAFETY` comment for the `unsafe-budget` gate).
+
 ### Performance (PQ4 fast-scan — NEON `vqtbl1q_u8` closes the aarch64 gap)
 - `rust/vectro_lib/src/index/pq4.rs` — the PQ4 fast-scan (`IndexPQFastScan`
   analogue, shared by `Pq4FlatIndex` and `IvfPq4Index`) had an AVX2 `pshufb`

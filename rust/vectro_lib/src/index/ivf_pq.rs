@@ -377,6 +377,9 @@ impl IvfPqIndex {
     /// (`search_with_probe`) and batch (`search_batch_flat`) paths so both compute
     /// distances identically — only how `probe_lists` is chosen differs.
     fn adc_rank(&self, q_norm: &[f32], probe_lists: &[usize], k: usize) -> Vec<(usize, f32)> {
+        // Posting-list scan lookahead distance for `code_row` prefetch, below.
+        const PREFETCH_AHEAD: usize = 8;
+
         if k == 0 {
             return Vec::new();
         }
@@ -385,10 +388,20 @@ impl IvfPqIndex {
         let m = self.codebook.n_subspaces;
         let kc = self.codebook.n_centroids;
 
-        // Scan posting lists — collect (dist, id) pairs.
+        // Scan posting lists — collect (dist, id) pairs. `code_row(gid)` lands at
+        // an essentially random offset in the flat `pq_codes` buffer (`gid` is
+        // insertion order, not list-local order), so for large indexes this is a
+        // DRAM-latency load, unlike the small `dist_table` above which stays
+        // cache-resident across the whole scan. Prefetching a few candidates
+        // ahead overlaps that latency with the current candidate's (cheap, mostly
+        // cache-resident) `adc_distance` computation instead of stalling on it.
         let mut candidates: Vec<(f32, usize)> = Vec::new();
         for &list_id in probe_lists {
-            for &gid in &self.posting_lists[list_id] {
+            let list = &self.posting_lists[list_id];
+            for (i, &gid) in list.iter().enumerate() {
+                if let Some(&future_gid) = list.get(i + PREFETCH_AHEAD) {
+                    crate::index::simd::prefetch_read(self.code_row(future_gid).as_ptr());
+                }
                 if self.deleted[gid] {
                     continue;
                 }
