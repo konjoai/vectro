@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (`pq_encode_batch` PyO3 binding — zero-copy contiguous input + GIL release)
+- `rust/vectro_py/src/lib.rs::pq_encode_batch` — the batch PQ-encode FFI entry
+  behind `pq_api.pq_encode`'s Rust fast path always copied its `[N, D]`
+  `vectors` input with `.iter().copied().collect()`, even when the numpy
+  array was already C-contiguous (the common case — numpy defaults to
+  row-major). Now borrows the input directly via `.as_slice()` when
+  contiguous, matching the established `quantize_int8_batch` idiom, and only
+  falls back to an owned copy for the (rare) non-contiguous case. Also
+  releases the GIL around the actual `pq_encode_into` call (already
+  rayon-parallel internally, but previously ran with the GIL held) — mirrors
+  the same fix already shipped for `quantize_int8_batch` and PQ/IVF-PQ
+  `train`. `centroids` (`[M, K, sub_dim]`, orders of magnitude smaller than
+  `vectors` for realistic `N`) is left as a direct copy — `PQCodebook` owns
+  its centroid buffer regardless, so there's no copy to avoid there.
+- **Measured** (release build, Rust-level microbenchmark of the copy step in
+  isolation — this container has no `pytest`/`numpy` to drive an end-to-end
+  Python benchmark): copying a `[200,000, 768]` f32 array (614 MB, the input
+  size the always-copy penalty scaled with) took a stable **~220–230ms**
+  across repeated trials, vs. **~935ms** for the actual `pq_encode_into` work
+  at the same scale (M=96, K=256) — i.e. the removed copy was **~20–25% of
+  total call time** at this scale, and a larger fraction for smaller batches
+  where the fixed copy cost dominates more.
+- **Verification:** full `vectro_lib` test suite green (238 tests, unaffected
+  — `pq_encode_into`'s numerics are untouched, only the input-ownership path
+  changed); `cargo clippy` clean under both this repo's baseline flags and
+  the full CI gate flags (`-D warnings -D clippy::pedantic
+  -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
+  -D clippy::todo -D clippy::dbg_macro`) — the one `unreachable!()` branch
+  documents the same "input was already copied above" invariant used by
+  `quantize_int8_batch`.
+
 ### Performance (IVF-PQ search — prefetch hides the ADC scan's code-row DRAM latency)
 - `rust/vectro_lib/src/index/ivf_pq.rs` — `adc_rank`'s posting-list scan calls
   `code_row(gid)` per candidate, indexing the flat `pq_codes` buffer by global
