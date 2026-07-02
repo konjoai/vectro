@@ -1891,7 +1891,8 @@ fn pq_encode_batch<'py>(
         None => Some(varr.iter().copied().collect()),
     };
     let vflat: &[f32] = varr_owned.as_deref().unwrap_or_else(|| {
-        varr.as_slice().unwrap_or_else(|| unreachable!("non-contiguous input was copied above"))
+        varr.as_slice()
+            .unwrap_or_else(|| unreachable!("non-contiguous input was copied above"))
     });
     let cflat: Vec<f32> = centroids.as_array().iter().copied().collect();
     let cb = pq::PQCodebook { n_subspaces: m, n_centroids: k, sub_dim, centroids: cflat };
