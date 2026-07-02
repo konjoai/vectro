@@ -1879,12 +1879,31 @@ fn pq_encode_batch<'py>(
         )));
     }
 
-    let vflat: Vec<f32> = varr.iter().copied().collect();
+    // Own a contiguous copy of `vectors` only when the input isn't already
+    // row-major (the `quantize_int8_batch` idiom) — the common case (numpy
+    // defaults to C-contiguous) is then a zero-copy borrow instead of an
+    // N*D-element `.iter().copied().collect()`. `centroids` is M*K*sub_dim —
+    // orders of magnitude smaller than `vectors` for realistic N — and
+    // `PQCodebook` needs to own its centroid buffer regardless, so it isn't
+    // worth the same zero-copy dance; always copy it directly.
+    let varr_owned: Option<Vec<f32>> = match varr.as_slice() {
+        Some(_) => None,
+        None => Some(varr.iter().copied().collect()),
+    };
+    let vflat: &[f32] = varr_owned.as_deref().unwrap_or_else(|| {
+        varr.as_slice()
+            .unwrap_or_else(|| unreachable!("non-contiguous input was copied above"))
+    });
     let cflat: Vec<f32> = centroids.as_array().iter().copied().collect();
-    let cb = pq::PQCodebook { n_subspaces: m, n_centroids: k, sub_dim, centroids: cflat };
+    let cb = pq::PQCodebook {
+        n_subspaces: m,
+        n_centroids: k,
+        sub_dim,
+        centroids: cflat,
+    };
 
     let mut codes_flat = vec![0u8; n * m];
-    pq::pq_encode_into(&vflat, &cb, &mut codes_flat);
+    py.allow_threads(|| pq::pq_encode_into(vflat, &cb, &mut codes_flat));
 
     let codes_arr = Array2::from_shape_vec((n, m), codes_flat)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;

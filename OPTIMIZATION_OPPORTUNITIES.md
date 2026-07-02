@@ -123,19 +123,32 @@ expected impact × confidence; each needs the usual prove-before-ship pass.
    designed to favor it, on this 4-core host.
 
 **FFI / Python marshalling**
-7. **`search_batch` → `search_batch_arrays`** — `HNSWIndex.search_batch` still
-   rebuilds `[Q,k]` arrays from `2·Q·k` boxed tuples in a Python loop; the packed
-   native entry already exists and is unused. 1.5–3× large-batch.
-8. **Vectorize `search_batch` query normalization** — per-row Python `_normalize`
-   loop → one batched `linalg.norm` + fused divide (reuse `normalize_rows`). 5–20×
-   on the normalization step.
-9. **`get_vectors` row-memcpy** — `PyEmbeddingDataset.get_vectors` fills via N·D
-   per-element 2-D `array[[i,j]]` writes; replace with N contiguous row copies. 3–8×.
-10. **`pq_encode_batch` / `pq_train_batch` borrow contiguous input** — both
-    `.iter().copied().collect()` a full owned copy / N per-row Vecs even when the
-    numpy input is C-contiguous; borrow the slice (the `quantize_int8_batch` idiom).
-11. **`reconstruct_batch` contiguous store** — `BatchQuantizationResult` keeps codes
-    as a Python list of rows then `np.stack`s them back; store the `[N,D]` matrix.
+7. ✅ **Shipped** (predates this note; re-verified 2026-07-02). **`search_batch`
+   → `search_batch_arrays`** — `hnsw_rust.py::search_batch_arrays` exists
+   alongside `search_batch`, backed by the native `search_batch_arrays_np`
+   (`vectro_py/src/lib.rs:776`).
+8. ✅ **Shipped** (predates this note; re-verified 2026-07-02). **Vectorize
+   `search_batch` query normalization** — `hnsw_api.py` already batches via
+   `normalize_rows` (`hnsw_rust.py:39`) instead of a per-row Python loop.
+9. **`get_vectors` row-memcpy** — still open. `PyEmbeddingDataset::get_vectors`
+   (`vectro_py/src/lib.rs:95`) fills via N·D per-element 2-D `array[[i,j]] =
+   value` writes; replace with N contiguous row copies (`copy_from_slice`).
+   3–8×.
+10. ✅ **Shipped** (2026-07-02, this session). **`pq_encode_batch` borrows
+    contiguous input** — now uses the `quantize_int8_batch` zero-copy idiom
+    for `vectors` (`.as_slice()` when C-contiguous) and releases the GIL
+    around `pq_encode_into`. Measured (Rust-level copy microbenchmark, no
+    `pytest`/`numpy` available in this container to drive an end-to-end
+    Python benchmark): the avoided copy was ~220–230ms of a ~935ms call at
+    `[200,000, 768]`, M=96, K=256 (~20–25% of total call time). `centroids`
+    is left as a direct copy (small, and `PQCodebook` must own it regardless).
+    `pq_train_batch`'s per-row `Vec<Vec<f32>>` ownership is structurally
+    required by `train_pq_codebook`'s `&[Vec<f32>]` signature — not a
+    same-shaped fix; would need a broader `quant/pq.rs` API change to accept
+    borrowed rows, out of scope here.
+11. **`reconstruct_batch` contiguous store** — still open (not re-verified
+    this session). `BatchQuantizationResult` keeps codes as a Python list of
+    rows then `np.stack`s them back; store the `[N,D]` matrix.
 
 **Build / methodology**
 12. **Opt-in `target-cpu=native` from-source build** — shipped wheels stay v3
