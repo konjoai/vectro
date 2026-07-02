@@ -1895,7 +1895,12 @@ fn pq_encode_batch<'py>(
             .unwrap_or_else(|| unreachable!("non-contiguous input was copied above"))
     });
     let cflat: Vec<f32> = centroids.as_array().iter().copied().collect();
-    let cb = pq::PQCodebook { n_subspaces: m, n_centroids: k, sub_dim, centroids: cflat };
+    let cb = pq::PQCodebook {
+        n_subspaces: m,
+        n_centroids: k,
+        sub_dim,
+        centroids: cflat,
+    };
 
     let mut codes_flat = vec![0u8; n * m];
     py.allow_threads(|| pq::pq_encode_into(vflat, &cb, &mut codes_flat));
