@@ -96,26 +96,31 @@ The six-pass audit surfaced these beyond the wins above. Ordered by
 expected impact × confidence; each needs the usual prove-before-ship pass.
 
 **Index / search path**
-1. **IVF-Flat flat vector store** — `IvfIndex.store: Vec<Vec<f32>>` is the one f32
-   index still array-of-pointers (HNSW + IVF-PQ already flat). Flatten to one
-   strided `Vec<f32>` + software-prefetch the posting-list scan. ~15–35% search at
-   high d / large probe. Cost: serialization migration (custom serde or version bump).
-2. **IVF-PQ4 batched coarse GEMM + `search_batch_flat`** — the *faster* PQ4 variant
-   has no batch API and scores coarse centroids in a serial scalar loop per query;
-   port the proven `IvfPqIndex` batched-GEMM + rayon tiling. ~2–4× batch QPS at
-   high d / large n_lists. No serialization change (new method).
-3. **BM25 inverted index** — `bm25.rs::top_k` scans *all* docs with per-doc HashMap
-   probes and a full sort mislabeled "partial sort". Add a `term → postings` map +
-   `select_nth_unstable`. 5–50× for selective queries on large corpora.
-4. **GIL release on `train` (k-means) + `add_batch` (parallel build)** — the
-   heaviest PyO3 kernels are still serialized; mirror the single-query `search_np`
-   fix (#79). Own the rows before `allow_threads`. Large concurrent-build scaling.
-5. **NF4 SIMD nibble-quantize encode** — the 15-threshold `nearest_nf4` ladder is
-   scalar per element; vectorizes 8/16-wide (AVX2/512). ~2–4× NF4 encode. (SQ2/SQ3
-   encode similarly scalar — 1.5–3×.)
-6. **Concurrent-build per-expansion clone** — `search_layer_locked` clones the whole
-   neighbor `SmallVec` under the read lock every beam expansion; copy ids into a
-   reused thread-local scratch instead. ~5–12% concurrent build.
+1. ✅ **Shipped** (predates this note; re-verified 2026-07-01). **IVF-Flat flat
+   vector store** — `IvfIndex.store` is now a flat `Vec<f32>` (`ivf.rs:170`),
+   and `search_with_probe` already software-prefetches the posting-list scan
+   (`PREFETCH_AHEAD = 2`, `ivf.rs:435`).
+2. ✅ **Shipped** (predates this note; re-verified 2026-07-01). **IVF-PQ4
+   batched coarse GEMM + `search_batch_flat`** — `IvfPq4Index::search_batch_flat`
+   (`ivf_pq4.rs:155`) already tiles the GEMM coarse scan across queries,
+   mirroring `IvfPqIndex`. Note: routing the *single-query* path through the
+   same batched call (q=1 per call) was tried and measured **~3.4× slower**
+   (rayon/GEMM fixed overhead dominates at q=1, not amortized) — the existing
+   per-query scalar coarse loop in `search_with_probe` is correctly kept as-is.
+3. ✅ **Shipped** (predates this note; re-verified 2026-07-01). **BM25 inverted
+   index** — `bm25.rs` already has a `term → postings` map (`postings` field)
+   and `top_k` uses `select_nth_unstable_by`.
+4. ✅ **Shipped** (predates this note; re-verified 2026-07-01). **GIL release
+   on `train`** — `vectro_py/src/lib.rs`'s IVF/IVF-PQ/PQ `train` bindings all
+   call `py.allow_threads`. (`add_batch` GIL release not re-checked.)
+5. ✅ **Shipped** (predates this note; re-verified 2026-07-01). **NF4 SIMD
+   nibble-quantize encode** — `nf4.rs` already has AVX2 (`avx2_abs_max`) and
+   NEON (`encode_with_absmax_neon`) encode paths.
+6. ❌ **Tried, reverted — see `PERF_FINDINGS.md`** (2026-07-01). Replacing
+   `search_layer_locked`'s per-expansion `NeighborList` clone with a reused
+   thread-local scratch buffer measured **within noise** (~5.0s both ways,
+   ±10–15% run-to-run variance) even in the `M0 > 32` heap-spill regime
+   designed to favor it, on this 4-core host.
 
 **FFI / Python marshalling**
 7. **`search_batch` → `search_batch_arrays`** — `HNSWIndex.search_batch` still
