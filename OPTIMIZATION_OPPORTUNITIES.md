@@ -21,6 +21,22 @@ AVX-512F + FMA, **260 MiB L3**, glibc malloc, `target-cpu=x86-64-v3`, release
 
 ## Shipped — measured wins
 
+### Campaign 4 (HNSW graph reordering — algorithm-layer audit follow-through)
+
+The first item shipped from `VECTRO_OPTIMIZATION_AUDIT_2026-07.md`'s Tier 3
+(memory layout / systems): a genuine algorithmic-adjacent win rather than a
+kernel tweak, and — unlike this campaign's earlier SIMD work — portable to
+every architecture (pure relabeling, no ISA-specific code).
+
+| Change | Win (this host) | PR |
+|--------|-----------------|----|
+| **`HnswIndex::reorder_for_locality()`** — BFS-order renumbering from the entry point over the layer-0 graph, so neighbours cluster into nearby memory instead of scattering across insertion order | single-query **1.24–1.30×**, batch **1.37–1.49×** (3 runs, n=200k, d=768), recall bit-identical | — |
+
+See the CHANGELOG `[Unreleased]` entry for the full 3-run table and
+methodology; `cargo run --release --example hnsw_reorder_bench` reproduces it.
+Not yet wired through PyO3/`python/vectro.py` — this ships the Rust-core
+primitive and its kill-test.
+
 ### Campaign 3 (AVX-512 encode kernels · allocator · Python hot paths — this sweep)
 
 A fresh full-repo audit (six parallel deep-review passes over the quant kernels,

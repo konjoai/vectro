@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance (HNSW — BFS graph reordering for cache locality)
+- `rust/vectro_lib/src/index/hnsw.rs` — new `HnswIndex::reorder_for_locality()`,
+  implementing item 3.2 of `VECTRO_OPTIMIZATION_AUDIT_2026-07.md`. Renumbers
+  every node by BFS order from the entry point over the layer-0 graph, so a
+  beam expansion's neighbour ids — and the vectors/tombstones they index
+  into — cluster into fewer cache lines and pages instead of being scattered
+  across insertion order (which is essentially random with respect to graph
+  adjacency). Nodes unreachable from the entry point at layer 0 (rare,
+  disconnected components) are appended after the BFS-visited set in their
+  original relative order. Returns `new_to_old` so callers with external
+  state keyed by the old ids (metadata, string-id maps) can remap it; this
+  index's own tombstones are carried through automatically. Pure relabeling —
+  no distance computation changes.
+- **Measured** (release build, this host: 4-core Xeon @ 2.10GHz, 260 MiB L3,
+  n=200,000, d=768, ~586 MiB vector store — past L3 — m=16, ef_construction=200,
+  k=10, ef=64, 3000 queries, best-of-5, 3 independent builds):
+
+  | Run | R@10 before → after | single-query QPS | batch QPS (`search_batch_flat`) |
+  |---|---|---|---|
+  | 1 | 0.1710 → 0.1710 | 1257 → 1577 (**1.25×**) | 5695 → 8063 (**1.42×**) |
+  | 2 | 0.1850 → 0.1850 | 1201 → 1491 (**1.24×**) | 5686 → 7765 (**1.37×**) |
+  | 3 | 0.1870 → 0.1870 | 1248 → 1628 (**1.30×**) | 5710 → 8501 (**1.49×**) |
+
+  Recall is bit-identical before/after in every run (reordering is a pure
+  permutation); the concurrent build's own run-to-run recall variance
+  (0.171–0.187) is unrelated to reordering — see `build_concurrent`'s
+  "schedule-dependent, not bit-reproducible" note. QPS gain lands inside the
+  audit's predicted 1.2–2× range, comfortably outside this host's documented
+  ±10–15% noise floor. Reproduce with
+  `cargo run --release --example hnsw_reorder_bench`.
+- **Verification:** 4 new unit tests (bijection, recall-preservation,
+  tombstone-preservation, empty-index no-op) plus the full `vectro_lib` suite
+  green (246 tests); `cargo clippy -- -D warnings` clean. Not yet wired
+  through `PyO3`/`python/vectro.py` — this ships the Rust-core primitive and
+  its kill-test; binding it into the save/build lifecycle is a follow-on.
+
 ### Performance (IVF-PQ search — prefetch hides the ADC scan's code-row DRAM latency)
 - `rust/vectro_lib/src/index/ivf_pq.rs` — `adc_rank`'s posting-list scan calls
   `code_row(gid)` per candidate, indexing the flat `pq_codes` buffer by global

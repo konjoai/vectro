@@ -992,6 +992,97 @@ impl HnswIndex {
         res.into_iter().take(k).map(|(d, id)| (id, d)).collect()
     }
 
+    /// Renumber every node by BFS order from the entry point over the layer-0
+    /// graph, so that neighbours in the graph end up numerically adjacent.
+    ///
+    /// This is a pure relabeling: distances and recall are unaffected (every
+    /// search result is identical up to the id remap). What changes is memory
+    /// locality — a beam expansion's neighbour ids (and the vectors/tombstones
+    /// they index into) cluster into fewer cache lines and pages instead of
+    /// being scattered across insertion order, which is essentially random
+    /// with respect to graph adjacency. Nodes unreachable from the entry point
+    /// at layer 0 (disconnected components) are appended after the BFS-visited
+    /// set, in their original relative order.
+    ///
+    /// Returns `new_to_old`: `new_to_old[new_id]` is the id that node used to
+    /// have. Callers keeping external state keyed by the old ids (metadata,
+    /// string-id maps, tombstone tracking outside this index) must remap it
+    /// through this before/after this call — this index's own tombstones are
+    /// carried through automatically.
+    pub fn reorder_for_locality(&mut self) -> Vec<usize> {
+        let n = self.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let Some(ep) = self.entry_point else {
+            return (0..n).collect();
+        };
+
+        // BFS over layer-0 adjacency from the entry point.
+        let mut new_to_old: Vec<usize> = Vec::with_capacity(n);
+        let mut visited = vec![false; n];
+        let mut queue = std::collections::VecDeque::with_capacity(n);
+        visited[ep] = true;
+        queue.push_back(ep);
+        while let Some(node) = queue.pop_front() {
+            new_to_old.push(node);
+            for &nb in self.neighbors.neighbors(node, 0) {
+                let nb = nb as usize;
+                if !visited[nb] {
+                    visited[nb] = true;
+                    queue.push_back(nb);
+                }
+            }
+        }
+        // Disconnected nodes (rare) keep their relative original order.
+        for (id, &v) in visited.iter().enumerate() {
+            if !v {
+                new_to_old.push(id);
+            }
+        }
+
+        let mut old_to_new = vec![0usize; n];
+        for (new_id, &old_id) in new_to_old.iter().enumerate() {
+            old_to_new[old_id] = new_id;
+        }
+
+        // Permute vectors + tombstones into new order.
+        let mut vectors = Vec::with_capacity(self.vectors.len());
+        let mut deleted = Vec::with_capacity(n);
+        for &old_id in &new_to_old {
+            vectors.extend_from_slice(self.vec(old_id));
+            deleted.push(self.is_deleted(old_id));
+        }
+        self.vectors = vectors;
+        self.deleted = deleted;
+
+        // Rebuild the graph with the same per-node layer structure, remapped
+        // neighbour ids and reordered node slots.
+        let mut g = Graph::new(self.m0);
+        for &old_id in &new_to_old {
+            g.add_node(self.neighbors.num_layers(old_id) - 1);
+        }
+        for (new_id, &old_id) in new_to_old.iter().enumerate() {
+            for layer in 0..self.neighbors.num_layers(old_id) {
+                let remapped: Vec<NodeId> = self
+                    .neighbors
+                    .neighbors(old_id, layer)
+                    .iter()
+                    .map(|&nb| old_to_new[nb as usize] as NodeId)
+                    .collect();
+                g.set(new_id, layer, &remapped);
+            }
+        }
+        self.neighbors = g;
+        self.entry_point = Some(old_to_new[ep]);
+
+        // Derived stores: recompute from the now-permuted `vectors`.
+        self.ensure_norms();
+        self.rebuild_nav();
+
+        new_to_old
+    }
+
     /// Persist the index to a file using bincode serialization.
     ///
     /// Restore with [`HnswIndex::load`].
@@ -1469,5 +1560,118 @@ mod tests {
         let r = idx.search(&vecs[20], 1, 64);
         assert_eq!(r[0].0, 20, "L2 self-query after vacuum");
         assert!(r[0].1 < 1e-3, "metric not preserved through vacuum: {}", r[0].1);
+    }
+
+    #[test]
+    fn reorder_for_locality_is_a_bijection() {
+        let mut idx = HnswIndex::new(8, 40);
+        idx.add_batch(&make_vecs(500, 32));
+        let n = idx.len();
+        let new_to_old = idx.reorder_for_locality();
+        assert_eq!(new_to_old.len(), n);
+        let mut seen = vec![false; n];
+        for &old_id in &new_to_old {
+            assert!(old_id < n, "out-of-range old id {old_id}");
+            assert!(!seen[old_id], "old id {old_id} mapped from more than one new id");
+            seen[old_id] = true;
+        }
+    }
+
+    /// Clustered synthetic vectors (PRNG + noisy cluster centers, unit-normalised)
+    /// — unlike the plain sinusoidal [`make_vecs`], nearby indices aren't highly
+    /// correlated, so distances don't collect into the frequent near-ties a
+    /// smooth wave produces. Mirrors the generator in
+    /// `examples/hnsw_fp32_bench.rs`.
+    fn make_clustered_vecs(n: usize, d: usize, seed: u64) -> Vec<Vec<f32>> {
+        let mut s = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut next = move || {
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (s >> 33) as f32 / (1u64 << 31) as f32 - 1.0
+        };
+        let n_centers = 64usize;
+        let centers: Vec<Vec<f32>> = (0..n_centers).map(|_| (0..d).map(|_| next()).collect()).collect();
+        (0..n)
+            .map(|i| {
+                let c = &centers[i % n_centers];
+                let v: Vec<f32> = c.iter().map(|&x| x + 0.9 * next()).collect();
+                let nrm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+                v.iter().map(|x| x / nrm).collect()
+            })
+            .collect()
+    }
+
+    /// The reorder is a pure relabeling — same vectors, same graph topology,
+    /// just renumbered — so recall must be unaffected. It is not guaranteed to
+    /// reproduce the exact same top-k *order* bit-for-bit: the beam search's
+    /// bounded window evicts ties by packed `(distance, id)` key (see
+    /// `pack_key`), so on the rare exact-distance tie at the `ef` boundary, a
+    /// renumbered id can win a tie differently than the original id did. That
+    /// is a pre-existing property of the id-keyed tie-break rule, not
+    /// something reordering introduces — so this checks recall overlap
+    /// (near-1.0, allowing only for such ties) rather than positional
+    /// identity.
+    #[test]
+    fn reorder_for_locality_preserves_recall() {
+        let vecs = make_clustered_vecs(2000, 48, 1);
+        let queries = make_clustered_vecs(50, 48, 999);
+        let (k, ef) = (10usize, 64usize);
+
+        let mut idx = HnswIndex::new(12, 100);
+        idx.add_batch(&vecs);
+        let before: Vec<Vec<(usize, f32)>> = queries.iter().map(|q| idx.search(q, k, ef)).collect();
+
+        let new_to_old = idx.reorder_for_locality();
+        assert_eq!(idx.len(), vecs.len(), "reorder must not change vector count");
+
+        let mut hits = 0usize;
+        let mut total = 0usize;
+        for (q, exp) in queries.iter().zip(&before) {
+            let after = idx.search(q, k, ef);
+            assert_eq!(after.len(), exp.len(), "result count changed after reorder");
+            let expected_ids: HashSet<usize> = exp.iter().map(|&(id, _)| id).collect();
+            for &(new_id, _) in &after {
+                total += 1;
+                if expected_ids.contains(&new_to_old[new_id]) {
+                    hits += 1;
+                }
+            }
+        }
+        let recall = hits as f64 / total as f64;
+        assert!(recall >= 0.99, "reorder changed recall: {recall:.4} (expected ~1.0)");
+    }
+
+    #[test]
+    fn reorder_for_locality_preserves_tombstones() {
+        let mut idx = HnswIndex::new(8, 40);
+        idx.add_batch(&make_vecs(300, 24));
+        for id in [3, 17, 42, 100] {
+            idx.delete(id);
+        }
+        let deleted_vecs: std::collections::HashSet<Vec<u32>> = [3u32, 17, 42, 100]
+            .iter()
+            .map(|&id| idx.vec(id as usize).iter().map(|f| f.to_bits()).collect())
+            .collect();
+
+        let new_to_old = idx.reorder_for_locality();
+
+        for new_id in 0..idx.len() {
+            let old_id = new_to_old[new_id];
+            let bits: Vec<u32> = idx.vec(new_id).iter().map(|f| f.to_bits()).collect();
+            let was_deleted = [3, 17, 42, 100].contains(&old_id);
+            assert_eq!(
+                idx.is_deleted(new_id),
+                was_deleted,
+                "tombstone lost/gained across reorder for old id {old_id}"
+            );
+            if was_deleted {
+                assert!(deleted_vecs.contains(&bits), "deleted vector's data corrupted by reorder");
+            }
+        }
+    }
+
+    #[test]
+    fn reorder_for_locality_on_empty_index_is_a_noop() {
+        let mut idx = HnswIndex::new(8, 40);
+        assert_eq!(idx.reorder_for_locality(), Vec::<usize>::new());
     }
 }
