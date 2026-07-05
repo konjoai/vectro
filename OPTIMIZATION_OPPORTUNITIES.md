@@ -5,6 +5,13 @@ hot paths) carried out via six parallel deep-review passes, then implemented and
 benchmarked opportunity-by-opportunity. This document records **what shipped**,
 **what was rejected with data**, and the **remaining roadmap**.
 
+The campaigns below operate at the kernel/systems layer on the current index
+designs. For the algorithm-layer opportunities (RaBitQ, quantization-graph
+fusion, distance early-termination) that this document's own conclusion
+points to — the moves needed to beat FAISS and hnswlib on the recall/QPS
+Pareto frontier rather than just the constant factor — see
+`VECTRO_OPTIMIZATION_AUDIT_2026-07.md`.
+
 Benchmark host for this campaign: x86_64, 4-core Intel Xeon @ 2.10 GHz, AVX2 +
 AVX-512F + FMA, **260 MiB L3**, glibc malloc, `target-cpu=x86-64-v3`, release
 (fat LTO, codegen-units=1). Negative/inconclusive results are detailed in
