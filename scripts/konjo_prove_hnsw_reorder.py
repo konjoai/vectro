@@ -19,7 +19,9 @@ from __future__ import annotations
 import json
 import sys
 
-from lib import oneway, prove
+# `lib` is the pinned `kiban` package's internal module (see .konjo/kiban.ref) —
+# not a declared project dependency, so it has no type stubs mypy can resolve.
+from lib import oneway, prove  # type: ignore[import-not-found]
 
 
 def main() -> int:
@@ -37,7 +39,9 @@ def main() -> int:
     min_effect_pct = 10.0  # .konjo/profile.yml's prove.min_effect_pct
     min_effect = prove.min_effect_from_percent(min_effect_pct, baseline)
 
-    result = prove.paired_wilcoxon(baseline, candidate, run_floor=30, lower_is_better=lower_is_better)
+    result = prove.paired_wilcoxon(
+        baseline, candidate, run_floor=30, lower_is_better=lower_is_better
+    )
     v = prove.verdict(result, min_effect=min_effect, lower_is_better=lower_is_better, alpha=0.05)
 
     print(f"artifact:            {artifact.get('artifact')}")

@@ -54,6 +54,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      # The repo:ruff / repo:ruff-format / repo:mypy / repo:vulture gates shell out
+      # to these tools directly (same as the repo:* Rust gates above); mirror the
+      # working konjo-gate.yml G1 install so they're on PATH instead of erroring
+      # "tool not installed" the first time a PR's diff touches python/**.
+      - name: Install Python gate tools
+        run: pip install ruff mypy vulture --quiet
+
       # Install the whole kiban distribution at the pin. It ships the real engine
       # (lib, evals) with the konjo-gates entry point and the eval cassettes, so the
       # orchestrator imports one source of truth and the replay eval needs no model.
