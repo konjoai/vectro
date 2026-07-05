@@ -54,6 +54,9 @@ pixi run build-mojo                          # compile Mojo kernels (optional)
 ## Planning Docs
 - `PLAN.md` — current sprint state and version history
 - `VECTRO_V3_PLAN.md` — v3 architecture audit and research landscape (Q1 2026)
+- `VECTRO_OPTIMIZATION_AUDIT_2026-07.md` — algorithm-layer audit (RaBitQ,
+  quantization-graph fusion, ANN research 2024–2026); the unpark plan for
+  when VECTRO resumes past the current kernel-tuning ceiling
 - `CHANGELOG.md` — all notable changes (Keep a Changelog format)
 - `BACKLOG_v2.1.md` — feature backlog
 
