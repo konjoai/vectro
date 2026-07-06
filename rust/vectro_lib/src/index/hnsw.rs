@@ -57,9 +57,9 @@ pub enum Metric {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HnswIndex {
     m: usize,
-    m0: usize,            // 2 * m — max links at layer 0
+    m0: usize, // 2 * m — max links at layer 0
     ef_construction: usize,
-    ml: f64,              // level multiplier = 1 / ln(m)
+    ml: f64, // level multiplier = 1 / ln(m)
     /// Unit-norm stored vectors in **one contiguous buffer**, row `i` at
     /// `vectors[i*dim .. (i+1)*dim]`. Flat layout (vs `Vec<Vec<f32>>`) removes a
     /// pointer-chase per distance eval and lets the hardware prefetcher stream.
@@ -253,7 +253,10 @@ impl HnswIndex {
         let n = self.vectors.len() / self.dim;
         let mut buf: Vec<u16> = Vec::with_capacity(n * self.dim);
         for i in 0..n {
-            crate::quant::bf16::encode_bf16_flat(&self.vectors[i * self.dim..(i + 1) * self.dim], &mut buf);
+            crate::quant::bf16::encode_bf16_flat(
+                &self.vectors[i * self.dim..(i + 1) * self.dim],
+                &mut buf,
+            );
         }
         self.nav_bf16 = buf;
     }
@@ -555,8 +558,11 @@ impl HnswIndex {
                     .map(|&n| (self.dist(nb_vec, self.vec(n as usize)), n as usize))
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-                let kept: Vec<NodeId> =
-                    self.select_heuristic(&scored, max_m).iter().map(|&id| id as NodeId).collect();
+                let kept: Vec<NodeId> = self
+                    .select_heuristic(&scored, max_m)
+                    .iter()
+                    .map(|&id| id as NodeId)
+                    .collect();
                 self.neighbors.set(nb_id, lc, &kept);
             }
         }
@@ -709,7 +715,9 @@ impl HnswIndex {
             })
             .collect();
         self.neighbors = Graph::from_layered(layered, self.m0);
-        let (ep, max_level) = ep_state.into_inner().unwrap_or_else(PoisonError::into_inner);
+        let (ep, max_level) = ep_state
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
         self.entry_point = Some(ep);
         self.max_level = max_level;
     }
@@ -913,8 +921,10 @@ impl HnswIndex {
             // the true top-k. Navigation was approximate (bf16) but this final
             // O(ef) exact pass restores fp32-identical results.
             let q_nsq = self.query_norm_sq(&q);
-            let mut rer: Vec<(f32, usize)> =
-                res.iter().map(|&(_, id)| (self.dist_q(&q, q_nsq, id), id)).collect();
+            let mut rer: Vec<(f32, usize)> = res
+                .iter()
+                .map(|&(_, id)| (self.dist_q(&q, q_nsq, id), id))
+                .collect();
             rer.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             rer.truncate(k);
             return rer.into_iter().map(|(d, id)| (id, d)).collect();
@@ -930,7 +940,11 @@ impl HnswIndex {
         k: usize,
         ef: usize,
     ) -> f32 {
-        assert_eq!(queries.len(), ground_truth.len(), "queries/gt length mismatch");
+        assert_eq!(
+            queries.len(),
+            ground_truth.len(),
+            "queries/gt length mismatch"
+        );
         let total: f32 = queries
             .iter()
             .zip(ground_truth.iter())
@@ -990,6 +1004,97 @@ impl HnswIndex {
         // Full ef-width beam search at layer 0 applying the user predicate.
         let res = self.search_layer_impl(&q, &curr_ep, ef, 0, predicate);
         res.into_iter().take(k).map(|(d, id)| (id, d)).collect()
+    }
+
+    /// Renumber every node by BFS order from the entry point over the layer-0
+    /// graph, so that neighbours in the graph end up numerically adjacent.
+    ///
+    /// This is a pure relabeling: distances and recall are unaffected (every
+    /// search result is identical up to the id remap). What changes is memory
+    /// locality — a beam expansion's neighbour ids (and the vectors/tombstones
+    /// they index into) cluster into fewer cache lines and pages instead of
+    /// being scattered across insertion order, which is essentially random
+    /// with respect to graph adjacency. Nodes unreachable from the entry point
+    /// at layer 0 (disconnected components) are appended after the BFS-visited
+    /// set, in their original relative order.
+    ///
+    /// Returns `new_to_old`: `new_to_old[new_id]` is the id that node used to
+    /// have. Callers keeping external state keyed by the old ids (metadata,
+    /// string-id maps, tombstone tracking outside this index) must remap it
+    /// through this before/after this call — this index's own tombstones are
+    /// carried through automatically.
+    pub fn reorder_for_locality(&mut self) -> Vec<usize> {
+        let n = self.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let Some(ep) = self.entry_point else {
+            return (0..n).collect();
+        };
+
+        // BFS over layer-0 adjacency from the entry point.
+        let mut new_to_old: Vec<usize> = Vec::with_capacity(n);
+        let mut visited = vec![false; n];
+        let mut queue = std::collections::VecDeque::with_capacity(n);
+        visited[ep] = true;
+        queue.push_back(ep);
+        while let Some(node) = queue.pop_front() {
+            new_to_old.push(node);
+            for &nb in self.neighbors.neighbors(node, 0) {
+                let nb = nb as usize;
+                if !visited[nb] {
+                    visited[nb] = true;
+                    queue.push_back(nb);
+                }
+            }
+        }
+        // Disconnected nodes (rare) keep their relative original order.
+        for (id, &v) in visited.iter().enumerate() {
+            if !v {
+                new_to_old.push(id);
+            }
+        }
+
+        let mut old_to_new = vec![0usize; n];
+        for (new_id, &old_id) in new_to_old.iter().enumerate() {
+            old_to_new[old_id] = new_id;
+        }
+
+        // Permute vectors + tombstones into new order.
+        let mut vectors = Vec::with_capacity(self.vectors.len());
+        let mut deleted = Vec::with_capacity(n);
+        for &old_id in &new_to_old {
+            vectors.extend_from_slice(self.vec(old_id));
+            deleted.push(self.is_deleted(old_id));
+        }
+        self.vectors = vectors;
+        self.deleted = deleted;
+
+        // Rebuild the graph with the same per-node layer structure, remapped
+        // neighbour ids and reordered node slots.
+        let mut g = Graph::new(self.m0);
+        for &old_id in &new_to_old {
+            g.add_node(self.neighbors.num_layers(old_id) - 1);
+        }
+        for (new_id, &old_id) in new_to_old.iter().enumerate() {
+            for layer in 0..self.neighbors.num_layers(old_id) {
+                let remapped: Vec<NodeId> = self
+                    .neighbors
+                    .neighbors(old_id, layer)
+                    .iter()
+                    .map(|&nb| old_to_new[nb as usize] as NodeId)
+                    .collect();
+                g.set(new_id, layer, &remapped);
+            }
+        }
+        self.neighbors = g;
+        self.entry_point = Some(old_to_new[ep]);
+
+        // Derived stores: recompute from the now-permuted `vectors`.
+        self.ensure_norms();
+        self.rebuild_nav();
+
+        new_to_old
     }
 
     /// Persist the index to a file using bincode serialization.
@@ -1085,7 +1190,11 @@ mod tests {
 
     fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
         (0..n)
-            .map(|i| (0..d).map(|j| ((i * d + j) as f32 * 0.017 + 0.1).sin()).collect())
+            .map(|i| {
+                (0..d)
+                    .map(|j| ((i * d + j) as f32 * 0.017 + 0.1).sin())
+                    .collect()
+            })
             .collect()
     }
 
@@ -1112,14 +1221,20 @@ mod tests {
             let qp = idx.prep(q);
             for &(id, d) in &nav {
                 let exact_d = idx.dist_q(&qp, qn, id);
-                assert!((d - exact_d).abs() <= 1e-5, "nav dist not exact: {d} vs {exact_d}");
+                assert!(
+                    (d - exact_d).abs() <= 1e-5,
+                    "nav dist not exact: {d} vs {exact_d}"
+                );
             }
             // (b) overlap with the pure-f32 top-k.
             let exset: std::collections::HashSet<usize> = ex.iter().map(|&(id, _)| id).collect();
             overlap += nav.iter().filter(|(id, _)| exset.contains(id)).count();
         }
         let recall = overlap as f64 / (queries.len() * k) as f64;
-        assert!(recall >= 0.97, "bf16-nav recall vs f32 too low: {recall:.4}");
+        assert!(
+            recall >= 0.97,
+            "bf16-nav recall vs f32 too low: {recall:.4}"
+        );
     }
 
     #[test]
@@ -1144,7 +1259,7 @@ mod tests {
         idx.add_batch(&vecs);
         idx.enable_bf16_nav();
         idx.add(&vecs[0]); // mutation must drop the (now-stale) nav store
-        // Search still works (exact f32 path) and does not panic / index OOB.
+                           // Search still works (exact f32 path) and does not panic / index OOB.
         assert_eq!(idx.search(&vecs[1], 5, 32).len(), 5);
     }
 
@@ -1159,7 +1274,11 @@ mod tests {
                     .map(|(i, v)| {
                         let v_n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
                         let dot: f32 = q.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
-                        let cos = if q_n * v_n > 0.0 { dot / (q_n * v_n) } else { -1.0 };
+                        let cos = if q_n * v_n > 0.0 {
+                            dot / (q_n * v_n)
+                        } else {
+                            -1.0
+                        };
                         (i, cos)
                     })
                     .collect();
@@ -1235,7 +1354,18 @@ mod tests {
                 let mut scored: Vec<(usize, f32)> = vecs
                     .iter()
                     .enumerate()
-                    .map(|(i, v)| (i, q.iter().zip(v).map(|(a, b)| { let d = a - b; d * d }).sum()))
+                    .map(|(i, v)| {
+                        (
+                            i,
+                            q.iter()
+                                .zip(v)
+                                .map(|(a, b)| {
+                                    let d = a - b;
+                                    d * d
+                                })
+                                .sum(),
+                        )
+                    })
                     .collect();
                 scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
                 scored.into_iter().take(k).map(|(i, _)| i).collect()
@@ -1248,7 +1378,11 @@ mod tests {
         // Raw (un-normalised) vectors — L2 must rank by actual Euclidean distance,
         // not direction. A self-query must return itself (distance 0).
         let vecs: Vec<Vec<f32>> = (0..300)
-            .map(|i| (0..16).map(|j| (i as f32) * 0.13 + (j as f32) * 0.7).collect())
+            .map(|i| {
+                (0..16)
+                    .map(|j| (i as f32) * 0.13 + (j as f32) * 0.7)
+                    .collect()
+            })
             .collect();
         let mut idx = HnswIndex::with_metric(8, 64, Metric::L2);
         idx.add_batch(&vecs);
@@ -1290,8 +1424,10 @@ mod tests {
         // similar-norm regime (where max-inner-product ≡ nearest-neighbour); it is
         // NOT a general MIPS solver for wildly varying norms (no augmentation). The
         // canonical similar-norm case is unit vectors, where IP-NN ≡ cosine-NN.
-        let vecs: Vec<Vec<f32>> =
-            make_vecs(400, 16).iter().map(|v| HnswIndex::normalize(v)).collect();
+        let vecs: Vec<Vec<f32>> = make_vecs(400, 16)
+            .iter()
+            .map(|v| HnswIndex::normalize(v))
+            .collect();
         let mut idx = HnswIndex::with_metric(16, 200, Metric::InnerProduct);
         idx.add_batch(&vecs);
 
@@ -1300,10 +1436,15 @@ mod tests {
         let q = &vecs[100];
         let r = idx.search(q, 5, 200);
         assert!(!r.is_empty(), "IP search returned nothing");
-        let dots: Vec<f32> =
-            r.iter().map(|&(id, _)| q.iter().zip(&vecs[id]).map(|(x, y)| x * y).sum()).collect();
+        let dots: Vec<f32> = r
+            .iter()
+            .map(|&(id, _)| q.iter().zip(&vecs[id]).map(|(x, y)| x * y).sum())
+            .collect();
         for w in dots.windows(2) {
-            assert!(w[0] >= w[1] - 1e-3, "IP results not in descending-dot order: {dots:?}");
+            assert!(
+                w[0] >= w[1] - 1e-3,
+                "IP results not in descending-dot order: {dots:?}"
+            );
         }
 
         // On unit vectors the max-dot neighbours are recoverable at high recall.
@@ -1333,7 +1474,10 @@ mod tests {
         // (real data reaches ~0.998; this synthetic set fluctuates a little run
         // to run). The point is "high recall", not an exact tie.
         let recall = idx.recall_at_k(queries, &gt, k, 200);
-        assert!(recall >= 0.93, "concurrent-build recall@{k} = {recall:.4} < 0.93");
+        assert!(
+            recall >= 0.93,
+            "concurrent-build recall@{k} = {recall:.4} < 0.93"
+        );
     }
 
     #[test]
@@ -1401,7 +1545,11 @@ mod tests {
         idx.delete(0);
         let results = idx.search(&vecs[0], 5, 40);
         let ids: Vec<usize> = results.iter().map(|&(id, _)| id).collect();
-        assert!(!ids.contains(&0), "deleted node 0 appeared in search results: {:?}", ids);
+        assert!(
+            !ids.contains(&0),
+            "deleted node 0 appeared in search results: {:?}",
+            ids
+        );
     }
 
     #[test]
@@ -1458,7 +1606,11 @@ mod tests {
         // Vacuum rebuilds the graph; it must keep the original metric, not reset
         // to cosine (which would re-normalise vectors and break L2 distances).
         let vecs: Vec<Vec<f32>> = (0..60)
-            .map(|i| (0..16).map(|j| (i as f32) * 0.3 + (j as f32) * 1.1).collect())
+            .map(|i| {
+                (0..16)
+                    .map(|j| (i as f32) * 0.3 + (j as f32) * 1.1)
+                    .collect()
+            })
             .collect();
         let mut idx = HnswIndex::with_metric(8, 64, Metric::L2);
         idx.add_batch(&vecs);
@@ -1468,6 +1620,140 @@ mod tests {
         // re-normalised vectors would not give a near-zero L2-style self distance.
         let r = idx.search(&vecs[20], 1, 64);
         assert_eq!(r[0].0, 20, "L2 self-query after vacuum");
-        assert!(r[0].1 < 1e-3, "metric not preserved through vacuum: {}", r[0].1);
+        assert!(
+            r[0].1 < 1e-3,
+            "metric not preserved through vacuum: {}",
+            r[0].1
+        );
+    }
+
+    #[test]
+    fn reorder_for_locality_is_a_bijection() {
+        let mut idx = HnswIndex::new(8, 40);
+        idx.add_batch(&make_vecs(500, 32));
+        let n = idx.len();
+        let new_to_old = idx.reorder_for_locality();
+        assert_eq!(new_to_old.len(), n);
+        let mut seen = vec![false; n];
+        for &old_id in &new_to_old {
+            assert!(old_id < n, "out-of-range old id {old_id}");
+            assert!(
+                !seen[old_id],
+                "old id {old_id} mapped from more than one new id"
+            );
+            seen[old_id] = true;
+        }
+    }
+
+    /// Clustered synthetic vectors (PRNG + noisy cluster centers, unit-normalised)
+    /// — unlike the plain sinusoidal [`make_vecs`], nearby indices aren't highly
+    /// correlated, so distances don't collect into the frequent near-ties a
+    /// smooth wave produces. Mirrors the generator in
+    /// `examples/hnsw_fp32_bench.rs`.
+    fn make_clustered_vecs(n: usize, d: usize, seed: u64) -> Vec<Vec<f32>> {
+        let mut s = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut next = move || {
+            s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (s >> 33) as f32 / (1u64 << 31) as f32 - 1.0
+        };
+        let n_centers = 64usize;
+        let centers: Vec<Vec<f32>> = (0..n_centers)
+            .map(|_| (0..d).map(|_| next()).collect())
+            .collect();
+        (0..n)
+            .map(|i| {
+                let c = &centers[i % n_centers];
+                let v: Vec<f32> = c.iter().map(|&x| x + 0.9 * next()).collect();
+                let nrm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+                v.iter().map(|x| x / nrm).collect()
+            })
+            .collect()
+    }
+
+    /// The reorder is a pure relabeling — same vectors, same graph topology,
+    /// just renumbered — so recall must be unaffected. It is not guaranteed to
+    /// reproduce the exact same top-k *order* bit-for-bit: the beam search's
+    /// bounded window evicts ties by packed `(distance, id)` key (see
+    /// `pack_key`), so on the rare exact-distance tie at the `ef` boundary, a
+    /// renumbered id can win a tie differently than the original id did. That
+    /// is a pre-existing property of the id-keyed tie-break rule, not
+    /// something reordering introduces — so this checks recall overlap
+    /// (near-1.0, allowing only for such ties) rather than positional
+    /// identity.
+    #[test]
+    fn reorder_for_locality_preserves_recall() {
+        let vecs = make_clustered_vecs(2000, 48, 1);
+        let queries = make_clustered_vecs(50, 48, 999);
+        let (k, ef) = (10usize, 64usize);
+
+        let mut idx = HnswIndex::new(12, 100);
+        idx.add_batch(&vecs);
+        let before: Vec<Vec<(usize, f32)>> = queries.iter().map(|q| idx.search(q, k, ef)).collect();
+
+        let new_to_old = idx.reorder_for_locality();
+        assert_eq!(
+            idx.len(),
+            vecs.len(),
+            "reorder must not change vector count"
+        );
+
+        let mut hits = 0usize;
+        let mut total = 0usize;
+        for (q, exp) in queries.iter().zip(&before) {
+            let after = idx.search(q, k, ef);
+            assert_eq!(after.len(), exp.len(), "result count changed after reorder");
+            let expected_ids: HashSet<usize> = exp.iter().map(|&(id, _)| id).collect();
+            for &(new_id, _) in &after {
+                total += 1;
+                if expected_ids.contains(&new_to_old[new_id]) {
+                    hits += 1;
+                }
+            }
+        }
+        let recall = hits as f64 / total as f64;
+        assert!(
+            recall >= 0.99,
+            "reorder changed recall: {recall:.4} (expected ~1.0)"
+        );
+    }
+
+    #[test]
+    fn reorder_for_locality_preserves_tombstones() {
+        let mut idx = HnswIndex::new(8, 40);
+        idx.add_batch(&make_vecs(300, 24));
+        for id in [3, 17, 42, 100] {
+            idx.delete(id);
+        }
+        let deleted_vecs: std::collections::HashSet<Vec<u32>> = [3u32, 17, 42, 100]
+            .iter()
+            .map(|&id| idx.vec(id as usize).iter().map(|f| f.to_bits()).collect())
+            .collect();
+
+        let new_to_old = idx.reorder_for_locality();
+
+        for new_id in 0..idx.len() {
+            let old_id = new_to_old[new_id];
+            let bits: Vec<u32> = idx.vec(new_id).iter().map(|f| f.to_bits()).collect();
+            let was_deleted = [3, 17, 42, 100].contains(&old_id);
+            assert_eq!(
+                idx.is_deleted(new_id),
+                was_deleted,
+                "tombstone lost/gained across reorder for old id {old_id}"
+            );
+            if was_deleted {
+                assert!(
+                    deleted_vecs.contains(&bits),
+                    "deleted vector's data corrupted by reorder"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reorder_for_locality_on_empty_index_is_a_noop() {
+        let mut idx = HnswIndex::new(8, 40);
+        assert_eq!(idx.reorder_for_locality(), Vec::<usize>::new());
     }
 }

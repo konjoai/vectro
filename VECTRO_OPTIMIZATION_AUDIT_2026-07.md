@@ -218,6 +218,14 @@ build-side representation and freeze on save/first-search.
 
 ### 3.2 Graph reordering for cache locality  [Impact: K, medium-high · Difficulty: S–M · Confidence: high]
 
+✅ **Shipped 2026-07-05** — `HnswIndex::reorder_for_locality()`
+(`rust/vectro_lib/src/index/hnsw.rs`). Measured single-query **1.24–1.30×**,
+batch **1.37–1.49×** QPS (3 independent runs, n=200k, d=768, this host),
+recall bit-identical before/after every run. See
+`OPTIMIZATION_OPPORTUNITIES.md` Campaign 4 and the CHANGELOG `[Unreleased]`
+entry for the full numbers. Not yet wired through PyO3 — the description
+below is preserved as originally written for context.
+
 Sneaky-large and almost free. After build, renumber node IDs so that graph
 neighbors are numerically adjacent (BFS order from the entry point, or
 Gorder / recursive graph bisection for more win). Neighbor expansions then
@@ -318,7 +326,7 @@ credibility this tier is about.
 | 2 | 2.1 NEON `sdot` INT8 | K-high (M-series flagship) | S–M | very high |
 | 3 | 1.1 RaBitQ (+extended) | P-very-high, kills OPQ gap | M | high |
 | 4 | 3.1+3.3 CSR adjacency + flat codes (one migration) | K/S-med-high | M–L | high |
-| 5 | 3.2 Graph reordering | K-med-high, cheap | S–M | high |
+| 5 | 3.2 Graph reordering | K-med-high, cheap | S–M | high — ✅ shipped 2026-07-05 |
 | 6 | 1.2 Quantization-graph fusion (RaBitQ FastScan graph) | P-highest | L–XL | high |
 | 7 | 1.3 ADSampling early termination | P/K-high | M | med-high |
 | 8 | 5.1 ann-benchmarks submission | positioning | M | — |

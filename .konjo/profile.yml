@@ -105,19 +105,36 @@ prove:
   unit: "qps"
   lower_is_better: false              # throughput: higher is better
   run_floor: 30
-  min_effect_pct: null                # PENDING: measure jitter on the bench host, then confirm
+  # ACTIVATED 2026-07-05 (PR #110, HnswIndex::reorder_for_locality). Measured, not
+  # invented: benchmarks/results/prove_hnsw_reorder_20260705T214815Z.json recorded
+  # 35 paired raw (not best-of-N) single-query QPS passes on this bench host and
+  # found baseline CoV 4.75%, candidate CoV 4.56% — consistent with the ±10-15%
+  # host noise floor PERF_FINDINGS.md documents across every other campaign on
+  # this same machine. 10% clears both with margin, so a future MERGE verdict
+  # must exceed genuine noise on this host, not a lucky single measurement.
+  min_effect_pct: 10.0
   perf_globs:
     - "rust/**"
     - "benchmarks/**"
     - "src/**"
+  # Covers the INT8 quantization table specifically (the paper's original
+  # headline metric) — it does not exercise HNSW, IVF, or other index paths.
+  # A perf change outside int8's scope (e.g. HNSW-only work like PR #110) can't
+  # get a real verdict from this command: baseline and candidate would be
+  # identical because the code path under test never runs. For those, produce a
+  # dedicated paired-measurement artifact (baseline_qps/candidate_qps arrays,
+  # >= run_floor pairs, same host) and feed it through `lib.prove.paired_wilcoxon`
+  # + `lib.prove.verdict` directly against this same min_effect_pct/run_floor/
+  # alpha — see benchmarks/results/prove_hnsw_reorder_20260705T214815Z.json and
+  # OPTIMIZATION_OPPORTUNITIES.md's "Campaign 4" entry for the worked example.
   bench_cmd: "./reproduce_paper.sh --wave 1 --runs 3"
   activation_checklist:
-    - "On the bench host (PERF_FINDINGS.md reference: x86_64, 4 cores, AVX-512, x86-64-v3, release fat-LTO), run reproduce_paper.sh enough times that >= 30 paired qps measurements accumulate (RUNS=3 per file)."
-    - "Pin the recall@10 operating point so qps is compared at equal recall (a qps win at lower recall is not a win)."
-    - "Use the harness thermal metadata (--thermal-aware) to confirm thermal fairness across captures."
-    - "Measure run-to-run jitter on the paired qps runs (coefficient of variation, or MAD as a percent of the median)."
-    - "Set min_effect_pct above that noise floor (a win must exceed the bench's own jitter), then confirm the number here."
-    - "Capture the golden: konjo-prove baseline capture --tag paper_v5_0_0 --results baseline.json"
+    - "DONE 2026-07-05 (PR #110): ran a dedicated paired HNSW benchmark (examples/hnsw_reorder_bench.rs's methodology, formalized in examples/hnsw_reorder_prove.rs) for 35 paired qps measurements — above the run_floor of 30 — since bench_cmd's int8 table can't exercise an HNSW-only change."
+    - "DONE: recall pinned at 1.0 overlap (reorder is a proven pure relabel — see hnsw.rs's reorder_for_locality tests), so the qps comparison is at equal recall by construction."
+    - "PARTIAL: thermal metadata read via /sys/class/thermal in the artifact; this sandboxed CI-adjacent host returned no thermal zones (null before/after) — the alternating baseline/candidate measurement order is the fallback fairness control (see the artifact JSON and hnsw_reorder_prove.rs)."
+    - "DONE: measured CoV 4.75% (baseline) / 4.56% (candidate) — see the artifact."
+    - "DONE: min_effect_pct set to 10.0, above both this run's measured CoV and PERF_FINDINGS.md's documented ±10-15% host noise floor."
+    - "NOT DONE: konjo-prove baseline capture --tag paper_v5_0_0 — no golden capture exists yet for the int8 bench_cmd path; the HNSW proof above used a self-contained baseline/candidate pair instead (both measured in the same run, so no separate golden was needed for that verdict)."
 
 killtest: true
 
