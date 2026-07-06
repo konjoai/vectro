@@ -47,8 +47,18 @@ n=200k/d=768 index, clones it, reorders the clone, then takes 35 **raw**
 a real paired Wilcoxon test, per `.konjo/profile.yml`'s `prove` config.
 
 Result (`benchmarks/results/prove_hnsw_reorder_20260705T214815Z.json`, fed
-through the installed `kiban` package's `lib.prove.paired_wilcoxon` +
-`verdict`):
+through the installed `kiban` package's real `lib.prove.paired_wilcoxon` +
+`verdict` — reproduce with the one-liner below against that artifact):
+
+```python
+import json
+from lib import oneway, prove   # from the pinned kiban package, see .konjo/kiban.ref
+
+d = json.load(open("benchmarks/results/prove_hnsw_reorder_20260705T214815Z.json"))
+min_effect = prove.min_effect_from_percent(10.0, d["baseline_qps"])  # profile.yml's min_effect_pct
+result = prove.paired_wilcoxon(d["baseline_qps"], d["candidate_qps"], run_floor=30, lower_is_better=False)
+print(prove.verdict(result, min_effect=min_effect, lower_is_better=False, alpha=0.05))
+```
 
 | n pairs | baseline median qps | candidate median qps | improvement | p-value | verdict |
 |---|---|---|---|---|---|

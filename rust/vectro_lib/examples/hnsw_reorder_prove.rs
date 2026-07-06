@@ -5,8 +5,11 @@
 //! clones it, reorders the clone, then takes interleaved raw single-pass
 //! QPS measurements on both (never best-of-N — the "prove" gate wants the
 //! real run-to-run noise floor, not a variance-minimized number). Emits a
-//! paired-samples JSON to stdout for `scripts/konjo_prove_hnsw_reorder.py`
-//! to feed into the real Wilcoxon test (`lib.prove.paired_wilcoxon`).
+//! paired-samples JSON to stdout, meant to be fed into the pinned `kiban`
+//! package's real Wilcoxon test (`lib.prove.paired_wilcoxon` + `verdict`)
+//! to get a legitimate MERGE/NOISE/REGRESSION verdict — see
+//! `OPTIMIZATION_OPPORTUNITIES.md`'s "Campaign 4" entry for the exact
+//! Python invocation used to produce this repo's recorded verdict.
 //!
 //!   cargo run --release --example hnsw_reorder_prove > \
 //!     benchmarks/results/prove_hnsw_reorder_<timestamp>.json
