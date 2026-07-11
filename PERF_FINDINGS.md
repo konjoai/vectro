@@ -310,3 +310,93 @@ SimSIMD-AVX512 edge — confirmed by the high run-to-run variance on this shared
 a full 512-bit FMA — Skylake-SP / Ice Lake-SP / Sapphire Rapids) may flip the
 result. Re-benchmark before re-enabling, and gate on a CPU-family check, not just
 the `avx512f` feature bit.
+
+---
+
+## ⏳ NEON `sdot` integer INT8 kernel — PLANNED gate, NOT YET MEASURED (perf pending Apple Silicon)
+
+**Audit item 2.1 · sprint Phase 2.** This is the pre-registered kill-test,
+recorded as **PLANNED** with a **PENDING** verdict because the sprint ran on an
+**x86_64 Linux CI container, not the M3 the item targets** — the NEON `sdot`
+path is aarch64-only and cannot execute here. Per house rule 1 (kill-test first)
+and the reporting mandate ("do not summarize success you did not measure"), **no
+performance claim is made**; the kernel is committed as correctness-verified,
+perf-unverified.
+
+**Pre-registered kill-test (to run on target hardware):**
+- **Gate:** SIFT1M int8-HNSW at recall@10 = 0.95, new `dot_i8_sdot` path beats
+  the current `dot_i8_f32_neon` widen-path on p50 QPS with 30-run paired
+  Wilcoxon p < 0.05 **and** a stated effect size, recall delta < 0.001 (same
+  operating point). CoV gate (≤ 10 %) as in house rules; if CoV exceeds it, the
+  host is too noisy to claim.
+- **Isolated microbenchmark:** ns/vector at d = 128 and d = 960 for
+  `dot_i8_sdot` vs `dot_i8_f32_neon`.
+- **Expected (audit):** 2–4× kernel, material end-to-end. If end-to-end gain is
+  under 3 %, treat as a FAIL and investigate before merging the perf claim.
+- **Harness:** run through the Phase 1 harness
+  (`benchmarks/harness/run.py --dataset sift1m`), engine `vectro-hnsw-int8`
+  (requires the INT8 quant-HNSW to be exposed through PyO3 first — see the
+  harness's skipped-with-reason note), interleaved A/B against the fallback path.
+
+**Actual (this sprint):**
+- **Correctness — MEASURED and PASSING.** `dot_i8_sdot_matches_scalar`
+  (aarch64) asserts the kernel is **bit-identical** (`assert_eq!`, not a
+  tolerance) to the scalar integer reference `Σ codes·qi8` across dims 1…960
+  including the 64-/16-wide boundaries and odd tails. Integer accumulation is
+  exact (|Σ| ≤ d·127² ≈ 15.5M at d = 960 « 2.1B i32 ceiling), so f32 enters only
+  at the final scale multiply — the FP32-accumulation exactness rule holds by
+  construction.
+- **Build/lint — MEASURED and PASSING.** x86 build + 242 `vectro_lib` tests
+  green; documented gate `cargo clippy -- -D warnings` clean. aarch64
+  cross-compile **assembles the `sdot` inline asm** (build gets past codegen;
+  only the final `.so` link fails on a missing cross-`simsimd`, an environment
+  limit unrelated to the kernel) and aarch64 lib `clippy -D warnings` is clean.
+- **Performance — NOT MEASURED.** No M-series / FEAT_DotProd hardware in this
+  environment. The end-to-end QPS gate and the ns/vector microbenchmark are
+  **unrun**. Do not cite any speedup until this section is filled with measured
+  planned-vs-actual numbers on target hardware.
+
+**Design decisions (load-bearing, for the Ledger):**
+- Mirrors the shipped VNNI design: `Int8Query::Prepared` quantizes the query
+  once per search; hot loop is pure-integer accumulate; one final scale
+  multiply. 4 accumulators (64 codes/iter) like the VNNI kernel.
+- **ISA asymmetry:** x86 `vpdpbusd` is u8×i8 (codes stored +128, `128·Σq` bias
+  corrected); aarch64 `sdot` is natively signed i8×i8, so the dot is direct — no
+  offset, no bias term. Noted in-code.
+- **Inline asm, not the intrinsic:** `vdotq_s32` is still behind the unstable
+  `stdarch_neon_dotprod` feature and this crate is stable-only (no nightly, no
+  `#![feature]`). The single `sdot` step is emitted via `asm!`
+  (`pure`/`nomem`/`nostack`); every other op uses stable intrinsics. This is the
+  only stable way to reach the actual FEAT_DotProd instruction the audit
+  specifies.
+- **d ≥ 128 activation floor** mirrors the measured VNNI crossover exactly.
+  NEON `sdot` has less per-call setup than VNNI (no XOR flip, no bias), so the
+  true floor is likely lower — lowering it is deferred to the on-hardware
+  microbenchmark rather than guessed, to guarantee no small-d regression.
+
+**Resolution:** committed (correctness-gated), perf-pending. **Next session on
+Apple Silicon:** run the gate above, fill in planned-vs-actual, and only then
+claim (or, on a < 3 % end-to-end result, revert and record the negative
+finding here).
+
+---
+
+## ✅ Recall-matched benchmark harness — two-run stability demonstrated (x86 self-test)
+
+**Audit item 5.2 · sprint Phase 1.** The harness's own kill-test — run the full
+suite twice back-to-back, two-run p50 QPS per config must agree within the CoV
+gate — was demonstrated on the synthetic self-test on this x86 container:
+
+| Config (synthetic, n=5000, d=64, vectro-hnsw-fp32, python backend) | run1 p50 QPS | run2 p50 QPS | drift | gate |
+|---|---|---|---|---|
+| recall target 0.90 (ef=1024) | 963.0 | 867.4 | 9.9 % | ≤ 10 % ✅ |
+| recall target 0.95 (ef=1024) | 953.8 | 863.9 | 9.4 % | ≤ 10 % ✅ |
+
+Passes, but only just — this shared 4-core container sits at its documented
+±10–15 % noise floor, which is exactly why the CoV gate exists. The synthetic
+recall target is flagged out-of-band (⚠) and reported honestly rather than
+forced; reachable 0.90/0.95 operating points and the real baseline table are a
+target-hardware / built-extension task (pure-Python HNSW is the correctness
+baseline, not a throughput baseline, and is infeasible at 1M). The full SIFT1M
+two-run stability demonstration required before Phase 2 is measured is therefore
+also pending the built extension on the target host.

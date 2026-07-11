@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (benchmarks — recall-matched percentile harness, audit item 5.2)
+- `benchmarks/harness/` — the measurement gate every later optimization sprint
+  merges through (the audit's binding pre-flight; ships before any optimization
+  is attempted). Real-dataset (SIFT1M/GIST1M `.fvecs`/`.ivecs`) loaders with a
+  checksummed downloader and an extensible `LOADERS` registry; a recall-matched
+  protocol that tunes `ef`/`n_probe` to recall@10 = 0.90/0.95 (±0.005) and
+  measures QPS **at that operating point** (never at unmatched recall), with
+  interleaved A/B/A/B timing and logged timestamps; statistics with p50/p95/p99
+  QPS + latency percentiles, paired Wilcoxon signed-rank (p < 0.05) + reported
+  effect size, and a coefficient-of-variation gate (> 10 % ⇒ too noisy to
+  claim); uniform engine adapters for VECTRO fp32/int8 HNSW, VECTRO IVF-PQ,
+  faiss (HNSWFlat, IVF-PQ) and hnswlib (unavailable engines skipped with a
+  recorded reason, versions pinned); JSON + Markdown results with a full scope
+  line. Single entry point: `python benchmarks/harness/run.py --suite core
+  --dataset sift1m`; `--stability` runs the suite twice and gates two-run p50
+  QPS drift.
+- **Verification:** 12 harness unit tests (`tests/test_benchmark_harness.py`)
+  green; ruff clean; every module under the 500-line gate. Two-run stability
+  kill-test demonstrated on the synthetic self-test (x86 CI host): PASS at 9.9 %
+  p50 drift (this shared 4-core container sits at its documented ±10–15 % noise
+  floor). The full SIFT1M/GIST1M baseline table and the INT8/IVF-PQ4 baselines
+  are produced with the built extension on the target (Apple Silicon) host.
+
+### Added (INT8 — NEON `sdot` integer distance kernel, audit item 2.1)
+- `rust/vectro_lib/src/quant/int8.rs` — `dot_i8_sdot`, an aarch64 FEAT_DotProd
+  integer i8×i8 INT8 distance kernel mirroring the shipped x86 AVX-512-VNNI
+  design: `Int8Query::Prepared` quantizes the query once per search, the hot
+  loop is a pure-integer `sdot` accumulate (4 × i32×4 accumulators, 64
+  codes/iter, 16-wide cleanup, scalar tail), then one horizontal add and scale
+  multiply — replacing the previous path that widened every i8 lane to f32.
+  Runtime `dotprod` detection with the widen-to-f32 NEON path retained as
+  fallback. Because aarch64 `sdot` is natively signed i8×i8 (unlike VNNI's u8×i8
+  offset trick) the dot is computed directly with no bias correction; integer
+  accumulation is exact so f32 enters only at the final multiply. The `sdot`
+  step is emitted via inline asm (the `vdotq_s32` intrinsic is still unstable on
+  this crate's stable toolchain); every other op uses stable intrinsics.
+- **Verification:** exactness unit test (`dot_i8_sdot_matches_scalar`, aarch64)
+  asserts bit-identical results vs the scalar integer reference across dims
+  including tails; x86 build + 242 `vectro_lib` tests green + `cargo clippy --
+  -D warnings` clean; aarch64 cross-compile assembles the inline asm and lib
+  clippy `-D warnings` is clean.
+- **Performance: NOT measured.** The end-to-end kill-test (SIFT1M int8-HNSW QPS
+  at recall@10 = 0.95 + ns/vector microbenchmark) requires Apple Silicon /
+  FEAT_DotProd hardware; this sprint ran on x86_64 Linux. **No speedup is
+  claimed** — the gate is pre-registered PLANNED/PENDING in `PERF_FINDINGS.md`
+  and must run on target hardware before the win is cited. Correctness is
+  proven; performance is not.
+
+### Fixed (docs)
+- `README.md` — version drift: badge and ASCII banner advertised 5.0.0 against
+  the 5.24.0 package (audit item 5.3).
+
 ### Performance (HNSW — BFS graph reordering for cache locality)
 - `rust/vectro_lib/src/index/hnsw.rs` — new `HnswIndex::reorder_for_locality()`,
   implementing item 3.2 of `VECTRO_OPTIMIZATION_AUDIT_2026-07.md`. Renumbers

@@ -212,6 +212,8 @@ cython_debug/
 
 # Local data and samples
 data/
+# Benchmark harness dataset cache (SIFT1M/GIST1M .fvecs/.ivecs + tarballs)
+benchmarks/data/
 *.npy
 *.npz
 .cursorindexingignore
@@ -254,3 +256,6 @@ src/*.html
 
 # Animation output
 animated_demo/
+
+# Benchmark harness resume checkpoints
+benchmarks/results/.checkpoints/

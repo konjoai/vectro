@@ -1,0 +1,209 @@
+{
+  "dataset": {
+    "dataset": "synthetic",
+    "n": 5000,
+    "dim": 64,
+    "queries": 200,
+    "metric": "l2",
+    "gt_k": 100
+  },
+  "hardware": {
+    "platform": "Linux-6.18.5-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "processor": "x86_64",
+    "python": "3.11.15"
+  },
+  "commit": "121f32b",
+  "config": {
+    "suite": "core",
+    "k": 10,
+    "n_runs": 30,
+    "warmup": 5,
+    "recall_targets": [
+      0.9,
+      0.95
+    ],
+    "engines": [
+      "vectro-hnsw-fp32",
+      "vectro-hnsw-int8",
+      "vectro-ivfpq",
+      "faiss-hnsw-flat",
+      "faiss-ivfpq",
+      "hnswlib"
+    ]
+  },
+  "measurements": [
+    {
+      "engine": "vectro-hnsw-fp32",
+      "version": "vectro 5.24.0 (backend=python)",
+      "operating_point": {
+        "recall_target": 0.9,
+        "param_name": "ef",
+        "param": 1024,
+        "achieved_recall": 0.5465,
+        "within_tolerance": false,
+        "note": "grid exhausted without reaching target; increase grid ceiling"
+      },
+      "qps_runs": [
+        927.1943019758952,
+        960.2597371997686,
+        975.77593311948,
+        921.730791977423,
+        929.8850319908865,
+        1000.9014318475892,
+        1018.8631871988433,
+        1014.0053660647899,
+        998.4704032507212,
+        971.7043200148562,
+        974.6282009059356,
+        950.4440514998297,
+        981.5211467508387,
+        975.4227176025969,
+        964.1049320425122,
+        977.0142355076159,
+        988.5738362288926,
+        991.8284395465392,
+        979.4616730746303,
+        982.4891354385429,
+        951.1989879897535,
+        886.2271823531506,
+        960.2239657107414,
+        961.2439973788748,
+        915.3766633317258,
+        961.8220927013014,
+        932.3684146938848,
+        944.2585304310553,
+        947.9050485599385,
+        890.2326852354187
+      ],
+      "qps": {
+        "p50": 962.9635123719067,
+        "p95": 1008.1085956670495,
+        "p99": 1017.4544190699678,
+        "mean": 961.1712147208012,
+        "stddev": 32.090805837579744,
+        "cov": 0.03338718986388019,
+        "n": 30
+      },
+      "latency_ms": {
+        "p50": 1.2245679999978165,
+        "p95": 1.8500924000363737,
+        "p99": 2.1544391300403722,
+        "mean": 1.1674296800094908,
+        "stddev": 0.37767162919561953,
+        "cov": 0.3235069620574913,
+        "n": 200
+      },
+      "start_ts": "2026-07-11T17:19:21Z",
+      "end_ts": "2026-07-11T17:19:27Z"
+    },
+    {
+      "engine": "vectro-hnsw-fp32",
+      "version": "vectro 5.24.0 (backend=python)",
+      "operating_point": {
+        "recall_target": 0.95,
+        "param_name": "ef",
+        "param": 1024,
+        "achieved_recall": 0.5465,
+        "within_tolerance": false,
+        "note": "grid exhausted without reaching target; increase grid ceiling"
+      },
+      "qps_runs": [
+        862.9091265739213,
+        950.8071401814025,
+        978.9979390230181,
+        978.4911452251159,
+        927.0852589177066,
+        900.5588467453762,
+        917.7773631252469,
+        923.1569764094198,
+        916.7310162182932,
+        921.1163298037142,
+        963.4728185054722,
+        941.2068593899603,
+        982.9306571958199,
+        792.438815086129,
+        956.8699986234607,
+        979.8630644302175,
+        1010.9440710808565,
+        1004.8941359091978,
+        972.5604990250172,
+        913.0037693458547,
+        903.2066002005873,
+        943.3246538819845,
+        1021.8830533325496,
+        977.386559042521,
+        935.9766205398371,
+        964.5652254800933,
+        915.8478010425998,
+        968.1438557213571,
+        982.9516424799328,
+        1011.0727991476472
+      ],
+      "qps": {
+        "p50": 953.8385694024316,
+        "p95": 1011.0148715175914,
+        "p99": 1018.7480796189279,
+        "mean": 947.3391547228105,
+        "stddev": 47.003414662225445,
+        "cov": 0.04961624823369467,
+        "n": 30
+      },
+      "latency_ms": {
+        "p50": 1.107420000039383,
+        "p95": 1.2927890499781822,
+        "p99": 1.399064179840934,
+        "mean": 1.0109035299967672,
+        "stddev": 0.2832643323674637,
+        "cov": 0.2802090644281057,
+        "n": 200
+      },
+      "start_ts": "2026-07-11T17:19:31Z",
+      "end_ts": "2026-07-11T17:19:37Z"
+    }
+  ],
+  "comparisons": [],
+  "skipped": [
+    {
+      "engine": "vectro-hnsw-int8",
+      "reason": "INT8 quant-HNSW search not exposed via python API (Rust QuantHnswIndex awaits PyO3 binding); run this baseline from the Rust harness on target hardware."
+    },
+    {
+      "engine": "vectro-ivfpq",
+      "reason": "vectro_py extension not built (vectro_py is required.  Build it with `maturin develop` or `pip install vectro` first.); run `maturin develop`"
+    },
+    {
+      "engine": "faiss-hnsw-flat",
+      "reason": "faiss not installed: No module named 'faiss'"
+    },
+    {
+      "engine": "faiss-ivfpq",
+      "reason": "faiss not installed: No module named 'faiss'"
+    },
+    {
+      "engine": "hnswlib",
+      "reason": "hnswlib not installed: No module named 'hnswlib'"
+    }
+  ],
+  "stability": {
+    "passes": true,
+    "max_drift": 0.09922899587846318,
+    "gate": 0.1,
+    "per_config": [
+      {
+        "engine": "vectro-hnsw-fp32",
+        "recall_target": 0.9,
+        "run1_p50": 962.9635123719067,
+        "run2_p50": 867.4096099716444,
+        "drift": 0.09922899587846318
+      },
+      {
+        "engine": "vectro-hnsw-fp32",
+        "recall_target": 0.95,
+        "run1_p50": 953.8385694024316,
+        "run2_p50": 863.9081077265064,
+        "drift": 0.09428268531043528
+      }
+    ]
+  }
+}
