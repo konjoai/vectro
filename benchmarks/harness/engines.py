@@ -21,7 +21,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -89,7 +89,7 @@ class VectroHnswFp32(Engine):
     def __init__(self, m: int = 16, ef_construction: int = 200) -> None:
         self.m = m
         self.ef_construction = ef_construction
-        self._idx = None
+        self._idx: Any = None
         self.backend = "?"
 
     @classmethod
@@ -167,7 +167,7 @@ class VectroIvfPq(Engine):
         self.n_lists = n_lists
         self.n_subspaces = n_subspaces
         self.n_centroids = n_centroids
-        self._idx = None
+        self._idx: Any = None
 
     @classmethod
     def availability(cls) -> Availability:
@@ -243,7 +243,7 @@ class FaissHnswFlat(_FaissBase):
     def __init__(self, m: int = 16, ef_construction: int = 200) -> None:
         self.m = m
         self.ef_construction = ef_construction
-        self._idx = None
+        self._idx: Any = None
 
     def build(self, train: np.ndarray, metric: str) -> None:
         faiss = self._faiss()
@@ -273,7 +273,7 @@ class FaissIvfPq(_FaissBase):
         self.n_lists = n_lists
         self.m_pq = m_pq
         self.nbits = nbits
-        self._idx = None
+        self._idx: Any = None
 
     def build(self, train: np.ndarray, metric: str) -> None:
         faiss = self._faiss()
@@ -306,7 +306,7 @@ class HnswlibHnsw(Engine):
     def __init__(self, m: int = 16, ef_construction: int = 200) -> None:
         self.m = m
         self.ef_construction = ef_construction
-        self._idx = None
+        self._idx: Any = None
 
     @classmethod
     def _lib(cls):

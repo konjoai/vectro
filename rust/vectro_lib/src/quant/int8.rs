@@ -187,8 +187,10 @@ impl Int8Query {
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         let (qi8, qscale_over_127) = {
             let inv = 127.0 / qscale;
-            let qi8: Vec<i8> =
-                query.iter().map(|x| (x * inv).round().clamp(-127.0, 127.0) as i8).collect();
+            let qi8: Vec<i8> = query
+                .iter()
+                .map(|x| (x * inv).round().clamp(-127.0, 127.0) as i8)
+                .collect();
             (qi8, qscale / 127.0)
         };
 
@@ -208,8 +210,7 @@ impl Int8Query {
         // microbenchmark (ns/vector at d=128/960), so the conservative,
         // no-small-d-regression choice is to match VNNI until measured.
         #[cfg(target_arch = "aarch64")]
-        let use_dotprod =
-            query.len() >= 128 && std::arch::is_aarch64_feature_detected!("dotprod");
+        let use_dotprod = query.len() >= 128 && std::arch::is_aarch64_feature_detected!("dotprod");
 
         Self {
             q_f32: query.to_vec(),
@@ -310,6 +311,8 @@ unsafe fn dot_i8_vnni(codes: &[i8], qi8: &[i8]) -> i32 {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "dotprod")]
 #[inline]
+// SAFETY: FEAT_DotProd is caller-guaranteed (the `use_dotprod` runtime gate);
+// reads only `min(codes, qi8)` lanes.
 unsafe fn dot_i8_sdot(codes: &[i8], qi8: &[i8]) -> i32 {
     use std::arch::aarch64::*;
 
@@ -358,6 +361,8 @@ unsafe fn dot_i8_sdot(codes: &[i8], qi8: &[i8]) -> i32 {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "dotprod")]
 #[inline]
+// SAFETY: FEAT_DotProd is caller-guaranteed; the asm is pure/nomem/nostack and
+// depends only on its register inputs.
 unsafe fn vsdot_s32(
     acc: std::arch::aarch64::int32x4_t,
     a: std::arch::aarch64::int8x16_t,
@@ -1831,14 +1836,19 @@ mod tests {
         if !std::arch::is_aarch64_feature_detected!("dotprod") {
             return; // skip on the (vanishingly rare) aarch64 host without FEAT_DotProd
         }
-        for d in [1usize, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 960] {
+        for d in [
+            1usize, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 960,
+        ] {
             let v: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.013) - 0.5).sin()).collect();
             let q: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.027) + 0.2).cos()).collect();
             let codes = Int8Vector::encode(&v).codes;
             let prepared = Int8Query::prepare(&q);
             // Scalar integer reference over the same i8 operands.
-            let want: i32 =
-                codes.iter().zip(prepared.qi8.iter()).map(|(&c, &qv)| c as i32 * qv as i32).sum();
+            let want: i32 = codes
+                .iter()
+                .zip(prepared.qi8.iter())
+                .map(|(&c, &qv)| c as i32 * qv as i32)
+                .sum();
             // SAFETY: guarded by the FEAT_DotProd check above.
             let got = unsafe { dot_i8_sdot(&codes, &prepared.qi8) };
             assert_eq!(got, want, "sdot d={d}: {got} vs {want}");

@@ -129,11 +129,15 @@ def find_operating_point(
             )
         best_below = (param, recall)
     # Never reached the target across the whole grid.
-    param, recall = best_below if best_below else (None, float("nan"))
+    final_param: Optional[int]
+    if best_below is not None:
+        final_param, recall = best_below
+    else:
+        final_param, recall = None, float("nan")
     return OperatingPoint(
         recall_target=recall_target,
         param_name=engine.param_name,
-        param=param,
+        param=final_param,
         achieved_recall=recall,
         within_tolerance=False,
         note="grid exhausted without reaching target; increase grid ceiling",

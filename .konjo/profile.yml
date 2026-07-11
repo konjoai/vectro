@@ -138,6 +138,22 @@ prove:
 
 killtest: true
 
+# The longrun gate defaults to treating every *.py under benchmarks/ as a
+# runnable script that must wire the resume contract. The recall-matched harness
+# (benchmarks/harness/) is deliberately modular: only run.py and download.py are
+# entry points; datasets/engines/protocol/report/stats/_resume are importable
+# library modules, not scripts. Scope the gate to the true entry points — which
+# is the gate's own stated intent ("keeps the gate off importable helpers that
+# are not entry points") — so the two entry points carry the --resume/--fresh +
+# Checkpoint contract (via benchmarks/harness/_resume.py wrapping konjo_longrun)
+# and the library modules are not forced to fake it. The **/bench_*.py and
+# scripts/train_*.py defaults are preserved.
+longrun_globs:
+  - "benchmarks/harness/run.py"
+  - "benchmarks/harness/download.py"
+  - "**/bench_*.py"
+  - "scripts/train_*.py"
+
 # Confirmed from konjo-gate.yml G2: tests run via cargo-nextest (Rust) and pytest (Python).
 verify_cmd: "cargo nextest run --workspace && python -m pytest tests/ -q"
 

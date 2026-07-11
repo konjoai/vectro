@@ -24,9 +24,9 @@ from pathlib import Path
 _HERE = Path(__file__).resolve()
 if __package__ in (None, ""):
     sys.path.insert(0, str(_HERE.parent.parent.parent))
-    from benchmarks.harness import datasets, engines, protocol, report, stats
+    from benchmarks.harness import _resume, datasets, engines, protocol, report, stats
 else:
-    from . import datasets, engines, protocol, report, stats
+    from . import _resume, datasets, engines, protocol, report, stats
 
 logger = logging.getLogger("vectro.harness")
 
@@ -37,11 +37,26 @@ def _build_engine(name: str):
     return cls, avail
 
 
-def _run_once(ds, engine_names, k, recall_targets, n_runs, warmup, rep):
-    """Build + tune + measure every available engine once. Returns (measurements, skipped)."""
+def _run_once(ds, engine_names, k, recall_targets, n_runs, warmup, rep, ckpt=None):
+    """Build + tune + measure every available engine once.
+
+    Returns ``(measurements, skipped, resumed)`` where ``measurements`` is a list
+    of ``(engine, target, Measurement)`` with live engine instances (for the
+    interleaved comparison), and ``resumed`` is a list of measurement dicts
+    reloaded from the checkpoint for engines already completed in a prior run
+    (``--resume``). A single engine failing never kills the suite.
+    """
     measurements = []  # (engine_instance, recall_target, Measurement)
     skipped = []
+    resumed: list[dict] = []
     for name in engine_names:
+        unit = f"rep{rep}:{name}"
+        if ckpt is not None and ckpt.done(unit):
+            stored = ckpt.results().get(unit) if hasattr(ckpt, "results") else None
+            n = len(stored) if stored else 0
+            logger.info("resume: %s already measured (%d op point(s)); skipping", name, n)
+            resumed.extend(stored or [])
+            continue
         cls, avail = _build_engine(name)
         if not avail.ok:
             logger.warning("skip %s: %s", name, avail.reason)
@@ -55,6 +70,7 @@ def _run_once(ds, engine_names, k, recall_targets, n_runs, warmup, rep):
             logger.warning("skip %s: build failed: %s", name, exc)
             skipped.append((name, f"build failed: {exc}"))
             continue
+        engine_dicts = []
         for target in recall_targets:
             op = protocol.find_operating_point(eng, ds, k=k, recall_target=target)
             if op.param is None:
@@ -62,7 +78,10 @@ def _run_once(ds, engine_names, k, recall_targets, n_runs, warmup, rep):
                 continue
             m = protocol.measure(eng, ds, op, k=k, n_runs=n_runs, warmup=warmup)
             measurements.append((eng, target, m))
-    return measurements, skipped
+            engine_dicts.append(m.as_dict())
+        if ckpt is not None:  # checkpoint this engine so --resume skips it next time
+            ckpt.mark(unit, engine_dicts)
+    return measurements, skipped, resumed
 
 
 def _stability(run1, run2, gate=stats.COV_GATE):
@@ -94,30 +113,36 @@ def _stability(run1, run2, gate=stats.COV_GATE):
     }
 
 
-def _pairwise_comparisons(measurements):
-    """Interleave-free paired Wilcoxon over already-collected runs, per recall target.
+def _interleaved_comparisons(measurements, ds, k, n_runs, warmup):
+    """Paired Wilcoxon over freshly **interleaved** A/B/A/B runs, per recall target.
 
-    Compares every non-VECTRO engine against the VECTRO fp32 baseline at the same
-    recall target (the sprint's baseline diff). Uses the collected per-run QPS,
-    which are equal-length by construction.
+    Compares every other engine against the VECTRO fp32 baseline at the same
+    recall target (the sprint's baseline diff). Re-measures each pair with
+    ``protocol.measure_interleaved`` so run i of A is adjacent in time to run i of
+    B — the fairness control the paired test assumes, and the sprint's explicit
+    "interleave A/B/A/B so neither runs systematically hot" requirement. Operates
+    on live engine instances from this run (resumed engines were compared in the
+    run that first measured them).
     """
     verdicts = []
-    by_target: dict[float, dict[str, list]] = {}
+    by_target: dict[float, dict[str, tuple]] = {}
     for eng, target, m in measurements:
-        by_target.setdefault(target, {})[eng.name] = m
+        by_target.setdefault(target, {})[eng.name] = (eng, m.operating_point)
     baseline = engines.VectroHnswFp32.name
     for target, engs in by_target.items():
         if baseline not in engs:
             continue
-        base_m = engs[baseline]
-        for name, m in engs.items():
+        base_eng, base_op = engs[baseline]
+        for name, (cand_eng, cand_op) in engs.items():
             if name == baseline:
                 continue
-            if len(m.qps_runs) != len(base_m.qps_runs):
-                continue
-            v = stats.build_verdict(baseline, name, base_m.qps_runs, m.qps_runs)
+            m_base, m_cand = protocol.measure_interleaved(
+                base_eng, base_op, cand_eng, cand_op, ds, k=k, n_runs=n_runs, warmup=warmup
+            )
+            v = stats.build_verdict(baseline, name, m_base.qps_runs, m_cand.qps_runs)
             d = v.as_dict()
             d["recall_target"] = target
+            d["interleaved"] = True
             verdicts.append(d)
     return verdicts
 
@@ -149,6 +174,7 @@ def main(argv=None) -> int:
     )
     p.add_argument("--tag", default=None, help="results filename tag")
     p.add_argument("--verbose", action="store_true")
+    _resume.add_resume_args(p, default_fresh=True)  # a fresh full run is the default
     args = p.parse_args(argv)
 
     logging.basicConfig(
@@ -159,6 +185,13 @@ def main(argv=None) -> int:
     ds = datasets.load(args.dataset)
     logger.info("loaded %s: %s", args.dataset, ds.scope())
     engine_names = args.engines or engines.CORE_SUITE
+    tag = args.tag or f"{args.suite}_{args.dataset}"
+
+    # Resumable checkpoint: a multi-hour real-data suite that dies mid-engine
+    # resumes instead of restarting. Each (rep, engine) is one unit.
+    ckpt = _resume.make_checkpoint(
+        _resume.checkpoint_path(f"run_{tag}"), fresh=_resume.is_fresh(args)
+    )
 
     rep = report.SuiteReport(dataset_scope=ds.scope())
     rep.config = {
@@ -170,20 +203,25 @@ def main(argv=None) -> int:
         "engines": engine_names,
     }
 
-    run1, skipped = _run_once(ds, engine_names, args.k, args.recall, args.runs, args.warmup, rep=1)
+    run1, skipped, resumed = _run_once(
+        ds, engine_names, args.k, args.recall, args.runs, args.warmup, rep=1, ckpt=ckpt
+    )
     for eng, _t, m in run1:
         rep.add_measurement(m)
+    for m_dict in resumed:  # engines reloaded from a prior --resume run
+        rep.measurements.append(m_dict)
     for name, reason in skipped:
         rep.add_skipped(name, reason)
-    for v in _pairwise_comparisons(run1):
+    for v in _interleaved_comparisons(run1, ds, args.k, args.runs, args.warmup):
         rep.add_comparison(v)
 
     if args.stability:
         logger.info("stability: second full-suite run ...")
-        run2, _ = _run_once(ds, engine_names, args.k, args.recall, args.runs, args.warmup, rep=2)
+        run2, _, _ = _run_once(
+            ds, engine_names, args.k, args.recall, args.runs, args.warmup, rep=2, ckpt=ckpt
+        )
         rep.stability = _stability(run1, run2)
 
-    tag = args.tag or f"{args.suite}_{args.dataset}"
     json_path, md_path = report.write(rep, tag=tag)
     print(report.to_markdown(rep))
     print(f"\nWrote: {json_path}\n       {md_path}")
