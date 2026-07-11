@@ -128,6 +128,17 @@ impl Int8Vector {
             let dot_int = raw - 128 * q.q_sum;
             return (dot_int as f32) * q.qscale_over_127 * (self.scale / 127.0);
         }
+        #[cfg(target_arch = "aarch64")]
+        if q.use_dotprod {
+            // SAFETY: `use_dotprod` is only set when FEAT_DotProd was
+            // runtime-detected in `Int8Query::prepare`; the kernel reads
+            // `min(codes, qi8)` lanes.
+            let dot_int = unsafe { dot_i8_sdot(&self.codes, &q.qi8) };
+            // The integer dot is exact (i8×i8 → i32, no offset trick on NEON),
+            // so f32 enters only here at the final scale multiply — the
+            // FP32-accumulation exactness rule is preserved by construction.
+            return (dot_int as f32) * q.qscale_over_127 * (self.scale / 127.0);
+        }
         self.dot_query(&q.q_f32)
     }
 }
@@ -140,16 +151,28 @@ impl Int8Vector {
 /// candidate distance evaluations in a single search.
 #[derive(Debug, Clone)]
 pub struct Int8Query {
-    /// Original f32 query — used on non-VNNI hosts for an exact result.
+    /// Original f32 query — used on non-accelerated hosts for an exact result.
     q_f32: Vec<f32>,
-    /// Query quantised to i8 with `qscale` (VNNI operand).
+    /// Query quantised to i8 with `qscale` — the integer operand for the x86
+    /// VNNI (`vpdpbusd`) and aarch64 `sdot` (`vdotq_s32`) dot kernels.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     qi8: Vec<i8>,
     /// `qscale / 127` — dequantises the integer dot back to the f32 scale.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     qscale_over_127: f32,
-    /// `Σ qi8` — the per-query half of the u8-offset bias correction.
+    /// `Σ qi8` — the per-query half of the u8-offset bias correction. VNNI-only:
+    /// `vpdpbusd` needs a u8 operand, so codes are stored `+128` and this
+    /// corrects the bias. The aarch64 `sdot` is natively signed i8×i8 and needs
+    /// no offset, so this field does not exist on that target.
+    #[cfg(target_arch = "x86_64")]
     q_sum: i32,
-    /// Whether the VNNI integer path is active on this host + dimension.
+    /// Whether the VNNI integer path is active on this host + dimension (x86-64).
+    #[cfg(target_arch = "x86_64")]
     use_vnni: bool,
+    /// Whether the NEON `sdot` integer path is active on this host + dimension
+    /// (aarch64 with FEAT_DotProd).
+    #[cfg(target_arch = "aarch64")]
+    use_dotprod: bool,
 }
 
 impl Int8Query {
@@ -157,19 +180,50 @@ impl Int8Query {
     pub fn prepare(query: &[f32]) -> Self {
         let qscale = query.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
         let qscale = if qscale == 0.0 { 1.0 } else { qscale };
-        let inv = 127.0 / qscale;
-        let qi8: Vec<i8> =
-            query.iter().map(|x| (x * inv).round().clamp(-127.0, 127.0) as i8).collect();
-        let q_sum: i32 = qi8.iter().map(|&x| x as i32).sum();
+
+        // The i8 query operand and its dequant scale are consumed only by the
+        // integer-dot kernels (x86 VNNI, aarch64 `sdot`); other targets score
+        // through the exact `q_f32` path, so skip the quantisation there.
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        let (qi8, qscale_over_127) = {
+            let inv = 127.0 / qscale;
+            let qi8: Vec<i8> =
+                query.iter().map(|x| (x * inv).round().clamp(-127.0, 127.0) as i8).collect();
+            (qi8, qscale / 127.0)
+        };
+
         // VNNI wins for d ≥ 128 (below that the per-call setup outweighs the
         // integer-pipe gain — measured ~0.9× at d=96, ~1.7–2.3× at d≥128).
+        #[cfg(target_arch = "x86_64")]
+        let q_sum: i32 = qi8.iter().map(|&x| x as i32).sum();
         #[cfg(target_arch = "x86_64")]
         let use_vnni = query.len() >= 128
             && is_x86_feature_detected!("avx512vnni")
             && is_x86_feature_detected!("avx512bw");
-        #[cfg(not(target_arch = "x86_64"))]
-        let use_vnni = false;
-        Self { q_f32: query.to_vec(), qi8, qscale_over_127: qscale / 127.0, q_sum, use_vnni }
+
+        // aarch64 `sdot`: the d ≥ 128 floor mirrors the VNNI crossover exactly
+        // (its measured setup/gain break-even). NEON `sdot` has less per-call
+        // setup than VNNI (no in-register XOR flip, no bias correction), so the
+        // true floor is likely lower — lowering it awaits the on-hardware
+        // microbenchmark (ns/vector at d=128/960), so the conservative,
+        // no-small-d-regression choice is to match VNNI until measured.
+        #[cfg(target_arch = "aarch64")]
+        let use_dotprod =
+            query.len() >= 128 && std::arch::is_aarch64_feature_detected!("dotprod");
+
+        Self {
+            q_f32: query.to_vec(),
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            qi8,
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            qscale_over_127,
+            #[cfg(target_arch = "x86_64")]
+            q_sum,
+            #[cfg(target_arch = "x86_64")]
+            use_vnni,
+            #[cfg(target_arch = "aarch64")]
+            use_dotprod,
+        }
     }
 }
 
@@ -226,6 +280,98 @@ unsafe fn dot_i8_vnni(codes: &[i8], qi8: &[i8]) -> i32 {
         total += ((codes[i] as i32) + 128) * (qi8[i] as i32);
     }
     total
+}
+
+/// NEON `sdot` (FEAT_DotProd) integer i8×i8 dot: `Σ codes[i] · qi8[i]`.
+///
+/// `vdotq_s32` performs 16 i8×i8 multiply-accumulates into 4 i32 lanes per
+/// instruction. This is the aarch64 analogue of the x86 VNNI `vpdpbusd` path,
+/// with one ISA asymmetry: `vpdpbusd` is u8×i8 (so the x86 path stores codes
+/// `+128` and corrects the `128·Σq` bias), whereas AArch64 `sdot` is natively
+/// **signed** i8×i8 — the dot is computed directly with no offset and no bias
+/// correction. Four independent accumulators (64 codes/iter) break the `sdot`
+/// latency chain; a 16-wide cleanup and a scalar tail handle the remainder.
+///
+/// Integer accumulation is exact (i8×i8 products sum without rounding, and the
+/// running total stays far inside i32 for any realistic dim: |Σ| ≤ d·127²,
+/// ~15.5M at d = 960 « 2.1B). f32 enters only at the caller's final scale
+/// multiply, so the FP32-accumulation exactness rule is preserved by
+/// construction — the result is bit-identical to the scalar integer reference.
+///
+/// # Safety
+/// Requires FEAT_DotProd (runtime-detected by the caller via
+/// `Int8Query::use_dotprod`). Reads only `min(codes, qi8)` lanes.
+///
+/// Note on the `sdot` emission: the `vdotq_s32` intrinsic is still behind the
+/// unstable `stdarch_neon_dotprod` feature in `core::arch::aarch64`, and this
+/// crate targets stable Rust (no nightly, no `#![feature]`). The single `sdot`
+/// step is therefore emitted via inline assembly ([`vsdot_s32`]); every other
+/// operation (load, zero, add, horizontal reduce) uses the stable intrinsics.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+#[inline]
+unsafe fn dot_i8_sdot(codes: &[i8], qi8: &[i8]) -> i32 {
+    use std::arch::aarch64::*;
+
+    let n = codes.len().min(qi8.len());
+    let cptr = codes.as_ptr();
+    let qptr = qi8.as_ptr();
+
+    // Four independent i32×4 accumulators (64 codes/iter) break the sdot
+    // accumulate-latency chain, mirroring the VNNI kernel's 4-accumulator shape.
+    let mut acc0 = vdupq_n_s32(0);
+    let mut acc1 = vdupq_n_s32(0);
+    let mut acc2 = vdupq_n_s32(0);
+    let mut acc3 = vdupq_n_s32(0);
+
+    let chunks = n / 64;
+    for i in 0..chunks {
+        let o = i * 64;
+        acc0 = vsdot_s32(acc0, vld1q_s8(cptr.add(o)), vld1q_s8(qptr.add(o)));
+        acc1 = vsdot_s32(acc1, vld1q_s8(cptr.add(o + 16)), vld1q_s8(qptr.add(o + 16)));
+        acc2 = vsdot_s32(acc2, vld1q_s8(cptr.add(o + 32)), vld1q_s8(qptr.add(o + 32)));
+        acc3 = vsdot_s32(acc3, vld1q_s8(cptr.add(o + 48)), vld1q_s8(qptr.add(o + 48)));
+    }
+    // Cleanup: remaining 16-lane blocks below the 64-wide stride.
+    let mut o = chunks * 64;
+    while o + 16 <= n {
+        acc0 = vsdot_s32(acc0, vld1q_s8(cptr.add(o)), vld1q_s8(qptr.add(o)));
+        o += 16;
+    }
+    let acc = vaddq_s32(vaddq_s32(acc0, acc1), vaddq_s32(acc2, acc3));
+    let mut total = vaddvq_s32(acc);
+    // Scalar tail (dims not divisible by 16). Integer, so still exact.
+    for i in o..n {
+        total += codes[i] as i32 * qi8[i] as i32;
+    }
+    total
+}
+
+/// One FEAT_DotProd `sdot` accumulate step: `acc + dot4(a, b)`, where each of
+/// the four i32 output lanes is the sum of four signed i8×i8 products from the
+/// matching 4-byte group. Emitted as inline assembly because `vdotq_s32` is
+/// unstable on this crate's stable toolchain (see [`dot_i8_sdot`]).
+///
+/// # Safety
+/// Requires FEAT_DotProd. The block is `pure`/`nomem`/`nostack`: the result is
+/// a function of the inputs alone and touches neither memory nor the stack.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+#[inline]
+unsafe fn vsdot_s32(
+    acc: std::arch::aarch64::int32x4_t,
+    a: std::arch::aarch64::int8x16_t,
+    b: std::arch::aarch64::int8x16_t,
+) -> std::arch::aarch64::int32x4_t {
+    let mut out = acc;
+    core::arch::asm!(
+        "sdot {d:v}.4s, {n:v}.16b, {m:v}.16b",
+        d = inout(vreg) out,
+        n = in(vreg) a,
+        m = in(vreg) b,
+        options(pure, nomem, nostack),
+    );
+    out
 }
 
 /// NEON i8×f32 dot product: `Σ codes[i] as f32 * query[i]`.
@@ -1669,9 +1815,33 @@ mod tests {
             // sum of unit-scale terms, so an absolute tolerance tied to dim holds.
             assert!(
                 (got - want).abs() < 5e-3,
-                "d={d}: prepared={got} dot_query={want} use_vnni={}",
-                prepared.use_vnni
+                "d={d}: prepared={got} dot_query={want}"
             );
+        }
+    }
+
+    /// aarch64 `sdot` exactness: the integer kernel must be **bit-identical** to
+    /// the scalar integer reference `Σ codes[i]·qi8[i]` across dims including
+    /// the 64-/16-wide boundaries and odd scalar tails. Integer accumulation is
+    /// exact, so this is a strict `assert_eq!`, not a tolerance — the strongest
+    /// form of the sdot-vs-fallback-vs-scalar parity the phase requires.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn dot_i8_sdot_matches_scalar() {
+        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+            return; // skip on the (vanishingly rare) aarch64 host without FEAT_DotProd
+        }
+        for d in [1usize, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 960] {
+            let v: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.013) - 0.5).sin()).collect();
+            let q: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.027) + 0.2).cos()).collect();
+            let codes = Int8Vector::encode(&v).codes;
+            let prepared = Int8Query::prepare(&q);
+            // Scalar integer reference over the same i8 operands.
+            let want: i32 =
+                codes.iter().zip(prepared.qi8.iter()).map(|(&c, &qv)| c as i32 * qv as i32).sum();
+            // SAFETY: guarded by the FEAT_DotProd check above.
+            let got = unsafe { dot_i8_sdot(&codes, &prepared.qi8) };
+            assert_eq!(got, want, "sdot d={d}: {got} vs {want}");
         }
     }
 
