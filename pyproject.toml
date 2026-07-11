@@ -202,6 +202,13 @@ extend-exclude = ["notebooks", "experiments", "*.ipynb"]
 "benchmarks/**" = ["E402", "F401", "F841"]
 
 [tool.mypy]
+# Suppress the terminal "Success: no issues found" summary line — the konjo
+# newonly gate diffs tool output against the merge base and would otherwise
+# miscount that summary as a net-new finding for a PR that adds files.
+error_summary = false
+# The "annotation-unchecked" note (untyped-function bodies are skipped) is
+# informational, not an error; silence it so it is not diffed as a finding.
+disable_error_code = ["annotation-unchecked"]
 # Third-party numerical / ANN libraries and the optional kiban tooling
 # (konjo_longrun) ship without type stubs in the gate environment; ignore their
 # missing imports so the gate type-checks our code, not their absent stubs.

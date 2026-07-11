@@ -111,10 +111,16 @@ fn main() {
     }
 
     let thermal_after = read_thermal_millideg();
-    let unix_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let unix_ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
 
     let to_json_arr = |xs: &[f64]| -> String {
-        xs.iter().map(|x| format!("{x:.6}")).collect::<Vec<_>>().join(",")
+        xs.iter()
+            .map(|x| format!("{x:.6}"))
+            .collect::<Vec<_>>()
+            .join(",")
     };
 
     println!("{{");
@@ -128,11 +134,15 @@ fn main() {
     println!("  \"n_pairs\": {N_PAIRS},");
     println!(
         "  \"thermal_before_millideg\": {},",
-        thermal_before.map(|v| v.to_string()).unwrap_or_else(|| "null".into())
+        thermal_before
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "null".into())
     );
     println!(
         "  \"thermal_after_millideg\": {},",
-        thermal_after.map(|v| v.to_string()).unwrap_or_else(|| "null".into())
+        thermal_after
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "null".into())
     );
     println!("  \"metric\": \"qps\",");
     println!("  \"lower_is_better\": false,");
