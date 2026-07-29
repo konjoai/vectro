@@ -41,7 +41,9 @@ pub(crate) fn top_probe_from_sims(sims: &[f32], n_probe: usize) -> Vec<usize> {
     if take < n {
         // Partition so the `take` highest similarities sit first (descending).
         idx.select_nth_unstable_by(take - 1, |&a, &b| {
-            sims[b].partial_cmp(&sims[a]).unwrap_or(std::cmp::Ordering::Equal)
+            sims[b]
+                .partial_cmp(&sims[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         idx.truncate(take);
     }
@@ -220,7 +222,8 @@ impl IvfPqIndex {
     ///
     /// * `n_lists`  — number of coarse clusters (typical: sqrt(N))
     /// * `n_probe`  — lists to visit at query time (typical: 8–64)
-    pub fn new(n_lists: usize, n_probe: usize) -> Self {        Self {
+    pub fn new(n_lists: usize, n_probe: usize) -> Self {
+        Self {
             n_lists,
             n_probe,
             coarse_centroids: Vec::new(),
@@ -239,10 +242,14 @@ impl IvfPqIndex {
     }
 
     /// Number of coarse clusters.
-    pub fn n_lists(&self) -> usize { self.n_lists }
+    pub fn n_lists(&self) -> usize {
+        self.n_lists
+    }
 
     /// Whether the index has been trained.
-    pub fn is_trained(&self) -> bool { self.trained }
+    pub fn is_trained(&self) -> bool {
+        self.trained
+    }
 
     /// Train both the coarse quantizer and the PQ codebook.
     ///
@@ -303,7 +310,10 @@ impl IvfPqIndex {
     ///
     /// Panics if the index has not been trained.
     pub fn add(&mut self, vector: &[f32]) -> usize {
-        assert!(self.trained, "IvfPqIndex must be trained before adding vectors");
+        assert!(
+            self.trained,
+            "IvfPqIndex must be trained before adding vectors"
+        );
         assert_eq!(
             vector.len(),
             self.dim,
@@ -352,12 +362,7 @@ impl IvfPqIndex {
     }
 
     /// Search with explicit `n_probe` override.
-    pub fn search_with_probe(
-        &self,
-        query: &[f32],
-        k: usize,
-        n_probe: usize,
-    ) -> Vec<(usize, f32)> {
+    pub fn search_with_probe(&self, query: &[f32], k: usize, n_probe: usize) -> Vec<(usize, f32)> {
         if !self.trained || self.pq_codes.is_empty() {
             return Vec::new();
         }
@@ -422,7 +427,8 @@ impl IvfPqIndex {
             });
             candidates.truncate(k);
         }
-        candidates.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        candidates
+            .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         candidates.into_iter().map(|(d, id)| (id, d)).collect()
     }
 
@@ -465,8 +471,13 @@ impl IvfPqIndex {
                 qnorm[i * dim + j] = x * inv;
             }
         }
+        // `n_lists * dim == coarse_centroids.len()` by construction; `.expect()` is
+        // banned outside tests by this crate's lint config -- same
+        // `unwrap_or_else(unreachable!)` idiom as `train_kmeans_pp`'s `data_view` above.
         let cmat = ArrayView2::from_shape((self.n_lists, dim), &self.coarse_centroids)
-            .expect("centroid shape");
+            .unwrap_or_else(|_| {
+                unreachable!("coarse_centroids length always matches (n_lists, dim)")
+            });
 
         // ── Tile queries; each tile runs its own coarse GEMM + ADC in parallel ──
         // A whole-batch single GEMM would be cache-efficient but single-threaded,
@@ -482,13 +493,18 @@ impl IvfPqIndex {
             .for_each(|(c, out)| {
                 let lo = c * CHUNK;
                 let rows = out.len();
-                let qtile = ArrayView2::from_shape((rows, dim), &qnorm[lo * dim..(lo + rows) * dim])
-                    .expect("query tile shape");
+                let qtile =
+                    ArrayView2::from_shape((rows, dim), &qnorm[lo * dim..(lo + rows) * dim])
+                        .unwrap_or_else(|_| {
+                            unreachable!("qnorm tile slice always matches (rows, dim)")
+                        });
                 let sims: Array2<f32> = qtile.dot(&cmat.t()); // (rows, n_lists)
                 for (r, slot) in out.iter_mut().enumerate() {
                     let srow = sims.row(r);
-                    let probe_lists =
-                        top_probe_from_sims(srow.as_slice().expect("contig row"), n_probe);
+                    let srow_slice = srow.as_slice().unwrap_or_else(|| {
+                        unreachable!("sims row is contiguous: freshly allocated Array2 (row-major)")
+                    });
+                    let probe_lists = top_probe_from_sims(srow_slice, n_probe);
                     let qi = lo + r;
                     *slot = self.adc_rank(&qnorm[qi * dim..(qi + 1) * dim], &probe_lists, k);
                 }
@@ -609,10 +625,7 @@ impl IvfPqIndex {
         let mut n_probe = 1usize;
         loop {
             let results = self.search_with_probe(query, k, n_probe);
-            let hits = results
-                .iter()
-                .filter(|(id, _)| gt_ids.contains(id))
-                .count();
+            let hits = results.iter().filter(|(id, _)| gt_ids.contains(id)).count();
             let recall = hits as f32 / gt_k as f32;
             if recall >= target_recall || n_probe >= self.n_lists {
                 return (results, n_probe);

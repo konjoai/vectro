@@ -27,8 +27,7 @@ fn make_unit_vectors(n: usize, d: usize) -> Vec<f32> {
         // deterministic but non-degenerate row
         let mut row = vec![0.0_f32; d];
         for (j, slot) in row.iter_mut().enumerate() {
-            *slot = ((i + j) as f32 * 0.013_f32).sin()
-                * (((j as f32) * 0.011_f32).cos() + 0.5);
+            *slot = ((i + j) as f32 * 0.013_f32).sin() * (((j as f32) * 0.011_f32).cos() + 0.5);
         }
         let n2: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
         for (j, x) in row.iter().enumerate() {
@@ -58,7 +57,7 @@ fn time_kernel<F: FnMut()>(label: &str, n: usize, mut f: F) -> f64 {
     let throughput = (n as f64) / best_secs / 1.0e6;
     let p50 = {
         let mut s = samples.clone();
-        s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); // NaN-safe
         s[s.len() / 2]
     };
     let p50_tp = (n as f64) / p50 / 1.0e6;
@@ -78,8 +77,10 @@ fn main() {
     let arch = std::env::consts::ARCH;
     println!();
     println!("Vectro Wave 1 benchmark — host {host}/{arch}");
-    println!("  N = {N}  D = {D}  (≈ {:.1} MiB f32 input)",
-             (N * D * 4) as f64 / 1024.0 / 1024.0);
+    println!(
+        "  N = {N}  D = {D}  (≈ {:.1} MiB f32 input)",
+        (N * D * 4) as f64 / 1024.0 / 1024.0
+    );
     println!("  warmup = {WARMUP}  reps = {REPS}");
     let accelerate_on = cfg!(feature = "vectro_lib_accelerate");
     println!("  feature vectro_lib_accelerate = {}", accelerate_on);

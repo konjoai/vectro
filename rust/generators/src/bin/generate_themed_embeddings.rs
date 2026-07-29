@@ -38,24 +38,66 @@ struct Args {
 
 fn generate_products(dim: usize, count: usize, rng: &mut ChaCha8Rng) -> Vec<Embedding> {
     let mut products = Vec::new();
-    
+
     let categories = vec!["electronics", "clothing", "food", "books", "toys", "sports"];
     let product_names: HashMap<&str, Vec<&str>> = [
-        ("electronics", vec!["laptop", "smartphone", "tablet", "headphones", "camera", "monitor"]),
-        ("clothing", vec!["shirt", "pants", "dress", "jacket", "shoes", "hat"]),
-        ("food", vec!["apple", "bread", "cheese", "pasta", "rice", "coffee"]),
-        ("books", vec!["novel", "textbook", "magazine", "comic", "manual", "dictionary"]),
-        ("toys", vec!["doll", "puzzle", "lego", "robot", "ball", "game"]),
-        ("sports", vec!["basketball", "tennis_racket", "running_shoes", "yoga_mat", "dumbbell", "bike"]),
-    ].iter().cloned().collect();
-    
+        (
+            "electronics",
+            vec![
+                "laptop",
+                "smartphone",
+                "tablet",
+                "headphones",
+                "camera",
+                "monitor",
+            ],
+        ),
+        (
+            "clothing",
+            vec!["shirt", "pants", "dress", "jacket", "shoes", "hat"],
+        ),
+        (
+            "food",
+            vec!["apple", "bread", "cheese", "pasta", "rice", "coffee"],
+        ),
+        (
+            "books",
+            vec![
+                "novel",
+                "textbook",
+                "magazine",
+                "comic",
+                "manual",
+                "dictionary",
+            ],
+        ),
+        (
+            "toys",
+            vec!["doll", "puzzle", "lego", "robot", "ball", "game"],
+        ),
+        (
+            "sports",
+            vec![
+                "basketball",
+                "tennis_racket",
+                "running_shoes",
+                "yoga_mat",
+                "dumbbell",
+                "bike",
+            ],
+        ),
+    ]
+    .iter()
+    .cloned()
+    .collect();
+
     let items_per_category = count / categories.len();
-    
+
     for cat_name in categories {
         let center = generators::generate_embedding(dim, rng);
         let vectors = generators::generate_cluster(&center, 0.15, items_per_category, rng);
         let names = &product_names[cat_name];
-        
+
         for (i, vec) in vectors.into_iter().enumerate() {
             let name = names[i % names.len()];
             let product_id = format!("{}_{}__{:04}", cat_name, name, i);
@@ -65,20 +107,20 @@ fn generate_products(dim: usize, count: usize, rng: &mut ChaCha8Rng) -> Vec<Embe
             });
         }
     }
-    
+
     products
 }
 
 fn generate_movies(dim: usize, count: usize, rng: &mut ChaCha8Rng) -> Vec<Embedding> {
     let mut movies = Vec::new();
-    
+
     let genres = vec!["action", "comedy", "drama", "scifi", "horror", "romance"];
     let items_per_genre = count / genres.len();
-    
+
     for genre_name in genres {
         let center = generators::generate_embedding(dim, rng);
         let vectors = generators::generate_cluster(&center, 0.2, items_per_genre, rng);
-        
+
         for (i, vec) in vectors.into_iter().enumerate() {
             let movie_id = format!("movie_{}__{:04}", genre_name, i);
             movies.push(Embedding {
@@ -87,20 +129,27 @@ fn generate_movies(dim: usize, count: usize, rng: &mut ChaCha8Rng) -> Vec<Embedd
             });
         }
     }
-    
+
     movies
 }
 
 fn generate_documents(dim: usize, count: usize, rng: &mut ChaCha8Rng) -> Vec<Embedding> {
     let mut documents = Vec::new();
-    
-    let topics = vec!["tech", "business", "science", "health", "politics", "entertainment"];
+
+    let topics = vec![
+        "tech",
+        "business",
+        "science",
+        "health",
+        "politics",
+        "entertainment",
+    ];
     let items_per_topic = count / topics.len();
-    
+
     for topic_name in topics {
         let center = generators::generate_embedding(dim, rng);
         let vectors = generators::generate_cluster(&center, 0.18, items_per_topic, rng);
-        
+
         for (i, vec) in vectors.into_iter().enumerate() {
             let doc_id = format!("doc_{}__{:04}", topic_name, i);
             documents.push(Embedding {
@@ -109,7 +158,7 @@ fn generate_documents(dim: usize, count: usize, rng: &mut ChaCha8Rng) -> Vec<Emb
             });
         }
     }
-    
+
     documents
 }
 
@@ -133,10 +182,10 @@ fn generate_random(dim: usize, count: usize, rng: &mut ChaCha8Rng) -> Vec<Embedd
     embeddings
 }
 
-fn main() {
+fn main() -> Result<(), serde_json::Error> {
     let args = Args::parse();
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
-    
+
     let embeddings = match args.theme.as_str() {
         "products" => generate_products(args.dim, args.count, &mut rng),
         "movies" => generate_movies(args.dim, args.count, &mut rng),
@@ -145,8 +194,9 @@ fn main() {
         "random" => generate_random(args.dim, args.count, &mut rng),
         _ => generate_random(args.dim, args.count, &mut rng),
     };
-    
+
     for emb in embeddings {
-        println!("{}", serde_json::to_string(&emb).unwrap());
+        println!("{}", serde_json::to_string(&emb)?);
     }
+    Ok(())
 }
