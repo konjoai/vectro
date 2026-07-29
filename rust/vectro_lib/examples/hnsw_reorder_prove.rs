@@ -111,7 +111,9 @@ fn main() {
     let thermal_after = read_thermal_millideg();
     let unix_ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        // Clock predates the epoch only on a misconfigured host; degrade to 0
+        // rather than panic a benchmark run over unrelated artifact metadata.
+        .unwrap_or(std::time::Duration::ZERO)
         .as_secs();
 
     // Recall sanity: reorder must be a pure relabel, so confirm zero drift on a

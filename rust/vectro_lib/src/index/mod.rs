@@ -36,7 +36,11 @@ pub use bm25::BM25Index;
 fn float_order_bits(f: f32) -> u32 {
     let b = f.to_bits();
     // sign-bit set → flip all bits; sign-bit clear → flip just the sign bit.
-    if b >> 31 == 1 { !b } else { b | 0x8000_0000 }
+    if b >> 31 == 1 {
+        !b
+    } else {
+        b | 0x8000_0000
+    }
 }
 
 #[inline]
@@ -60,4 +64,3 @@ pub(crate) fn key_dist(key: u64) -> f32 {
 pub(crate) fn key_id(key: u64) -> usize {
     (key & 0xFFFF_FFFF) as usize
 }
-

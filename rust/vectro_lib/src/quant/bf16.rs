@@ -156,12 +156,18 @@ impl Bf16Vector {
     /// Encode an f32 slice to BF16 (round-to-nearest, ties to even).
     pub fn encode(v: &[f32]) -> Self {
         let packed: Vec<u16> = v.iter().map(|&x| SimBf16::from_f32(x).0).collect();
-        Self { packed, dim: v.len() }
+        Self {
+            packed,
+            dim: v.len(),
+        }
     }
 
     /// Decode BF16 values back to approximate f32.
     pub fn decode(&self) -> Vec<f32> {
-        self.packed.iter().map(|&bits| SimBf16(bits).to_f32()).collect()
+        self.packed
+            .iter()
+            .map(|&bits| SimBf16(bits).to_f32())
+            .collect()
     }
 
     /// Asymmetric cosine distance to a full-precision query, computed directly
@@ -186,16 +192,10 @@ impl Bf16Vector {
         // SAFETY: `SimBf16` is a `repr(transparent)` newtype over `u16`
         // with identical size and alignment; the transmute is sound.
         let a = unsafe {
-            std::slice::from_raw_parts(
-                self.packed.as_ptr() as *const SimBf16,
-                self.packed.len(),
-            )
+            std::slice::from_raw_parts(self.packed.as_ptr() as *const SimBf16, self.packed.len())
         };
         let b = unsafe {
-            std::slice::from_raw_parts(
-                other.packed.as_ptr() as *const SimBf16,
-                other.packed.len(),
-            )
+            std::slice::from_raw_parts(other.packed.as_ptr() as *const SimBf16, other.packed.len())
         };
         match <SimBf16 as SpatialSimilarity>::cosine(a, b) {
             Some(d) => d as f32,
@@ -251,7 +251,10 @@ mod tests {
         let nv: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         let nd: f32 = dec.iter().map(|x| x * x).sum::<f32>().sqrt();
         let cos = dot / (nv * nd);
-        assert!(cos >= 0.9999, "cosine similarity after BF16 round-trip = {cos:.6}");
+        assert!(
+            cos >= 0.9999,
+            "cosine similarity after BF16 round-trip = {cos:.6}"
+        );
     }
 
     #[test]
@@ -281,7 +284,9 @@ mod tests {
         if !(is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw")) {
             return;
         }
-        for n in [1usize, 7, 15, 16, 17, 31, 32, 33, 96, 127, 128, 256, 768, 769] {
+        for n in [
+            1usize, 7, 15, 16, 17, 31, 32, 33, 96, 127, 128, 256, 768, 769,
+        ] {
             let v = unit_vec(n, 0.013);
             let q = unit_vec(n, 0.027);
             let packed: Vec<u16> = Bf16Vector::encode(&v).packed;
@@ -290,7 +295,10 @@ mod tests {
             let (d5, n5) = unsafe { super::bf16_dot_norm_avx512(&packed, &q, n) };
             let tol = ds.abs() * 1e-3 + 1e-3;
             assert!((ds - d5).abs() <= tol, "n={n}: dot {ds} vs {d5}");
-            assert!((ns - n5).abs() <= ns.abs() * 1e-3 + 1e-3, "n={n}: norm {ns} vs {n5}");
+            assert!(
+                (ns - n5).abs() <= ns.abs() * 1e-3 + 1e-3,
+                "n={n}: norm {ns} vs {n5}"
+            );
         }
     }
 

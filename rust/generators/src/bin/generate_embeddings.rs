@@ -33,9 +33,9 @@ struct Args {
     seed: Option<u64>,
 }
 
-fn main() {
+fn main() -> Result<(), serde_json::Error> {
     let args = Args::parse();
-    
+
     let mut rng = match args.seed {
         Some(seed) => ChaCha8Rng::seed_from_u64(seed),
         None => ChaCha8Rng::from_entropy(),
@@ -47,6 +47,7 @@ fn main() {
             id: format!("{}_{:06}", args.prefix, i),
             vector,
         };
-        println!("{}", serde_json::to_string(&embedding).unwrap());
+        println!("{}", serde_json::to_string(&embedding)?);
     }
+    Ok(())
 }

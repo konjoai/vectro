@@ -242,11 +242,21 @@ unsafe fn dot_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
     for i in 0..chunks {
         let o = i * 32;
         acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(ap.add(o)), _mm256_loadu_ps(bp.add(o)), acc0);
-        acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(ap.add(o + 8)), _mm256_loadu_ps(bp.add(o + 8)), acc1);
-        acc2 =
-            _mm256_fmadd_ps(_mm256_loadu_ps(ap.add(o + 16)), _mm256_loadu_ps(bp.add(o + 16)), acc2);
-        acc3 =
-            _mm256_fmadd_ps(_mm256_loadu_ps(ap.add(o + 24)), _mm256_loadu_ps(bp.add(o + 24)), acc3);
+        acc1 = _mm256_fmadd_ps(
+            _mm256_loadu_ps(ap.add(o + 8)),
+            _mm256_loadu_ps(bp.add(o + 8)),
+            acc1,
+        );
+        acc2 = _mm256_fmadd_ps(
+            _mm256_loadu_ps(ap.add(o + 16)),
+            _mm256_loadu_ps(bp.add(o + 16)),
+            acc2,
+        );
+        acc3 = _mm256_fmadd_ps(
+            _mm256_loadu_ps(ap.add(o + 24)),
+            _mm256_loadu_ps(bp.add(o + 24)),
+            acc3,
+        );
     }
     let mut o = chunks * 32;
     while o + 8 <= n {
@@ -289,9 +299,18 @@ unsafe fn l2_sq_avx2(a: &[f32], b: &[f32]) -> f32 {
     for i in 0..chunks {
         let o = i * 32;
         let d0 = _mm256_sub_ps(_mm256_loadu_ps(ap.add(o)), _mm256_loadu_ps(bp.add(o)));
-        let d1 = _mm256_sub_ps(_mm256_loadu_ps(ap.add(o + 8)), _mm256_loadu_ps(bp.add(o + 8)));
-        let d2 = _mm256_sub_ps(_mm256_loadu_ps(ap.add(o + 16)), _mm256_loadu_ps(bp.add(o + 16)));
-        let d3 = _mm256_sub_ps(_mm256_loadu_ps(ap.add(o + 24)), _mm256_loadu_ps(bp.add(o + 24)));
+        let d1 = _mm256_sub_ps(
+            _mm256_loadu_ps(ap.add(o + 8)),
+            _mm256_loadu_ps(bp.add(o + 8)),
+        );
+        let d2 = _mm256_sub_ps(
+            _mm256_loadu_ps(ap.add(o + 16)),
+            _mm256_loadu_ps(bp.add(o + 16)),
+        );
+        let d3 = _mm256_sub_ps(
+            _mm256_loadu_ps(ap.add(o + 24)),
+            _mm256_loadu_ps(bp.add(o + 24)),
+        );
         acc0 = _mm256_fmadd_ps(d0, d0, acc0);
         acc1 = _mm256_fmadd_ps(d1, d1, acc1);
         acc2 = _mm256_fmadd_ps(d2, d2, acc2);
@@ -329,7 +348,10 @@ mod tests {
             let b: Vec<f32> = (0..d).map(|i| ((i * 5 % 11) as f32 - 5.0) * 0.1).collect();
             let dot_ref: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
             let l2_ref: f32 = a.iter().zip(&b).map(|(x, y)| (x - y) * (x - y)).sum();
-            assert!((dot_f32(&a, &b) - dot_ref).abs() <= 1e-3, "dot mismatch d={d}");
+            assert!(
+                (dot_f32(&a, &b) - dot_ref).abs() <= 1e-3,
+                "dot mismatch d={d}"
+            );
             assert!((l2_sq(&a, &b) - l2_ref).abs() <= 1e-3, "l2 mismatch d={d}");
         }
     }

@@ -10,11 +10,15 @@ use vectro_lib::index::hnsw::HnswIndex;
 fn make_vecs(n: usize, d: usize, seed: u64) -> Vec<Vec<f32>> {
     let mut s = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut next = move || {
-        s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        s = s
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         (s >> 33) as f32 / (1u64 << 31) as f32 - 1.0
     };
     let n_centers = 64usize;
-    let centers: Vec<Vec<f32>> = (0..n_centers).map(|_| (0..d).map(|_| next()).collect()).collect();
+    let centers: Vec<Vec<f32>> = (0..n_centers)
+        .map(|_| (0..d).map(|_| next()).collect())
+        .collect();
     (0..n)
         .map(|i| {
             let c = &centers[i % n_centers];
@@ -31,7 +35,9 @@ fn brute_gt(vecs: &[Vec<f32>], q: &[f32], k: usize) -> HashSet<usize> {
         .enumerate()
         .map(|(i, v)| (-q.iter().zip(v).map(|(a, b)| a * b).sum::<f32>(), i))
         .collect();
-    s.select_nth_unstable_by(k - 1, |a, b| a.0.partial_cmp(&b.0).unwrap());
+    s.select_nth_unstable_by(k - 1, |a, b| {
+        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+    }); // NaN-safe: treat NaN as equal, don't panic a bench run
     s.truncate(k);
     s.into_iter().map(|(_, i)| i).collect()
 }
@@ -44,7 +50,10 @@ fn main() {
 
     let vecs = make_vecs(n, d, 1);
     let queries = make_vecs(nq, d, 999);
-    let gt: Vec<HashSet<usize>> = queries[..n_gt].iter().map(|q| brute_gt(&vecs, q, k)).collect();
+    let gt: Vec<HashSet<usize>> = queries[..n_gt]
+        .iter()
+        .map(|q| brute_gt(&vecs, q, k))
+        .collect();
 
     let t = Instant::now();
     let mut idx = HnswIndex::new(m, ef_c);
@@ -54,7 +63,11 @@ fn main() {
     let recall = |idx: &HnswIndex, ef: usize| -> f64 {
         let mut tot = 0usize;
         for (q, g) in queries[..n_gt].iter().zip(&gt) {
-            tot += idx.search(q, k, ef).iter().filter(|(id, _)| g.contains(id)).count();
+            tot += idx
+                .search(q, k, ef)
+                .iter()
+                .filter(|(id, _)| g.contains(id))
+                .count();
         }
         tot as f64 / (n_gt * k) as f64
     };
@@ -77,10 +90,16 @@ fn main() {
 
     let efs = [64usize, 100, 160];
     // Exact fp32 (nav off) across all ef on this graph.
-    let fp32: Vec<(f64, f64)> = efs.iter().map(|&ef| (recall(&idx, ef), qps(&idx, ef))).collect();
+    let fp32: Vec<(f64, f64)> = efs
+        .iter()
+        .map(|&ef| (recall(&idx, ef), qps(&idx, ef)))
+        .collect();
     // Enable bf16 nav on the SAME graph, then measure.
     idx.enable_bf16_nav();
-    let nav: Vec<(f64, f64)> = efs.iter().map(|&ef| (recall(&idx, ef), qps(&idx, ef))).collect();
+    let nav: Vec<(f64, f64)> = efs
+        .iter()
+        .map(|&ef| (recall(&idx, ef), qps(&idx, ef)))
+        .collect();
 
     for (i, &ef) in efs.iter().enumerate() {
         let (rf, qf) = fp32[i];

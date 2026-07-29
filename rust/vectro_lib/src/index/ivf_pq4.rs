@@ -74,7 +74,10 @@ impl IvfPq4Index {
             return Err("n_lists and n_probe must be > 0".into());
         }
         if data.len() < n_lists {
-            return Err(format!("need ≥ n_lists ({n_lists}) vectors, got {}", data.len()));
+            return Err(format!(
+                "need ≥ n_lists ({n_lists}) vectors, got {}",
+                data.len()
+            ));
         }
         let d = data[0].len();
         if d == 0 || !data.iter().all(|v| v.len() == d) {
@@ -102,7 +105,16 @@ impl IvfPq4Index {
             })
             .collect();
 
-        Ok(Self { n_lists, n_probe, coarse_centroids, codebook, lists, m, dim: d, trained: true })
+        Ok(Self {
+            n_lists,
+            n_probe,
+            coarse_centroids,
+            codebook,
+            lists,
+            m,
+            dim: d,
+            trained: true,
+        })
     }
 
     /// Number of indexed vectors.
@@ -131,7 +143,12 @@ impl IvfPq4Index {
 
         // Coarse scan: pick the n_probe nearest cells (partial select, not sort).
         let mut scored: Vec<(f32, usize)> = (0..self.n_lists)
-            .map(|c| (cosine_dist(&q, &self.coarse_centroids[c * self.dim..(c + 1) * self.dim]), c))
+            .map(|c| {
+                (
+                    cosine_dist(&q, &self.coarse_centroids[c * self.dim..(c + 1) * self.dim]),
+                    c,
+                )
+            })
             .collect();
         let probe = n_probe.min(self.n_lists);
         if probe < scored.len() {
@@ -180,26 +197,40 @@ impl IvfPq4Index {
                 qnorm[i * dim + j] = x * inv;
             }
         }
+        // `n_lists * dim == coarse_centroids.len()` by construction; `.expect()` is
+        // banned outside tests by this crate's lint config -- same
+        // `unwrap_or_else(unreachable!)` idiom `ivf_pq.rs`'s `train_kmeans_pp` uses.
         let cmat = ArrayView2::from_shape((self.n_lists, dim), &self.coarse_centroids)
-            .expect("centroid shape");
+            .unwrap_or_else(|_| {
+                unreachable!("coarse_centroids length always matches (n_lists, dim)")
+            });
         let probe = n_probe.min(self.n_lists);
 
         const CHUNK: usize = 32;
         let mut results: Vec<Vec<(usize, f32)>> = vec![Vec::new(); q];
-        results.par_chunks_mut(CHUNK).enumerate().for_each(|(c, out)| {
-            let lo = c * CHUNK;
-            let rows = out.len();
-            let qtile = ArrayView2::from_shape((rows, dim), &qnorm[lo * dim..(lo + rows) * dim])
-                .expect("query tile shape");
-            // sims[r, l] = dot(query r, centroid l) — higher = closer (cosine).
-            let sims: Array2<f32> = qtile.dot(&cmat.t());
-            for (r, slot) in out.iter_mut().enumerate() {
-                let srow = sims.row(r);
-                let probe_lists = top_probe_from_sims(srow.as_slice().expect("contig row"), probe);
-                let qi = lo + r;
-                *slot = self.scan_probed(&qnorm[qi * dim..(qi + 1) * dim], &probe_lists, k);
-            }
-        });
+        results
+            .par_chunks_mut(CHUNK)
+            .enumerate()
+            .for_each(|(c, out)| {
+                let lo = c * CHUNK;
+                let rows = out.len();
+                let qtile =
+                    ArrayView2::from_shape((rows, dim), &qnorm[lo * dim..(lo + rows) * dim])
+                        .unwrap_or_else(|_| {
+                            unreachable!("qnorm tile slice always matches (rows, dim)")
+                        });
+                // sims[r, l] = dot(query r, centroid l) — higher = closer (cosine).
+                let sims: Array2<f32> = qtile.dot(&cmat.t());
+                for (r, slot) in out.iter_mut().enumerate() {
+                    let srow = sims.row(r);
+                    let srow_slice = srow.as_slice().unwrap_or_else(|| {
+                        unreachable!("sims row is contiguous: freshly allocated Array2 (row-major)")
+                    });
+                    let probe_lists = top_probe_from_sims(srow_slice, probe);
+                    let qi = lo + r;
+                    *slot = self.scan_probed(&qnorm[qi * dim..(qi + 1) * dim], &probe_lists, k);
+                }
+            });
         results
     }
 
@@ -223,7 +254,12 @@ impl IvfPq4Index {
             sums.clear();
             sums.resize(n_blocks * BLK, 0);
             scan(&lut, &list.codes_il, n_blocks, self.m, &mut sums);
-            cand.extend(list.ids.iter().enumerate().map(|(slot, &gid)| (sums[slot], gid)));
+            cand.extend(
+                list.ids
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, &gid)| (sums[slot], gid)),
+            );
         }
 
         let kk = k.min(cand.len());
@@ -235,7 +271,9 @@ impl IvfPq4Index {
             cand.truncate(kk);
         }
         cand.sort_unstable_by_key(|&(s, _)| s);
-        cand.into_iter().map(|(s, gid)| (gid, s as f32 * inv_scale + bias)).collect()
+        cand.into_iter()
+            .map(|(s, gid)| (gid, s as f32 * inv_scale + bias))
+            .collect()
     }
 }
 
@@ -260,7 +298,9 @@ mod tests {
     fn rand_unit(n: usize, d: usize, seed: u64) -> Vec<Vec<f32>> {
         let mut s = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut next = || {
-            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (s >> 33) as f32 / (1u64 << 31) as f32 - 1.0
         };
         (0..n)
@@ -380,7 +420,12 @@ mod tests {
             let mut e: Vec<(f32, usize)> = data
                 .iter()
                 .enumerate()
-                .map(|(j, v)| (q.iter().zip(v).map(|(a, b)| (a - b) * (a - b)).sum::<f32>(), j))
+                .map(|(j, v)| {
+                    (
+                        q.iter().zip(v).map(|(a, b)| (a - b) * (a - b)).sum::<f32>(),
+                        j,
+                    )
+                })
                 .collect();
             e.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
             e.iter().take(10).map(|&(_, i)| i).collect()
@@ -402,7 +447,10 @@ mod tests {
         // The behavioural invariant is that probing more cells reaches more true
         // neighbours; the absolute floor is modest because m=16/K=16 is a
         // low-bit-budget config (exhaustive recall@10 here is ~0.4).
-        assert!(r8 > r1, "recall should rise with probe: r1={r1:.3} r8={r8:.3}");
+        assert!(
+            r8 > r1,
+            "recall should rise with probe: r1={r1:.3} r8={r8:.3}"
+        );
         assert!(r8 >= 0.25, "recall@10 (probe=8) unexpectedly low: {r8:.3}");
     }
 }

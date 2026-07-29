@@ -91,11 +91,7 @@ def train_pq_codebook(
 
     # Preferred path: native SIMD-accelerated, seeded Lloyd's k-means — no
     # scikit-learn dependency, deterministic, parallel across sub-spaces.
-    if (
-        _vectro_py is not None
-        and n_centroids <= 256
-        and hasattr(_vectro_py, "pq_train_batch")
-    ):
+    if _vectro_py is not None and n_centroids <= 256 and hasattr(_vectro_py, "pq_train_batch"):
         try:
             centroids = np.asarray(
                 _vectro_py.pq_train_batch(

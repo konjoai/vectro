@@ -85,7 +85,12 @@ impl Pq4FlatIndex {
         let codes = pq_encode(data, &codebook); // [n][m], each value in 0..16
         let n = data.len();
         let codes_il = interleave_codes(&codes, m);
-        Ok(Self { codebook, m, n, codes_il })
+        Ok(Self {
+            codebook,
+            m,
+            n,
+            codes_il,
+        })
     }
 
     /// Number of indexed vectors.
@@ -119,7 +124,9 @@ impl Pq4FlatIndex {
             cand.truncate(kk);
         }
         cand.sort_unstable_by_key(|&(s, _)| s);
-        cand.into_iter().map(|(s, i)| (i, s as f32 * inv_scale + bias)).collect()
+        cand.into_iter()
+            .map(|(s, i)| (i, s as f32 * inv_scale + bias))
+            .collect()
     }
 }
 
@@ -210,9 +217,13 @@ static PERM: [usize; BLK] = {
     while c < BLK {
         let lane = c / 16; // which 128-bit half of the code register (0 or 1)
         let w = c % 16; // position within that lane
-        // acc_lo holds bytes 0..7 of each lane (lane0→0..7, lane1→8..15);
-        // acc_hi (offset 16) holds bytes 8..15 of each lane likewise.
-        p[c] = if w < 8 { lane * 8 + w } else { 16 + lane * 8 + (w - 8) };
+                        // acc_lo holds bytes 0..7 of each lane (lane0→0..7, lane1→8..15);
+                        // acc_hi (offset 16) holds bytes 8..15 of each lane likewise.
+        p[c] = if w < 8 {
+            lane * 8 + w
+        } else {
+            16 + lane * 8 + (w - 8)
+        };
         c += 1;
     }
     p
@@ -257,7 +268,8 @@ unsafe fn scan_avx2(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out:
         let mut acc_hi = _mm256_setzero_si256(); // 16 u16 lanes
         let blk_base = b * planes * BLK;
         for t in 0..pairs {
-            let packed = _mm256_loadu_si256(codes_il.as_ptr().add(blk_base + t * BLK) as *const __m256i);
+            let packed =
+                _mm256_loadu_si256(codes_il.as_ptr().add(blk_base + t * BLK) as *const __m256i);
             // Low nibble = subspace 2t; high nibble = subspace 2t+1.
             let lo_codes = _mm256_and_si256(packed, lo_mask);
             let hi_codes = _mm256_and_si256(_mm256_srli_epi16(packed, 4), lo_mask);
@@ -265,7 +277,8 @@ unsafe fn scan_avx2(lut: &[u8], codes_il: &[u8], n_blocks: usize, m: usize, out:
             accum(lut, 2 * t + 1, hi_codes, zero, &mut acc_lo, &mut acc_hi);
         }
         if m & 1 == 1 {
-            let packed = _mm256_loadu_si256(codes_il.as_ptr().add(blk_base + pairs * BLK) as *const __m256i);
+            let packed =
+                _mm256_loadu_si256(codes_il.as_ptr().add(blk_base + pairs * BLK) as *const __m256i);
             let lo_codes = _mm256_and_si256(packed, lo_mask);
             accum(lut, m - 1, lo_codes, zero, &mut acc_lo, &mut acc_hi);
         }
@@ -380,7 +393,9 @@ mod tests {
     fn unit_vecs(n: usize, d: usize, seed: u64) -> Vec<Vec<f32>> {
         let mut s = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut next = || {
-            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (s >> 33) as f32 / (1u64 << 31) as f32 - 1.0
         };
         (0..n)
@@ -448,13 +463,19 @@ mod tests {
         for q in data.iter().take(8) {
             let fast: Vec<usize> = idx.search(q, 10).into_iter().map(|(id, _)| id).collect();
             let table = pq_distance_table(q, &idx.codebook);
-            let mut exact: Vec<(f32, usize)> =
-                codes.iter().enumerate().map(|(i, c)| (adc_distance(&table, c, m, K), i)).collect();
+            let mut exact: Vec<(f32, usize)> = codes
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (adc_distance(&table, c, m, K), i))
+                .collect();
             exact.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
             let exact_top: std::collections::HashSet<usize> =
                 exact.iter().take(10).map(|&(_, i)| i).collect();
             let overlap = fast.iter().filter(|i| exact_top.contains(i)).count();
-            assert!(overlap >= 8, "fast-scan top-10 overlap with exact ADC too low: {overlap}/10");
+            assert!(
+                overlap >= 8,
+                "fast-scan top-10 overlap with exact ADC too low: {overlap}/10"
+            );
         }
     }
 

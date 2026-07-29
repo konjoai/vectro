@@ -39,7 +39,9 @@ fn brute_gt(vecs: &[Vec<f32>], q: &[f32], k: usize) -> HashSet<usize> {
         .enumerate()
         .map(|(i, v)| (-q.iter().zip(v).map(|(a, b)| a * b).sum::<f32>(), i))
         .collect();
-    s.select_nth_unstable_by(k - 1, |a, b| a.0.partial_cmp(&b.0).unwrap());
+    s.select_nth_unstable_by(k - 1, |a, b| {
+        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+    }); // NaN-safe: treat NaN as equal, don't panic a bench run
     s.truncate(k);
     s.into_iter().map(|(_, i)| i).collect()
 }

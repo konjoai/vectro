@@ -514,9 +514,10 @@ class TestHNSWSearch:
         rng = np.random.default_rng(7)
         dim, n_clusters, per = 768, 100, 50
         centers = rng.standard_normal((n_clusters, dim)).astype(np.float32) * 5.0
-        data = np.repeat(centers, per, axis=0) + rng.standard_normal(
-            (n_clusters * per, dim)
-        ).astype(np.float32) * 0.3
+        data = (
+            np.repeat(centers, per, axis=0)
+            + rng.standard_normal((n_clusters * per, dim)).astype(np.float32) * 0.3
+        )
         data = data.astype(np.float32)
         n = data.shape[0]
         queries = centers + rng.standard_normal((n_clusters, dim)).astype(np.float32) * 0.3

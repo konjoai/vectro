@@ -1,0 +1,51 @@
+# Konjo file-size gate — grandfather allowlist.
+#
+# Files listed here predate the 500-line gate (or predate this reconciliation
+# making the gate mechanically real) and are exempt from it. The gate is
+# BLOCKING for every other .rs/.py file: any NEW file over 500 lines, or any
+# file not on this list that grows past 500 lines, fails CI.
+#
+# Rules:
+#   - One repo-relative path per line (no leading "./").
+#   - Lines starting with "#" and blank lines are ignored.
+#   - To remove an entry: split the file under 500 lines, then delete its line.
+#   - Do NOT add new entries without explicit maintainer sign-off — the point
+#     of the gate is to stop the list from growing.
+#
+# Generated during the kiban v1.9.0 reconciliation (Track A1), measured against
+# real `wc -l` output on this tree (see LEDGER.md's soft-step triage). Matches
+# squish's .konjo/oversized-allowlist.txt convention exactly (same org, same
+# gate shape).
+benchmarks/cross_platform_benchmark.py
+demo/demo.py
+demo/server.py
+demos/demo_v3.py
+demos/video_demo_v3.py
+python/hnsw_api.py
+python/integrations/dspy_integration.py
+python/integrations/haystack_integration.py
+python/integrations/langchain_integration.py
+python/profiles_api.py
+python/v3_api.py
+python/vectro.py
+rust/vectro_cli/src/lib.rs
+rust/vectro_cli/src/main.rs
+rust/vectro_cli/src/server.rs
+rust/vectro_lib/src/index/bm25.rs
+rust/vectro_lib/src/index/hnsw.rs
+rust/vectro_lib/src/index/ivf.rs
+rust/vectro_lib/src/index/ivf_pq.rs
+rust/vectro_lib/src/index/quant_hnsw.rs
+rust/vectro_lib/src/lib.rs
+rust/vectro_lib/src/quant/binary.rs
+rust/vectro_lib/src/quant/int8.rs
+rust/vectro_lib/src/quant/nf4.rs
+rust/vectro_lib/src/quant/pq.rs
+rust/vectro_py/src/lib.rs
+scripts/benchmark_comprehensive.py
+scripts/benchmark_vs_faiss.py
+tests/test_cross_platform_benchmarks.py
+tests/test_integration.py
+tests/test_python_api.py
+tests/test_release_candidate.py
+tests/test_storage_v3.py

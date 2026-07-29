@@ -66,7 +66,11 @@ pub fn run_pipeline(
         );
     }
 
-    let vectors: Vec<Vec<f32>> = dataset.embeddings.iter().map(|e| e.vector.clone()).collect();
+    let vectors: Vec<Vec<f32>> = dataset
+        .embeddings
+        .iter()
+        .map(|e| e.vector.clone())
+        .collect();
     let mut index = vectro_lib::index::hnsw::HnswIndex::new(m, ef_construction);
     index.add_batch(&vectors);
 

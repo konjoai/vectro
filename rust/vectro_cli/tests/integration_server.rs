@@ -11,7 +11,7 @@ fn test_server_command_builds() {
         .args(["build", "--bin", "vectro_cli"])
         .output()
         .expect("Failed to build binary");
-    
+
     assert!(output.status.success() || output.stderr.is_empty());
 }
 
@@ -24,12 +24,12 @@ fn test_server_startup_via_cli() {
     } else {
         "target/release/vectro_cli"
     };
-    
+
     if !std::path::Path::new(binary_path).exists() {
         eprintln!("Binary not found, skipping server startup test");
         return;
     }
-    
+
     // Start server in background on a unique port
     let port = 19080;
     let mut child = Command::new(binary_path)
@@ -37,21 +37,21 @@ fn test_server_startup_via_cli() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
-    
+
     if let Ok(ref mut process) = child {
         // Give server time to start
         thread::sleep(Duration::from_millis(500));
-        
+
         // Try to connect (basic check)
         let client = reqwest::blocking::Client::new();
         let result = client
             .get(format!("http://localhost:{}/health", port))
             .timeout(Duration::from_secs(2))
             .send();
-        
+
         // Kill server
         let _ = process.kill();
-        
+
         // Verify we got a response
         if let Ok(response) = result {
             assert!(response.status().is_success());
@@ -65,7 +65,7 @@ fn test_server_cli_help() {
     let output = Command::new("cargo")
         .args(["run", "--bin", "vectro_cli", "--", "serve", "--help"])
         .output();
-    
+
     if let Ok(out) = output {
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("serve") || stdout.contains("port") || stdout.contains("server"));

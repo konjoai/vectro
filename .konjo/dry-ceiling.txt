@@ -1,0 +1,16 @@
+# Konjo DRY (dry_check.py) ceiling — Konjo Forward Pillar 2.
+#
+# `python3 .konjo/scripts/dry_check.py --threshold 0.85 --min-lines 20`'s
+# measured standing "count" field. 271 today, overwhelmingly duplicate
+# boilerplate across near-identical connector/integration test files
+# (test_milvus_connector.py <-> test_pinecone_connector.py,
+# test_haystack_reranker.py <-> test_haystack_mmr.py, etc.) -- structurally
+# repeated test setup, not production logic duplication. Consolidating these
+# into shared fixtures is real refactoring work, out of scope for this
+# CI-reconnection track. Ratcheted instead of left soft.
+#
+# Ratchet up only with a stated reason; ratchet down as duplication is
+# consolidated.
+#
+# verified-against: f9dd8a1 (main), measured this reconciliation (2026-07-29)
+271

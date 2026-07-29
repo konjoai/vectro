@@ -140,20 +140,28 @@ pub struct Bf16Quantizer;
 impl Quantizer for Bf16Quantizer {
     type Encoded = bf16::Bf16Vector;
     type Prepared = Vec<f32>;
-    fn encode(v: &[f32]) -> Self::Encoded { bf16::Bf16Vector::encode(v) }
-    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
+    fn encode(v: &[f32]) -> Self::Encoded {
+        bf16::Bf16Vector::encode(v)
+    }
+    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> {
+        enc.decode()
+    }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
         // Direct from codes — no per-call decode allocation.
         enc.cosine_dist_to_query(query)
     }
-    fn prepare(query: &[f32]) -> Vec<f32> { query.to_vec() }
+    fn prepare(query: &[f32]) -> Vec<f32> {
+        query.to_vec()
+    }
     fn dist_to_prepared(enc: &Self::Encoded, prepared: &Vec<f32>) -> f32 {
         enc.cosine_dist_to_query(prepared)
     }
     fn prefetch(enc: &Self::Encoded) {
         prefetch_bytes(enc.packed.as_ptr() as *const u8, enc.packed.len() * 2);
     }
-    fn bits_per_dim() -> u32 { 16 }
+    fn bits_per_dim() -> u32 {
+        16
+    }
 }
 
 /// INT8 symmetric abs-max quantizer marker type.
@@ -163,14 +171,20 @@ pub struct Int8Quantizer;
 impl Quantizer for Int8Quantizer {
     type Encoded = int8::Int8Vector;
     type Prepared = int8::Int8Query;
-    fn encode(v: &[f32]) -> Self::Encoded { int8::Int8Vector::encode_fast(v) }
-    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
+    fn encode(v: &[f32]) -> Self::Encoded {
+        int8::Int8Vector::encode_fast(v)
+    }
+    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> {
+        enc.decode()
+    }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
         // `dot_query` returns weighted dot product ≈ cosine similarity for
         // unit-normalised stored vectors.
         (1.0 - enc.dot_query(query)).max(0.0)
     }
-    fn prepare(query: &[f32]) -> int8::Int8Query { int8::Int8Query::prepare(query) }
+    fn prepare(query: &[f32]) -> int8::Int8Query {
+        int8::Int8Query::prepare(query)
+    }
     fn dist_to_prepared(enc: &Self::Encoded, prepared: &int8::Int8Query) -> f32 {
         // VNNI integer dot when available; otherwise the exact f32 path.
         (1.0 - enc.dot_query_prepared(prepared)).max(0.0)
@@ -178,7 +192,9 @@ impl Quantizer for Int8Quantizer {
     fn prefetch(enc: &Self::Encoded) {
         prefetch_bytes(enc.codes.as_ptr() as *const u8, enc.codes.len());
     }
-    fn bits_per_dim() -> u32 { 8 }
+    fn bits_per_dim() -> u32 {
+        8
+    }
 }
 
 /// NF4 4-bit normal-float quantizer marker type.
@@ -188,19 +204,27 @@ pub struct Nf4Quantizer;
 impl Quantizer for Nf4Quantizer {
     type Encoded = nf4::Nf4Vector;
     type Prepared = Vec<f32>;
-    fn encode(v: &[f32]) -> Self::Encoded { nf4::Nf4Vector::encode_fast(v) }
-    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
+    fn encode(v: &[f32]) -> Self::Encoded {
+        nf4::Nf4Vector::encode_fast(v)
+    }
+    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> {
+        enc.decode()
+    }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
         enc.cosine_dist_to_query(query)
     }
-    fn prepare(query: &[f32]) -> Vec<f32> { query.to_vec() }
+    fn prepare(query: &[f32]) -> Vec<f32> {
+        query.to_vec()
+    }
     fn dist_to_prepared(enc: &Self::Encoded, prepared: &Vec<f32>) -> f32 {
         enc.cosine_dist_to_query(prepared)
     }
     fn prefetch(enc: &Self::Encoded) {
         prefetch_bytes(enc.packed.as_ptr(), enc.packed.len());
     }
-    fn bits_per_dim() -> u32 { 4 }
+    fn bits_per_dim() -> u32 {
+        4
+    }
 }
 
 /// Binary 1-bit sign quantizer marker type.
@@ -210,20 +234,28 @@ pub struct BinaryQuantizer;
 impl Quantizer for BinaryQuantizer {
     type Encoded = binary::BinaryVector;
     type Prepared = Vec<f32>;
-    fn encode(v: &[f32]) -> Self::Encoded { binary::BinaryVector::encode_fast(v, true) }
-    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
+    fn encode(v: &[f32]) -> Self::Encoded {
+        binary::BinaryVector::encode_fast(v, true)
+    }
+    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> {
+        enc.decode()
+    }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
         // Sign bits → asymmetric cosine, directly from the packed bits.
         enc.cosine_dist_to_query(query)
     }
-    fn prepare(query: &[f32]) -> Vec<f32> { query.to_vec() }
+    fn prepare(query: &[f32]) -> Vec<f32> {
+        query.to_vec()
+    }
     fn dist_to_prepared(enc: &Self::Encoded, prepared: &Vec<f32>) -> f32 {
         enc.cosine_dist_to_query(prepared)
     }
     fn prefetch(enc: &Self::Encoded) {
         prefetch_bytes(enc.packed.as_ptr(), enc.packed.len());
     }
-    fn bits_per_dim() -> u32 { 1 }
+    fn bits_per_dim() -> u32 {
+        1
+    }
 }
 
 /// 2-bit scalar quantizer marker type.
@@ -233,19 +265,27 @@ pub struct Sq2Quantizer;
 impl Quantizer for Sq2Quantizer {
     type Encoded = sq2::Sq2Vector;
     type Prepared = Vec<f32>;
-    fn encode(v: &[f32]) -> Self::Encoded { sq2::Sq2Vector::encode(v) }
-    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
+    fn encode(v: &[f32]) -> Self::Encoded {
+        sq2::Sq2Vector::encode(v)
+    }
+    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> {
+        enc.decode()
+    }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
         enc.cosine_dist_to_query(query)
     }
-    fn prepare(query: &[f32]) -> Vec<f32> { query.to_vec() }
+    fn prepare(query: &[f32]) -> Vec<f32> {
+        query.to_vec()
+    }
     fn dist_to_prepared(enc: &Self::Encoded, prepared: &Vec<f32>) -> f32 {
         enc.cosine_dist_to_query(prepared)
     }
     fn prefetch(enc: &Self::Encoded) {
         prefetch_bytes(enc.packed.as_ptr(), enc.packed.len());
     }
-    fn bits_per_dim() -> u32 { 2 }
+    fn bits_per_dim() -> u32 {
+        2
+    }
 }
 
 /// 3-bit scalar quantizer marker type.
@@ -255,19 +295,27 @@ pub struct Sq3Quantizer;
 impl Quantizer for Sq3Quantizer {
     type Encoded = sq3::Sq3Vector;
     type Prepared = Vec<f32>;
-    fn encode(v: &[f32]) -> Self::Encoded { sq3::Sq3Vector::encode(v) }
-    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> { enc.decode() }
+    fn encode(v: &[f32]) -> Self::Encoded {
+        sq3::Sq3Vector::encode(v)
+    }
+    fn decode(enc: &Self::Encoded, _dim: usize) -> Vec<f32> {
+        enc.decode()
+    }
     fn dist_to_query(enc: &Self::Encoded, query: &[f32]) -> f32 {
         enc.cosine_dist_to_query(query)
     }
-    fn prepare(query: &[f32]) -> Vec<f32> { query.to_vec() }
+    fn prepare(query: &[f32]) -> Vec<f32> {
+        query.to_vec()
+    }
     fn dist_to_prepared(enc: &Self::Encoded, prepared: &Vec<f32>) -> f32 {
         enc.cosine_dist_to_query(prepared)
     }
     fn prefetch(enc: &Self::Encoded) {
         prefetch_bytes(enc.packed.as_ptr(), enc.packed.len());
     }
-    fn bits_per_dim() -> u32 { 3 }
+    fn bits_per_dim() -> u32 {
+        3
+    }
 }
 
 #[cfg(test)]

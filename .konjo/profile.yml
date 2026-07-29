@@ -33,6 +33,14 @@ packs:
 # Confirmed from konjo-gate.yml G1 (cargo fmt --check, clippy with -D warnings -D pedantic
 # -D unwrap_used -D expect_used -D panic -D todo -D dbg_macro; ruff check; ruff format --check;
 # vulture) and .pre-commit-config.yaml (ruff, ruff-format, mypy on ^python/).
+# cargo-audit PROMOTED here from contract_gates (kiban v1.9.0, profiles/vectro.yml,
+# adopted this reconciliation): real `konjo-gates` dispatcher support already existed
+# for it (added for lopi), so moving vectro's entry out of contract_gates
+# (declaration-only under konjo-gates -- see "coverage-80"/"complexity"/"file-size-500"/
+# "dry"/"rustdoc" below, none of which konjo-gates' _TOOL_SCOPE recognizes, confirmed by
+# reading packages/konjo-gates-py/src/konjo_gates_py/cli.py) into format_lint is a
+# one-line reclassification that makes it actually dispatch and block, not new detector
+# work.
 format_lint:
   - fmt-check
   - clippy
@@ -40,21 +48,29 @@ format_lint:
   - ruff-format
   - mypy
   - vulture
+  - cargo-audit           # PROMOTED (kiban v1.9.0): now genuinely dispatches/blocks
 
-# Confirmed from konjo-gate.yml. cargo-deny reads .konjo/deny.toml; cargo-audit is the advisory
-# scan; G2 is an 80% line-coverage gate (cargo llvm-cov nextest --fail-under-lines 80 and a
-# pytest coverage run); G4 enforces complexity (cognitive_complexity + radon), the 500-line
-# file-size limit, the dry_check.py duplicate-block gate, and rustdoc missing_docs. unsafe-budget
-# is the kiban-native gate: a net rise in unsafe blocks with no safety comment fails.
+# Confirmed from konjo-gate.yml. cargo-deny reads .konjo/deny.toml; G2 is an 80%
+# line-coverage gate (cargo llvm-cov nextest --fail-under-lines 80 and a pytest coverage
+# run); G4 enforces complexity (cognitive_complexity + radon), the 500-line file-size
+# limit, the dry_check.py duplicate-block gate, and rustdoc missing_docs. unsafe-budget is
+# the kiban-native gate: a net rise in unsafe blocks with no safety comment fails.
+# NOTE (confirmed by reading `_TOOL_SCOPE` in konjo-gates-py's cli.py, KT-A1.1's own
+# reconnection audit): only `cargo-deny` and `unsafe-budget` below are tool names
+# `konjo-gates` recognizes and actually runs. `coverage-80`, `complexity`,
+# `file-size-500`, `dry`, and `rustdoc` are declared here but konjo-gates silently
+# SKIPs any contract_gates entry it doesn't recognize -- they carry no blocking
+# enforcement from konjo-gates.yml. Today they are enforced only inside vectro's own
+# konjo-gate.yml Wall 2 jobs (G2/G4), which this reconciliation moved off
+# `continue-on-error` (see LEDGER.md's soft-step triage) so they block for real there.
 contract_gates:
-  - cargo-deny           # G1: cargo deny check --config .konjo/deny.toml
-  - cargo-audit          # G1: advisory scan
-  - coverage-80          # G2: cargo llvm-cov nextest --fail-under-lines 80, plus pytest --cov
-  - complexity           # G4: cognitive_complexity (Rust) + radon (Python)
-  - file-size-500        # G4: 500-line hard limit per source file
-  - dry                  # G4: dry_check.py, threshold 0.85
-  - rustdoc              # G4: RUSTDOCFLAGS="-D missing_docs"
-  - unsafe-budget        # kiban-native, diff-only
+  - cargo-deny           # G1: cargo deny check --config .konjo/deny.toml (konjo-gates-native)
+  - coverage-80          # G2: cargo llvm-cov nextest --fail-under-lines 80, plus pytest --cov (enforced via konjo-gate.yml only, see NOTE above)
+  - complexity           # G4: cognitive_complexity (Rust) + radon (Python) (enforced via konjo-gate.yml only, see NOTE above)
+  - file-size-500        # G4: 500-line hard limit per source file (enforced via konjo-gate.yml only, see NOTE above)
+  - dry                  # G4: dry_check.py, threshold 0.85 (enforced via konjo-gate.yml only, see NOTE above)
+  - rustdoc              # G4: RUSTDOCFLAGS="-D missing_docs" (enforced via konjo-gate.yml only, see NOTE above)
+  - unsafe-budget        # kiban-native, diff-only (konjo-gates-native)
 
 # Confirmed from konjo-gate.yml G3: `cargo mutants --in-diff`.
 mutation: cargo-mutants
@@ -137,6 +153,19 @@ prove:
     - "NOT DONE: konjo-prove baseline capture --tag paper_v5_0_0 — no golden capture exists yet for the int8 bench_cmd path; the HNSW proof above used a self-contained baseline/candidate pair instead (both measured in the same run, so no separate golden was needed for that verdict)."
 
 killtest: true
+
+# ADOPTED from kiban v1.9.0's profiles/vectro.yml (this reconciliation). kiban's Phase
+# 14 measurement (lib.claude_contract.check_contract against vectro's CLAUDE.md at
+# f9dd8a1) found 4 of 6 required sections missing (org rules, invariants, repo map,
+# repo-specific rules) and no org import -- see LEDGER.md's Claude-Contract-Ramp-1.
+# This reconciliation applies docs/pilots/vectro-claude-md.proposed.md (re-verified
+# against this repo's real tree, not copied blind) as the new root CLAUDE.md; once that
+# lands with zero standing violations under check_contract(), flip advisory to false in
+# the same PR, matching lopi's own Claude-Contract-Ramp-1 precedent (0 standing
+# violations -> blocking). See LEDGER.md for this PR's measured result.
+claude_contract:
+  enabled: true
+  advisory: false          # 0 standing violations measured against the applied CLAUDE.md -- see LEDGER.md
 
 # The longrun gate defaults to treating every *.py under benchmarks/ as a
 # runnable script that must wire the resume contract. The recall-matched harness

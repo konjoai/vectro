@@ -133,7 +133,10 @@ fn kmeans_lloyd(data: &[&[f32]], k: usize, d: usize, max_iter: usize, seed: u64)
             // Centroid = mean of assigned points. (Earlier revisions had a
             // redundant reset+accumulate pass here that this single write
             // already subsumes.)
-            for (c, s) in cents[start..start + d].iter_mut().zip(sums[start..start + d].iter()) {
+            for (c, s) in cents[start..start + d]
+                .iter_mut()
+                .zip(sums[start..start + d].iter())
+            {
                 *c = s * inv;
             }
         }
@@ -218,7 +221,11 @@ impl From<IvfIndexWire> for IvfIndex {
 impl From<IvfIndex> for IvfIndexWire {
     fn from(idx: IvfIndex) -> Self {
         // Re-chunk the flat store back into per-vector rows for the wire format.
-        let rows = if idx.dim == 0 { 0 } else { idx.store.len() / idx.dim };
+        let rows = if idx.dim == 0 {
+            0
+        } else {
+            idx.store.len() / idx.dim
+        };
         let mut store = Vec::with_capacity(rows);
         for i in 0..rows {
             store.push(idx.store[i * idx.dim..(i + 1) * idx.dim].to_vec());
@@ -242,7 +249,10 @@ impl IvfIndex {
     /// Call [`train`] with representative data before inserting vectors.
     pub fn new(n_lists: usize, n_probe: usize) -> Self {
         assert!(n_lists >= 1, "n_lists must be >= 1");
-        assert!(n_probe >= 1 && n_probe <= n_lists, "n_probe must be in [1, n_lists]");
+        assert!(
+            n_probe >= 1 && n_probe <= n_lists,
+            "n_probe must be in [1, n_lists]"
+        );
         Self {
             n_lists,
             n_probe,
@@ -380,8 +390,10 @@ impl IvfIndex {
             return Err("vector dimension must be > 0".into());
         }
 
-        let norms: Vec<Vec<f32>> =
-            training_data.iter().map(|v| Self::normalize(v.as_ref())).collect();
+        let norms: Vec<Vec<f32>> = training_data
+            .iter()
+            .map(|v| Self::normalize(v.as_ref()))
+            .collect();
         let refs: Vec<&[f32]> = norms.iter().map(|v| v.as_slice()).collect();
         self.centroids = kmeans_lloyd(&refs, self.n_lists, d, max_iter, seed);
         self.dim = d;
@@ -394,7 +406,10 @@ impl IvfIndex {
     /// # Panics
     /// Panics when the index has not been trained.
     pub fn add(&mut self, vector: &[f32]) -> usize {
-        assert!(self.trained, "IvfIndex must be trained before calling add()");
+        assert!(
+            self.trained,
+            "IvfIndex must be trained before calling add()"
+        );
         let norm_vec = Self::normalize(vector);
         let id = self.len();
         let (ci, _) = self.nearest_centroid(&norm_vec);
@@ -424,7 +439,10 @@ impl IvfIndex {
 
     /// Like [`search`] but with an explicit `n_probe` override.
     pub fn search_with_probe(&self, query: &[f32], k: usize, n_probe: usize) -> Vec<(usize, f32)> {
-        assert!(self.trained, "IvfIndex must be trained before calling search()");
+        assert!(
+            self.trained,
+            "IvfIndex must be trained before calling search()"
+        );
         let n_probe = n_probe.min(self.n_lists);
         let q = Self::normalize(query);
         let probe_lists = self.top_centroids(&q, n_probe);
@@ -451,7 +469,8 @@ impl IvfIndex {
             })
             .collect();
 
-        candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        candidates
+            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         candidates.dedup_by_key(|e| e.0);
         candidates.truncate(k);
         candidates
@@ -565,7 +584,10 @@ impl IvfIndex {
         n_probe: usize,
         filter: F,
     ) -> Vec<(usize, f32)> {
-        assert!(self.trained, "IvfIndex must be trained before calling search()");
+        assert!(
+            self.trained,
+            "IvfIndex must be trained before calling search()"
+        );
         let n_probe = n_probe.min(self.n_lists);
         let q = Self::normalize(query);
         let probe_lists = self.top_centroids(&q, n_probe);
@@ -581,7 +603,8 @@ impl IvfIndex {
             })
             .collect();
 
-        candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        candidates
+            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         candidates.dedup_by_key(|e| e.0);
         candidates.truncate(k);
         candidates
@@ -607,10 +630,7 @@ impl IvfIndex {
         let mut n_probe = 1usize;
         loop {
             let results = self.search_with_probe(query, k, n_probe);
-            let hits = results
-                .iter()
-                .filter(|(id, _)| gt_ids.contains(id))
-                .count();
+            let hits = results.iter().filter(|(id, _)| gt_ids.contains(id)).count();
             let recall = hits as f32 / gt_k as f32;
             if recall >= target_recall || n_probe >= self.n_lists {
                 return (results, n_probe);
@@ -630,7 +650,11 @@ mod tests {
 
     fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
         (0..n)
-            .map(|i| (0..d).map(|j| ((i * d + j) as f32 * 0.031 + 0.1).sin()).collect())
+            .map(|i| {
+                (0..d)
+                    .map(|j| ((i * d + j) as f32 * 0.031 + 0.1).sin())
+                    .collect()
+            })
             .collect()
     }
 
@@ -680,7 +704,9 @@ mod tests {
 
         let refs: Vec<&[f32]> = vecs.iter().map(|v| v.as_slice()).collect();
         let mut borrowed = IvfIndex::new(8, 4);
-        borrowed.train(&refs, 20, 42).expect("borrowed train failed");
+        borrowed
+            .train(&refs, 20, 42)
+            .expect("borrowed train failed");
 
         assert_eq!(owned.centroids, borrowed.centroids);
         assert_eq!(owned.dim, borrowed.dim);
@@ -785,7 +811,10 @@ mod tests {
         idx.delete(0);
         let res = idx.search(&vecs[0], 5);
         let ids: Vec<usize> = res.iter().map(|&(id, _)| id).collect();
-        assert!(!ids.contains(&0), "deleted id 0 appeared in results: {ids:?}");
+        assert!(
+            !ids.contains(&0),
+            "deleted id 0 appeared in results: {ids:?}"
+        );
     }
 
     #[test]

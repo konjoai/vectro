@@ -54,7 +54,9 @@ pub(crate) fn encode_accelerate_into(v: &[f32], out: &mut [i8]) -> f32 {
         let mut m = vmaxvq_f32(vmax);
         for &x in &v[chunks4 * 4..] {
             let ax = x.abs();
-            if ax > m { m = ax; }
+            if ax > m {
+                m = ax;
+            }
         }
         m
     };

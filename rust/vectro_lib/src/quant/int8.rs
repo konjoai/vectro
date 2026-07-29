@@ -27,7 +27,10 @@ impl Int8Vector {
         let abs_max = v.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
         let scale = if abs_max == 0.0 { 1.0 } else { abs_max };
         let inv = 127.0 / scale;
-        let codes: Vec<i8> = v.iter().map(|x| (x * inv).round().clamp(-127.0, 127.0) as i8).collect();
+        let codes: Vec<i8> = v
+            .iter()
+            .map(|x| (x * inv).round().clamp(-127.0, 127.0) as i8)
+            .collect();
         Self { codes, scale }
     }
 
@@ -259,15 +262,30 @@ unsafe fn dot_i8_vnni(codes: &[i8], qi8: &[i8]) -> i32 {
         let o = i * 256;
         let c0 = _mm512_xor_si512(_mm512_loadu_si512(cptr.add(o) as *const __m512i), flip);
         let c1 = _mm512_xor_si512(_mm512_loadu_si512(cptr.add(o + 64) as *const __m512i), flip);
-        let c2 = _mm512_xor_si512(_mm512_loadu_si512(cptr.add(o + 128) as *const __m512i), flip);
-        let c3 = _mm512_xor_si512(_mm512_loadu_si512(cptr.add(o + 192) as *const __m512i), flip);
+        let c2 = _mm512_xor_si512(
+            _mm512_loadu_si512(cptr.add(o + 128) as *const __m512i),
+            flip,
+        );
+        let c3 = _mm512_xor_si512(
+            _mm512_loadu_si512(cptr.add(o + 192) as *const __m512i),
+            flip,
+        );
         acc0 = _mm512_dpbusd_epi32(acc0, c0, _mm512_loadu_si512(qptr.add(o) as *const __m512i));
-        acc1 =
-            _mm512_dpbusd_epi32(acc1, c1, _mm512_loadu_si512(qptr.add(o + 64) as *const __m512i));
-        acc2 =
-            _mm512_dpbusd_epi32(acc2, c2, _mm512_loadu_si512(qptr.add(o + 128) as *const __m512i));
-        acc3 =
-            _mm512_dpbusd_epi32(acc3, c3, _mm512_loadu_si512(qptr.add(o + 192) as *const __m512i));
+        acc1 = _mm512_dpbusd_epi32(
+            acc1,
+            c1,
+            _mm512_loadu_si512(qptr.add(o + 64) as *const __m512i),
+        );
+        acc2 = _mm512_dpbusd_epi32(
+            acc2,
+            c2,
+            _mm512_loadu_si512(qptr.add(o + 128) as *const __m512i),
+        );
+        acc3 = _mm512_dpbusd_epi32(
+            acc3,
+            c3,
+            _mm512_loadu_si512(qptr.add(o + 192) as *const __m512i),
+        );
     }
     let mut o = chunks * 256;
     while o + 64 <= n {
@@ -557,7 +575,10 @@ unsafe fn encode_avx2(v: &[f32]) -> Int8Vector {
 
     let n = v.len();
     if n == 0 {
-        return Int8Vector { codes: vec![], scale: 1.0 };
+        return Int8Vector {
+            codes: vec![],
+            scale: 1.0,
+        };
     }
     let ptr = v.as_ptr();
 
@@ -575,10 +596,10 @@ unsafe fn encode_avx2(v: &[f32]) -> Int8Vector {
     let lo128 = _mm256_castps256_ps128(vmax256);
     let max128 = _mm_max_ps(hi128, lo128);
     // Reduce 4 lanes → 1 scalar
-    let m2 = _mm_movehl_ps(max128, max128);     // [max128[2], max128[3], …]
-    let m3 = _mm_max_ps(max128, m2);             // [max(0,2), max(1,3), …]
-    let m4 = _mm_shuffle_ps(m3, m3, 0x55);      // broadcast index-1 element
-    let m5 = _mm_max_ps(m3, m4);                 // [max(0,1,2,3), …]
+    let m2 = _mm_movehl_ps(max128, max128); // [max128[2], max128[3], …]
+    let m3 = _mm_max_ps(max128, m2); // [max(0,2), max(1,3), …]
+    let m4 = _mm_shuffle_ps(m3, m3, 0x55); // broadcast index-1 element
+    let m5 = _mm_max_ps(m3, m4); // [max(0,1,2,3), …]
     let mut abs_max = _mm_cvtss_f32(m5);
     // Scalar tail
     for &x in &v[chunks8 * 8..] {
@@ -589,11 +610,11 @@ unsafe fn encode_avx2(v: &[f32]) -> Int8Vector {
     }
 
     let scale = if abs_max == 0.0 { 1.0_f32 } else { abs_max };
-    let inv   = 127.0_f32 / scale;
-    let vinv  = _mm256_set1_ps(inv);
+    let inv = 127.0_f32 / scale;
+    let vinv = _mm256_set1_ps(inv);
 
     // ── Pass 2: quantise f32 → i8 (8 per iteration) ──────────────────
-    let mut codes  = vec![0i8; n];
+    let mut codes = vec![0i8; n];
     let out_ptr = codes.as_mut_ptr();
 
     for i in 0..chunks8 {
@@ -602,11 +623,11 @@ unsafe fn encode_avx2(v: &[f32]) -> Int8Vector {
         // Round-to-nearest (current MXCSR mode; default = nearest-even).
         let i32s = _mm256_cvtps_epi32(_mm256_mul_ps(x, vinv));
         // Extract low and high 128-bit halves as integer registers (AVX2).
-        let lo   = _mm256_castsi256_si128(i32s);        // low  4 × i32
-        let hi   = _mm256_extracti128_si256(i32s, 1);   // high 4 × i32
-        let i16s = _mm_packs_epi32(lo, hi);              // 8 × i16, saturating
-        let i8s  = _mm_packs_epi16(i16s, i16s);          // 16 × i8 (low 8 valid)
-        // Store low 8 bytes (= our 8 quantised values) without alignment req.
+        let lo = _mm256_castsi256_si128(i32s); // low  4 × i32
+        let hi = _mm256_extracti128_si256(i32s, 1); // high 4 × i32
+        let i16s = _mm_packs_epi32(lo, hi); // 8 × i16, saturating
+        let i8s = _mm_packs_epi16(i16s, i16s); // 16 × i8 (low 8 valid)
+                                               // Store low 8 bytes (= our 8 quantised values) without alignment req.
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
     // Scalar tail
@@ -630,7 +651,10 @@ unsafe fn encode_neon(v: &[f32]) -> Int8Vector {
 
     let n = v.len();
     if n == 0 {
-        return Int8Vector { codes: vec![], scale: 1.0 };
+        return Int8Vector {
+            codes: vec![],
+            scale: 1.0,
+        };
     }
     let ptr = v.as_ptr();
 
@@ -662,9 +686,9 @@ unsafe fn encode_neon(v: &[f32]) -> Int8Vector {
     for i in 0..chunks16 {
         let base = i * 16;
         // multiply then round-to-nearest (exact on already-integer floats after conversion)
-        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base     )), vinv));
-        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base +  4)), vinv));
-        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base +  8)), vinv));
+        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base)), vinv));
+        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 4)), vinv));
+        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 8)), vinv));
         let r3 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 12)), vinv));
         // f32x4 → i32x4 (truncation of already-rounded ints is exact)
         let i0 = vcvtq_s32_f32(r0);
@@ -729,7 +753,11 @@ unsafe fn encode_neon_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 
         }
     }
 
-    let scale = if abs_max == 0.0 { 1.0_f32 } else { abs_max / range_factor };
+    let scale = if abs_max == 0.0 {
+        1.0_f32
+    } else {
+        abs_max / range_factor
+    };
     let inv = 127.0_f32 / scale;
     let vinv = vdupq_n_f32(inv);
 
@@ -738,9 +766,9 @@ unsafe fn encode_neon_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 
     for i in 0..chunks32 {
         let base = i * 32;
         // First 16 elements
-        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base     )), vinv));
-        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base +  4)), vinv));
-        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base +  8)), vinv));
+        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base)), vinv));
+        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 4)), vinv));
+        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 8)), vinv));
         let r3 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 12)), vinv));
         // Second 16 elements — independent dependency chain
         let r4 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 16)), vinv));
@@ -767,7 +795,7 @@ unsafe fn encode_neon_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 
         let b2 = vqmovn_s16(s45);
         let b3 = vqmovn_s16(s67);
 
-        vst1q_s8(out_ptr.add(base     ), vcombine_s8(b0, b1));
+        vst1q_s8(out_ptr.add(base), vcombine_s8(b0, b1));
         vst1q_s8(out_ptr.add(base + 16), vcombine_s8(b2, b3));
     }
 
@@ -776,9 +804,9 @@ unsafe fn encode_neon_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 
     let chunks16_extra = (n - after_32) / 16;
     for i in 0..chunks16_extra {
         let base = after_32 + i * 16;
-        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base     )), vinv));
-        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base +  4)), vinv));
-        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base +  8)), vinv));
+        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base)), vinv));
+        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 4)), vinv));
+        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 8)), vinv));
         let r3 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 12)), vinv));
         let i0 = vcvtq_s32_f32(r0);
         let i1 = vcvtq_s32_f32(r1);
@@ -786,8 +814,8 @@ unsafe fn encode_neon_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 
         let i3 = vcvtq_s32_f32(r3);
         let s01 = vcombine_s16(vmovn_s32(i0), vmovn_s32(i1));
         let s23 = vcombine_s16(vmovn_s32(i2), vmovn_s32(i3));
-        let b0  = vqmovn_s16(s01);
-        let b1  = vqmovn_s16(s23);
+        let b0 = vqmovn_s16(s01);
+        let b1 = vqmovn_s16(s23);
         vst1q_s8(out_ptr.add(base), vcombine_s8(b0, b1));
     }
 
@@ -825,13 +853,13 @@ unsafe fn encode_avx2_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 
         let abs_a = _mm256_andnot_ps(sign_mask, a);
         vmax256 = _mm256_max_ps(vmax256, abs_a);
     }
-    let hi128   = _mm256_extractf128_ps(vmax256, 1);
-    let lo128   = _mm256_castps256_ps128(vmax256);
-    let max128  = _mm_max_ps(hi128, lo128);
-    let m2      = _mm_movehl_ps(max128, max128);
-    let m3      = _mm_max_ps(max128, m2);
-    let m4      = _mm_shuffle_ps(m3, m3, 0x55);
-    let m5      = _mm_max_ps(m3, m4);
+    let hi128 = _mm256_extractf128_ps(vmax256, 1);
+    let lo128 = _mm256_castps256_ps128(vmax256);
+    let max128 = _mm_max_ps(hi128, lo128);
+    let m2 = _mm_movehl_ps(max128, max128);
+    let m3 = _mm_max_ps(max128, m2);
+    let m4 = _mm_shuffle_ps(m3, m3, 0x55);
+    let m5 = _mm_max_ps(m3, m4);
     let mut abs_max = _mm_cvtss_f32(m5);
     for &x in &v[chunks8 * 8..] {
         let ax = x.abs();
@@ -840,19 +868,23 @@ unsafe fn encode_avx2_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 
         }
     }
 
-    let scale = if abs_max == 0.0 { 1.0_f32 } else { abs_max / range_factor };
-    let inv   = 127.0_f32 / scale;
-    let vinv  = _mm256_set1_ps(inv);
+    let scale = if abs_max == 0.0 {
+        1.0_f32
+    } else {
+        abs_max / range_factor
+    };
+    let inv = 127.0_f32 / scale;
+    let vinv = _mm256_set1_ps(inv);
 
     // ── Pass 2: quantise f32 → i8, writing directly to `out` ────────────────
     for i in 0..chunks8 {
         let base = i * 8;
-        let x    = _mm256_loadu_ps(ptr.add(base));
+        let x = _mm256_loadu_ps(ptr.add(base));
         let i32s = _mm256_cvtps_epi32(_mm256_mul_ps(x, vinv));
-        let lo   = _mm256_castsi256_si128(i32s);
-        let hi   = _mm256_extracti128_si256(i32s, 1);
+        let lo = _mm256_castsi256_si128(i32s);
+        let hi = _mm256_extracti128_si256(i32s, 1);
         let i16s = _mm_packs_epi32(lo, hi);
-        let i8s  = _mm_packs_epi16(i16s, i16s);
+        let i8s = _mm_packs_epi16(i16s, i16s);
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
     // scalar tail
@@ -880,7 +912,11 @@ unsafe fn encode_avx2_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 
 pub(crate) fn encode_scalar_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f32 {
     debug_assert_eq!(v.len(), out.len());
     let abs_max = v.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
-    let scale = if abs_max == 0.0 { 1.0 } else { abs_max / range_factor };
+    let scale = if abs_max == 0.0 {
+        1.0
+    } else {
+        abs_max / range_factor
+    };
     let inv = 127.0 / scale;
     for (c, &val) in out.iter_mut().zip(v.iter()) {
         *c = (val * inv).round().clamp(-127.0, 127.0) as i8;
@@ -955,7 +991,11 @@ unsafe fn encode_avx512_into(v: &[f32], out: &mut [i8], range_factor: f32) -> f3
         }
     }
 
-    let scale = if abs_max == 0.0 { 1.0_f32 } else { abs_max / range_factor };
+    let scale = if abs_max == 0.0 {
+        1.0_f32
+    } else {
+        abs_max / range_factor
+    };
     let inv = 127.0_f32 / scale;
     let vinv = _mm512_set1_ps(inv);
 
@@ -1068,7 +1108,10 @@ pub(crate) fn decode_fast_into(codes: &[i8], scale: f32, out: &mut [f32]) {
 
 /// Encode a batch of f32 vectors to INT8 in parallel, using SIMD where available.
 pub fn encode_batch(vectors: &[Vec<f32>]) -> Vec<Int8Vector> {
-    vectors.par_iter().map(|v| Int8Vector::encode_fast(v)).collect()
+    vectors
+        .par_iter()
+        .map(|v| Int8Vector::encode_fast(v))
+        .collect()
 }
 
 /// Decode a batch of INT8 vectors back to f32.
@@ -1092,14 +1135,30 @@ pub fn cosine_int8(query: &[f32], encoded: &Int8Vector) -> f32 {
 
     // Dot of dequantized encoded vector and query
     let factor = encoded.scale / 127.0;
-    let dot: f32 = encoded.codes.iter().zip(query.iter()).map(|(&q, &qv)| (q as f32) * factor * qv).sum();
+    let dot: f32 = encoded
+        .codes
+        .iter()
+        .zip(query.iter())
+        .map(|(&q, &qv)| (q as f32) * factor * qv)
+        .sum();
 
     // Norm of dequantized encoded vector
-    let enc_norm_sq: f32 = encoded.codes.iter().map(|&q| { let f = (q as f32) * factor; f * f }).sum();
+    let enc_norm_sq: f32 = encoded
+        .codes
+        .iter()
+        .map(|&q| {
+            let f = (q as f32) * factor;
+            f * f
+        })
+        .sum();
     let enc_norm = enc_norm_sq.sqrt();
 
     let denom = enc_norm * q_norm;
-    if denom == 0.0 { -1.0 } else { dot / denom }
+    if denom == 0.0 {
+        -1.0
+    } else {
+        dot / denom
+    }
 }
 
 /// Batch encode an N×D f32 matrix (flat row-major) to INT8 without any per-row
@@ -1316,10 +1375,7 @@ pub fn batch_encode_normalized_into(
         .for_each(|((rows, codes), scales)| {
             let n_rows = rows.len() / d;
             for i in 0..n_rows {
-                encode_normalized_into(
-                    &rows[i * d..(i + 1) * d],
-                    &mut codes[i * d..(i + 1) * d],
-                );
+                encode_normalized_into(&rows[i * d..(i + 1) * d], &mut codes[i * d..(i + 1) * d]);
                 scales[i] = NORMALIZED_INV_SCALE;
             }
         });
@@ -1472,9 +1528,9 @@ unsafe fn encode_normalized_neon(v: &[f32], out: &mut [i8]) {
     let chunks32 = n / 32;
     for i in 0..chunks32 {
         let base = i * 32;
-        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base     )), vinv));
-        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base +  4)), vinv));
-        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base +  8)), vinv));
+        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base)), vinv));
+        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 4)), vinv));
+        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 8)), vinv));
         let r3 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 12)), vinv));
         let r4 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 16)), vinv));
         let r5 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 20)), vinv));
@@ -1484,8 +1540,14 @@ unsafe fn encode_normalized_neon(v: &[f32], out: &mut [i8]) {
         let s23 = vcombine_s16(vmovn_s32(vcvtq_s32_f32(r2)), vmovn_s32(vcvtq_s32_f32(r3)));
         let s45 = vcombine_s16(vmovn_s32(vcvtq_s32_f32(r4)), vmovn_s32(vcvtq_s32_f32(r5)));
         let s67 = vcombine_s16(vmovn_s32(vcvtq_s32_f32(r6)), vmovn_s32(vcvtq_s32_f32(r7)));
-        vst1q_s8(out_ptr.add(base     ), vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)));
-        vst1q_s8(out_ptr.add(base + 16), vcombine_s8(vqmovn_s16(s45), vqmovn_s16(s67)));
+        vst1q_s8(
+            out_ptr.add(base),
+            vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)),
+        );
+        vst1q_s8(
+            out_ptr.add(base + 16),
+            vcombine_s8(vqmovn_s16(s45), vqmovn_s16(s67)),
+        );
     }
 
     // 16-wide pass for tail
@@ -1493,13 +1555,16 @@ unsafe fn encode_normalized_neon(v: &[f32], out: &mut [i8]) {
     let chunks16 = (n - after_32) / 16;
     for i in 0..chunks16 {
         let base = after_32 + i * 16;
-        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base     )), vinv));
-        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base +  4)), vinv));
-        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base +  8)), vinv));
+        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base)), vinv));
+        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 4)), vinv));
+        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 8)), vinv));
         let r3 = vrndnq_f32(vmulq_f32(vld1q_f32(ptr.add(base + 12)), vinv));
         let s01 = vcombine_s16(vmovn_s32(vcvtq_s32_f32(r0)), vmovn_s32(vcvtq_s32_f32(r1)));
         let s23 = vcombine_s16(vmovn_s32(vcvtq_s32_f32(r2)), vmovn_s32(vcvtq_s32_f32(r3)));
-        vst1q_s8(out_ptr.add(base), vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)));
+        vst1q_s8(
+            out_ptr.add(base),
+            vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)),
+        );
     }
 
     // scalar tail (< 16 elements)
@@ -1529,10 +1594,10 @@ unsafe fn encode_normalized_avx2(v: &[f32], out: &mut [i8]) {
         let base = i * 8;
         let x = _mm256_loadu_ps(ptr.add(base));
         let i32s = _mm256_cvtps_epi32(_mm256_mul_ps(x, vinv));
-        let lo   = _mm256_castsi256_si128(i32s);
-        let hi   = _mm256_extracti128_si256(i32s, 1);
+        let lo = _mm256_castsi256_si128(i32s);
+        let hi = _mm256_extracti128_si256(i32s, 1);
         let i16s = _mm_packs_epi32(lo, hi);
-        let i8s  = _mm_packs_epi16(i16s, i16s);
+        let i8s = _mm_packs_epi16(i16s, i16s);
         _mm_storel_epi64(out_ptr.add(base) as *mut __m128i, i8s);
     }
     for (i, &val) in v.iter().enumerate().skip(chunks8 * 8) {
@@ -1653,13 +1718,16 @@ unsafe fn encode_neon_fused_into(v: &[f32], out: &mut [i8]) -> f32 {
     let chunks16 = n / 16;
     for i in 0..chunks16 {
         let base = i * 16;
-        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(buf.as_ptr().add(base     )), vinv));
-        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(buf.as_ptr().add(base +  4)), vinv));
-        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(buf.as_ptr().add(base +  8)), vinv));
+        let r0 = vrndnq_f32(vmulq_f32(vld1q_f32(buf.as_ptr().add(base)), vinv));
+        let r1 = vrndnq_f32(vmulq_f32(vld1q_f32(buf.as_ptr().add(base + 4)), vinv));
+        let r2 = vrndnq_f32(vmulq_f32(vld1q_f32(buf.as_ptr().add(base + 8)), vinv));
         let r3 = vrndnq_f32(vmulq_f32(vld1q_f32(buf.as_ptr().add(base + 12)), vinv));
         let s01 = vcombine_s16(vmovn_s32(vcvtq_s32_f32(r0)), vmovn_s32(vcvtq_s32_f32(r1)));
         let s23 = vcombine_s16(vmovn_s32(vcvtq_s32_f32(r2)), vmovn_s32(vcvtq_s32_f32(r3)));
-        vst1q_s8(out_ptr.add(base), vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)));
+        vst1q_s8(
+            out_ptr.add(base),
+            vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)),
+        );
     }
     #[allow(clippy::needless_range_loop)]
     for i in chunks16 * 16..n {
@@ -1748,7 +1816,9 @@ pub fn encode_fast_fused_into(v: &[f32], out: &mut [i8]) -> f32 {
     debug_assert_eq!(v.len(), out.len());
     #[cfg(target_arch = "aarch64")]
     // SAFETY: NEON mandated on AArch64-v8.
-    unsafe { return encode_neon_fused_into(v, out); }
+    unsafe {
+        return encode_neon_fused_into(v, out);
+    }
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
@@ -1791,8 +1861,13 @@ mod tests {
             let enc = Int8Vector::encode(&v);
             let got = enc.dot_query(&q);
             let factor = enc.scale / 127.0;
-            let want: f32 =
-                enc.codes.iter().zip(q.iter()).map(|(&c, &qv)| c as f32 * qv).sum::<f32>() * factor;
+            let want: f32 = enc
+                .codes
+                .iter()
+                .zip(q.iter())
+                .map(|(&c, &qv)| c as f32 * qv)
+                .sum::<f32>()
+                * factor;
             assert!((got - want).abs() < 1e-3, "d={d}: got={got} want={want}");
         }
     }
@@ -1805,8 +1880,9 @@ mod tests {
         for d in [1usize, 64, 96, 127, 128, 129, 256, 384, 768, 1000] {
             // Unit-normalised vectors, as the HNSW search guarantees.
             let mk = |seed: f32| -> Vec<f32> {
-                let raw: Vec<f32> =
-                    (0..d).map(|i| ((i as f32 * 0.013 + seed) - 0.5).sin()).collect();
+                let raw: Vec<f32> = (0..d)
+                    .map(|i| ((i as f32 * 0.013 + seed) - 0.5).sin())
+                    .collect();
                 let n: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
                 raw.iter().map(|x| x / n).collect()
             };
@@ -1866,7 +1942,11 @@ mod tests {
             let v: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.013) - 0.5).sin()).collect();
             let q: Vec<f32> = (0..d).map(|i| ((i as f32 * 0.027) + 0.2).cos()).collect();
             let codes = Int8Vector::encode(&v).codes;
-            let want: f32 = codes.iter().zip(q.iter()).map(|(&c, &qv)| c as f32 * qv).sum();
+            let want: f32 = codes
+                .iter()
+                .zip(q.iter())
+                .map(|(&c, &qv)| c as f32 * qv)
+                .sum();
             // Relative tolerance: two valid f32 reduction trees of the raw (unscaled)
             // dot differ by ~n·eps·|partial|, which scales with the result magnitude.
             let tol = want.abs() * 1e-3 + 1e-2;
@@ -1944,7 +2024,10 @@ mod tests {
 
         let int8_cos = cosine_int8(&q, &enc);
         // Should be within 1% of true cosine
-        assert!((float_cos - int8_cos).abs() < 0.01, "float_cos={float_cos} int8_cos={int8_cos}");
+        assert!(
+            (float_cos - int8_cos).abs() < 0.01,
+            "float_cos={float_cos} int8_cos={int8_cos}"
+        );
     }
 
     #[test]
@@ -1954,7 +2037,7 @@ mod tests {
         for &len in &[0usize, 1, 3, 7, 15, 16, 17, 64, 128, 256, 768] {
             let v: Vec<f32> = (0..len).map(|i| ((i as f32 * 0.17) - 3.0).sin()).collect();
             let scalar = Int8Vector::encode(&v);
-            let fast   = Int8Vector::encode_fast(&v);
+            let fast = Int8Vector::encode_fast(&v);
             assert_eq!(scalar.scale, fast.scale, "scale mismatch at len={len}");
             assert_eq!(scalar.codes, fast.codes, "codes mismatch at len={len}");
         }
@@ -1971,7 +2054,7 @@ mod tests {
             let v: Vec<f32> = (0..len).map(|i| ((i as f32 * 0.13) - 2.5).cos()).collect();
             let scalar = Int8Vector::encode(&v);
             // SAFETY: guarded by feature check above.
-            let avx2   = unsafe { encode_avx2(&v) };
+            let avx2 = unsafe { encode_avx2(&v) };
             assert_eq!(scalar.scale, avx2.scale, "scale mismatch at len={len}");
             assert_eq!(scalar.codes, avx2.codes, "codes mismatch at len={len}");
         }
@@ -2058,8 +2141,16 @@ mod tests {
             let ref_enc = Int8Vector::encode_fast(row_slice);
             let got_codes = &codes_out[row * d..(row + 1) * d];
             let got_scale = scales_out[row];
-            assert_eq!(ref_enc.scale / 127.0, got_scale, "scale mismatch at row={row}");
-            assert_eq!(ref_enc.codes.as_slice(), got_codes, "codes mismatch at row={row}");
+            assert_eq!(
+                ref_enc.scale / 127.0,
+                got_scale,
+                "scale mismatch at row={row}"
+            );
+            assert_eq!(
+                ref_enc.codes.as_slice(),
+                got_codes,
+                "codes mismatch at row={row}"
+            );
         }
     }
 
@@ -2098,7 +2189,9 @@ mod tests {
     #[test]
     fn checked_encode_matches_unchecked_and_detects_nonfinite() {
         let (n, d) = (200usize, 100usize);
-        let input: Vec<f32> = (0..n * d).map(|i| ((i as f32 * 0.07) - 8.0).sin()).collect();
+        let input: Vec<f32> = (0..n * d)
+            .map(|i| ((i as f32 * 0.07) - 8.0).sin())
+            .collect();
 
         // 1) On finite input the checked path returns None and identical codes.
         let mut c_ref = vec![0i8; n * d];
@@ -2118,7 +2211,11 @@ mod tests {
             let mut c = vec![0i8; n * d];
             let mut s = vec![0.0f32; n];
             let got = batch_encode_checked_into_with_range(&bad_in, n, d, &mut c, &mut s, 1.0);
-            assert_eq!(got, Some(50 * d + 9), "wrong first-non-finite index for {bad_val}");
+            assert_eq!(
+                got,
+                Some(50 * d + 9),
+                "wrong first-non-finite index for {bad_val}"
+            );
         }
 
         // 3) The SIMD row scanner agrees with the scalar predicate.
@@ -2150,7 +2247,9 @@ mod tests {
                 }
                 std::hint::black_box(&out);
                 t.elapsed().as_nanos() as f64 / rows as f64
-            } else { f64::NAN };
+            } else {
+                f64::NAN
+            };
 
             let avx512_ns = if is_x86_feature_detected!("avx512f") {
                 unsafe { encode_normalized_avx512(&v, &mut out) };
@@ -2160,7 +2259,9 @@ mod tests {
                 }
                 std::hint::black_box(&out);
                 t.elapsed().as_nanos() as f64 / rows as f64
-            } else { f64::NAN };
+            } else {
+                f64::NAN
+            };
 
             println!(
                 "d={d}: avx2={avx2_ns:.1}ns avx512={avx512_ns:.1}ns  avx512/avx2={:.3}x",
@@ -2194,10 +2295,7 @@ mod tests {
             let na: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
             let nb: f32 = dec_norm.iter().map(|x| x * x).sum::<f32>().sqrt();
             let cos = dot / (na * nb);
-            assert!(
-                cos >= 0.99,
-                "normalised cosine {cos} < 0.99 at len={len}",
-            );
+            assert!(cos >= 0.99, "normalised cosine {cos} < 0.99 at len={len}",);
         }
     }
 
@@ -2236,8 +2334,9 @@ mod tests {
         let d = 1536usize;
         for seed in 0..50usize {
             let raw: Vec<f32> = (0..d)
-                .map(|j| ((seed * 397 + j) as f32 * 0.0029).sin()
-                          * ((j as f32 * 0.011).cos() + 0.5))
+                .map(|j| {
+                    ((seed * 397 + j) as f32 * 0.0029).sin() * ((j as f32 * 0.011).cos() + 0.5)
+                })
                 .collect();
             let n2: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
             let v: Vec<f32> = raw.iter().map(|x| x / n2).collect();
@@ -2259,8 +2358,16 @@ mod tests {
     /// boundaries — n=63, n=64, n=65, n=128, n=129).
     #[test]
     fn batch_encode_into_rayon_grain_parity_across_shapes() {
-        for &(n, d) in &[(1usize, 768usize), (63, 64), (64, 64), (65, 64),
-                         (128, 32), (129, 32), (200, 128), (513, 16)] {
+        for &(n, d) in &[
+            (1usize, 768usize),
+            (63, 64),
+            (64, 64),
+            (65, 64),
+            (128, 32),
+            (129, 32),
+            (200, 128),
+            (513, 16),
+        ] {
             let input: Vec<f32> = (0..n * d)
                 .map(|i| ((i as f32 * 0.07) - 8.0).sin())
                 .collect();
@@ -2273,7 +2380,8 @@ mod tests {
                 let mut single_codes = vec![0i8; d];
                 let single_scale = encode_fast_into(row_slice, &mut single_codes, 1.0);
                 assert_eq!(
-                    scales_out[row], single_scale / 127.0,
+                    scales_out[row],
+                    single_scale / 127.0,
                     "scale mismatch (n={n}, d={d}, row={row})"
                 );
                 assert_eq!(
@@ -2292,7 +2400,9 @@ mod tests {
     #[test]
     fn batch_encode_with_range_matches_baseline() {
         let (n, d) = (120usize, 96usize);
-        let input: Vec<f32> = (0..n * d).map(|i| ((i as f32 * 0.031) - 5.0).sin() * 3.0).collect();
+        let input: Vec<f32> = (0..n * d)
+            .map(|i| ((i as f32 * 0.031) - 5.0).sin() * 3.0)
+            .collect();
 
         // rf = 1.0 is bit-identical to the canonical batch path.
         let mut codes_rf1 = vec![0i8; n * d];
@@ -2301,8 +2411,14 @@ mod tests {
         let mut codes_base = vec![0i8; n * d];
         let mut scales_base = vec![0.0f32; n];
         batch_encode_into(&input, n, d, &mut codes_base, &mut scales_base);
-        assert_eq!(codes_rf1, codes_base, "rf=1.0 codes differ from batch_encode_into");
-        assert_eq!(scales_rf1, scales_base, "rf=1.0 scales differ from batch_encode_into");
+        assert_eq!(
+            codes_rf1, codes_base,
+            "rf=1.0 codes differ from batch_encode_into"
+        );
+        assert_eq!(
+            scales_rf1, scales_base,
+            "rf=1.0 scales differ from batch_encode_into"
+        );
 
         // rf < 1.0 matches the scalar baseline exactly (same rounding mode).
         for rf in [0.95f32, 0.90] {
@@ -2338,7 +2454,11 @@ mod tests {
             for j in 0..d {
                 input[i * d + j] = ((i + j) as f32 * 0.013_f32).sin();
             }
-            let n2: f32 = input[i * d..(i + 1) * d].iter().map(|x| x * x).sum::<f32>().sqrt();
+            let n2: f32 = input[i * d..(i + 1) * d]
+                .iter()
+                .map(|x| x * x)
+                .sum::<f32>()
+                .sqrt();
             for j in 0..d {
                 input[i * d + j] /= n2;
             }
@@ -2355,10 +2475,10 @@ mod tests {
         batch_decode_into(&codes, &scales, d, &mut decoded);
         for row in 0..n {
             let orig = &input[row * d..(row + 1) * d];
-            let dec  = &decoded[row * d..(row + 1) * d];
+            let dec = &decoded[row * d..(row + 1) * d];
             let dot: f32 = orig.iter().zip(dec.iter()).map(|(a, b)| a * b).sum();
-            let na: f32  = orig.iter().map(|x| x * x).sum::<f32>().sqrt();
-            let nb: f32  = dec.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let na: f32 = orig.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let nb: f32 = dec.iter().map(|x| x * x).sum::<f32>().sqrt();
             assert!(dot / (na * nb) >= 0.99, "row {row}: cos < 0.99");
         }
     }
@@ -2367,7 +2487,9 @@ mod tests {
     /// the previous 16-wide path for every parity shape.
     #[test]
     fn encode_fast_into_parity_at_unroll_boundaries() {
-        for &len in &[0usize, 1, 3, 7, 15, 16, 17, 31, 32, 33, 47, 48, 63, 64, 768, 1024, 1031] {
+        for &len in &[
+            0usize, 1, 3, 7, 15, 16, 17, 31, 32, 33, 47, 48, 63, 64, 768, 1024, 1031,
+        ] {
             let v: Vec<f32> = (0..len).map(|i| ((i as f32 * 0.41) - 1.5).cos()).collect();
             let mut got = vec![0i8; len];
             let scale = encode_fast_into(&v, &mut got, 1.0);
@@ -2388,7 +2510,8 @@ mod tests {
             // Linear-congruential pseudo-random in [-1e6, 1e6]
             let mut v = vec![0.0_f32; d];
             for slot in v.iter_mut() {
-                rng_state = rng_state.wrapping_mul(6364136223846793005)
+                rng_state = rng_state
+                    .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
                 let u = ((rng_state >> 33) as u32) as f32 / (1u32 << 31) as f32 - 1.0;
                 *slot = u * 1.0e6;
@@ -2399,8 +2522,8 @@ mod tests {
             let dec: Vec<f32> = codes.iter().map(|&c| c as f32 * factor).collect();
 
             let dot: f32 = v.iter().zip(dec.iter()).map(|(a, b)| a * b).sum();
-            let na: f32  = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-            let nb: f32  = dec.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let na: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let nb: f32 = dec.iter().map(|x| x * x).sum::<f32>().sqrt();
             let cos = dot / (na * nb);
             assert!(cos >= 0.9999, "fused d={d}: cosine {cos} < 0.9999");
         }
@@ -2448,10 +2571,10 @@ mod tests {
 
         for row in 0..n {
             let orig = &input[row * d..(row + 1) * d];
-            let dec  = &decoded[row * d..(row + 1) * d];
-            let dot: f32  = orig.iter().zip(dec.iter()).map(|(a, b)| a * b).sum();
-            let n1: f32   = orig.iter().map(|x| x * x).sum::<f32>().sqrt();
-            let n2: f32   = dec.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let dec = &decoded[row * d..(row + 1) * d];
+            let dot: f32 = orig.iter().zip(dec.iter()).map(|(a, b)| a * b).sum();
+            let n1: f32 = orig.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let n2: f32 = dec.iter().map(|x| x * x).sum::<f32>().sqrt();
             if n1 > 0.0 && n2 > 0.0 {
                 assert!(dot / (n1 * n2) >= 0.9999, "cosine < 0.9999 at row={row}");
             }

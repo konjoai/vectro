@@ -34,7 +34,10 @@ pub(crate) struct VisitedEpoch {
 
 impl VisitedEpoch {
     const fn new() -> Self {
-        Self { marks: Vec::new(), generation: 0 }
+        Self {
+            marks: Vec::new(),
+            generation: 0,
+        }
     }
 
     /// Begin a fresh epoch covering node ids `0..n`.

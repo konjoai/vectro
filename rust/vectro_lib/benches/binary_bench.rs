@@ -12,7 +12,11 @@ use vectro_lib::quant::binary::{encode_batch, BinaryVector};
 
 fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
     (0..n)
-        .map(|i| (0..d).map(|j| ((i * d + j) as f32 * 0.0013_f32).sin()).collect())
+        .map(|i| {
+            (0..d)
+                .map(|j| ((i * d + j) as f32 * 0.0013_f32).sin())
+                .collect()
+        })
         .collect()
 }
 
@@ -23,8 +27,12 @@ fn bench_single_vec(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("binary_single_d768");
     group.throughput(Throughput::Elements(D as u64));
-    group.bench_function("encode_scalar", |b| b.iter(|| BinaryVector::encode(black_box(&v), true)));
-    group.bench_function("encode_fast", |b| b.iter(|| BinaryVector::encode_fast(black_box(&v), true)));
+    group.bench_function("encode_scalar", |b| {
+        b.iter(|| BinaryVector::encode(black_box(&v), true))
+    });
+    group.bench_function("encode_fast", |b| {
+        b.iter(|| BinaryVector::encode_fast(black_box(&v), true))
+    });
     group.finish();
 }
 
@@ -45,7 +53,9 @@ fn bench_batch(c: &mut Criterion) {
                     .collect::<Vec<_>>()
             })
         });
-        group.bench_function("encode_batch", |b| b.iter(|| encode_batch(black_box(&vecs), true)));
+        group.bench_function("encode_batch", |b| {
+            b.iter(|| encode_batch(black_box(&vecs), true))
+        });
         group.finish();
     }
 }

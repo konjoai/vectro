@@ -136,11 +136,16 @@ def validate_int8_throughput(results: List[Dict], cpu_arch: str) -> Tuple[bool, 
 
 
 def validate_quantization_quality(results: List[Dict], mode: str) -> Tuple[bool, List[str]]:
-    """Validate quantization quality meets accuracy contracts."""
+    """Validate quantization quality meets accuracy contracts.
+
+    No results means the quality benchmark did not produce output (missing run,
+    crashed capture, wrong path) -- that is a failure to evaluate, not a passed
+    gate. Fails closed, matching `validate_int8_throughput`'s sibling shape.
+    """
     issues = []
 
     if not results:
-        return True, []  # Skip if no results
+        return False, [f"No {mode.upper()} quality results found"]
 
     gate_key = f"{mode}_min_quality_cosine"
     if gate_key not in VALIDATION_GATES:
@@ -159,11 +164,16 @@ def validate_quantization_quality(results: List[Dict], mode: str) -> Tuple[bool,
 
 
 def validate_latency(results: Dict) -> Tuple[bool, List[str]]:
-    """Validate single-vector latency meets ADR-002 target."""
+    """Validate single-vector latency meets ADR-002 target.
+
+    No results means the latency benchmark did not produce output -- a failure
+    to evaluate, not a passed gate. Fails closed, matching
+    `validate_int8_throughput`'s sibling shape.
+    """
     issues = []
 
     if not results:
-        return True, []
+        return False, ["No ADR-002 latency results found"]
 
     p99_latency = results.get("p99_ms", 999)
     floor = VALIDATION_GATES["adr002_max_latency_p99_ms"]

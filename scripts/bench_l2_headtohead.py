@@ -9,6 +9,7 @@ correctly, since only cosine existed).
 Usage:
     python scripts/bench_l2_headtohead.py data/fashion-mnist-784-euclidean.hdf5
 """
+
 from __future__ import annotations
 
 import json

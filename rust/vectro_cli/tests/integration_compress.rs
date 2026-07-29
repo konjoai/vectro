@@ -12,7 +12,8 @@ fn compress_and_load_roundtrip() {
     let out = tempfile::NamedTempFile::new().unwrap();
     let outp = out.path().to_path_buf();
 
-    let n = vectro_cli::compress_stream(path.to_str().unwrap(), outp.to_str().unwrap(), false).expect("compress");
+    let n = vectro_cli::compress_stream(path.to_str().unwrap(), outp.to_str().unwrap(), false)
+        .expect("compress");
     assert_eq!(n, 2);
 
     // load using library

@@ -316,8 +316,8 @@ class TestInt4NumpyFallback(unittest.TestCase):
         emb = _make_embeddings(8, 128)
         packed, scales = _quantize_int4_numpy(emb, group_size=64)
         self.assertEqual(packed.dtype, np.uint8)
-        self.assertEqual(packed.shape, (8, 64))      # two nibbles per byte
-        self.assertEqual(scales.shape, (8, 2))       # 128 / 64 groups
+        self.assertEqual(packed.shape, (8, 64))  # two nibbles per byte
+        self.assertEqual(scales.shape, (8, 2))  # 128 / 64 groups
 
     def test_round_trip_high_cosine(self):
         from python.interface import _dequantize_int4_numpy, _quantize_int4_numpy
@@ -332,7 +332,7 @@ class TestInt4NumpyFallback(unittest.TestCase):
     def test_odd_dimension_round_trip(self):
         from python.interface import _dequantize_int4_numpy, _quantize_int4_numpy
 
-        emb = _make_embeddings(5, 127)               # odd → padded nibble
+        emb = _make_embeddings(5, 127)  # odd → padded nibble
         packed, scales = _quantize_int4_numpy(emb, group_size=32)
         recon = _dequantize_int4_numpy(packed, scales, group_size=32, dim=127)
         self.assertEqual(recon.shape, (5, 127))

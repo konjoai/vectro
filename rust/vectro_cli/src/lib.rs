@@ -1,8 +1,8 @@
-use std::io::{BufRead, BufReader, Write};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::io::{BufRead, BufReader, Write};
 
 pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Result<usize> {
-    use crossbeam_channel::{bounded, Sender, Receiver};
+    use crossbeam_channel::{bounded, Receiver, Sender};
     use std::thread;
 
     let header = b"VECTRO+STREAM1\n";
@@ -13,7 +13,10 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
     let writer_buf = std::io::BufWriter::new(outfile);
 
     // channels
-    let (item_tx, item_rx): (Sender<vectro_lib::Embedding>, Receiver<vectro_lib::Embedding>) = bounded(1024);
+    let (item_tx, item_rx): (
+        Sender<vectro_lib::Embedding>,
+        Receiver<vectro_lib::Embedding>,
+    ) = bounded(1024);
     let (bytes_tx, bytes_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(1024);
 
     // writer thread (non-quantized path will spawn writer now; quantized path spawns writer after tables computed)
@@ -52,7 +55,9 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
                         if tx.send(bytes).is_err() {
                             // Writer hung up (panicked / errored) — stop rather
                             // than silently discarding the rest of the stream.
-                            tracing::warn!("compress worker: writer channel closed, output truncated");
+                            tracing::warn!(
+                                "compress worker: writer channel closed, output truncated"
+                            );
                             break;
                         }
                     }
@@ -65,7 +70,10 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
 
     // progress bar
     let pb = ProgressBar::new_spinner();
-    pb.set_style(ProgressStyle::with_template("{spinner} {msg}").unwrap());
+    pb.set_style(
+        ProgressStyle::with_template("{spinner} {msg}")
+            .unwrap_or_else(|_| unreachable!("hardcoded progress template is always valid")),
+    );
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     if quantize {
         pb.set_message("parsing and computing quant tables...");
@@ -81,7 +89,9 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
     let mut collected_embeddings: Vec<vectro_lib::Embedding> = Vec::new();
     for line in reader.lines().map_while(Result::ok) {
         let line = line.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
 
         // try JSON
         let mut pushed = false;
@@ -89,9 +99,17 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
             if let (Some(id), Some(vec)) = (val.get("id"), val.get("vector")) {
                 if let (Some(id_str), Some(arr)) = (id.as_str(), vec.as_array()) {
                     let mut v = Vec::with_capacity(arr.len());
-                    for x in arr { if let Some(flt) = x.as_f64() { v.push(flt as f32); } }
+                    for x in arr {
+                        if let Some(flt) = x.as_f64() {
+                            v.push(flt as f32);
+                        }
+                    }
                     let emb = vectro_lib::Embedding::new(id_str, v.clone());
-                    if quantize { collected_embeddings.push(emb.clone()); } else if item_tx.send(emb).is_err() { reader_drops += 1; }
+                    if quantize {
+                        collected_embeddings.push(emb.clone());
+                    } else if item_tx.send(emb).is_err() {
+                        reader_drops += 1;
+                    }
                     parsed += 1;
                     pushed = true;
                 }
@@ -103,23 +121,39 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
             if parts.len() >= 2 {
                 let id = parts[0].to_string();
                 let mut v = Vec::new();
-                for p in &parts[1..] { if let Ok(f) = p.trim().parse::<f32>() { v.push(f); } }
+                for p in &parts[1..] {
+                    if let Ok(f) = p.trim().parse::<f32>() {
+                        v.push(f);
+                    }
+                }
                 let emb = vectro_lib::Embedding::new(id, v.clone());
-                if quantize { collected_embeddings.push(emb.clone()); } else if item_tx.send(emb).is_err() { reader_drops += 1; }
+                if quantize {
+                    collected_embeddings.push(emb.clone());
+                } else if item_tx.send(emb).is_err() {
+                    reader_drops += 1;
+                }
                 parsed += 1;
             }
         }
 
-        if parsed.is_multiple_of(100) { pb.set_message(format!("parsed {} entries", parsed)); }
+        if parsed.is_multiple_of(100) {
+            pb.set_message(format!("parsed {} entries", parsed));
+        }
     }
 
     if reader_drops > 0 {
-        tracing::warn!(dropped = reader_drops, "compress reader: all workers hung up, embeddings dropped");
+        tracing::warn!(
+            dropped = reader_drops,
+            "compress reader: all workers hung up, embeddings dropped"
+        );
     }
 
     if quantize {
         // compute tables using vectro_lib::search::quant::quantize_dataset
-        let vectors: Vec<Vec<f32>> = collected_embeddings.iter().map(|e| e.vector.clone()).collect();
+        let vectors: Vec<Vec<f32>> = collected_embeddings
+            .iter()
+            .map(|e| e.vector.clone())
+            .collect();
         let (tables, _qvecs) = vectro_lib::search::quant::quantize_dataset(&vectors);
         // serialize tables to bincode
         let tables_blob = bincode::serialize(&tables)?;
@@ -131,7 +165,12 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
             let mut w = std::io::BufWriter::new(&mut f);
             w.write_all(qheader)?;
             let table_count = (tables.len() as u32).to_le_bytes();
-            let dim = (if !tables.is_empty() { tables.len() as u32 } else { 0u32 }).to_le_bytes();
+            let dim = (if !tables.is_empty() {
+                tables.len() as u32
+            } else {
+                0u32
+            })
+            .to_le_bytes();
             let tables_len = (tables_blob.len() as u32).to_le_bytes();
             w.write_all(&table_count)?;
             w.write_all(&dim)?;
@@ -171,11 +210,18 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
             worker_handles.push(thread::spawn(move || {
                 while let Ok(e) = r.recv() {
                     // quantize vector
-                    let qv: Vec<u8> = e.vector.iter().enumerate().map(|(i, &x)| tables[i].quantize(x)).collect();
+                    let qv: Vec<u8> = e
+                        .vector
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &x)| tables[i].quantize(x))
+                        .collect();
                     let rec = (e.id.clone(), qv);
                     if let Ok(bytes) = bincode::serialize(&rec) {
                         if tx.send(bytes).is_err() {
-                            tracing::warn!("quantize worker: writer channel closed, output truncated");
+                            tracing::warn!(
+                                "quantize worker: writer channel closed, output truncated"
+                            );
                             break;
                         }
                     }
@@ -191,7 +237,10 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
             }
         }
         if feed_drops > 0 {
-            tracing::warn!(dropped = feed_drops, "compress: quantize workers hung up, embeddings dropped");
+            tracing::warn!(
+                dropped = feed_drops,
+                "compress: quantize workers hung up, embeddings dropped"
+            );
         }
         drop(item_tx2);
 
@@ -207,11 +256,12 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
         if let Some(h) = writer_handle_opt {
             match h.join() {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => tracing::warn!(error = %e, "writer thread failed (output may be incomplete)"),
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "writer thread failed (output may be incomplete)")
+                }
                 Err(_) => tracing::warn!("writer thread panicked (output may be incomplete)"),
             }
         }
-
     } else {
         // close item_tx to signal workers to finish
         drop(item_tx);
@@ -227,15 +277,17 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
         if let Some(h) = writer_handle_opt {
             match h.join() {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => tracing::warn!(error = %e, "writer thread failed (output may be incomplete)"),
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "writer thread failed (output may be incomplete)")
+                }
                 Err(_) => tracing::warn!("writer thread panicked (output may be incomplete)"),
             }
         }
     }
     if quantize {
-    // If quantized, show a short summary including table count (attempt to read tables from file)
-    // variable intentionally unused; underscore prefix to silence warnings
-    let _table_count = 0usize;
+        // If quantized, show a short summary including table count (attempt to read tables from file)
+        // variable intentionally unused; underscore prefix to silence warnings
+        let _table_count = 0usize;
         if let Ok(mut f) = std::fs::File::open(output) {
             use std::io::Read;
             let mut hdr = vec![0u8; 16];
@@ -265,8 +317,8 @@ pub fn compress_stream(input: &str, output: &str, quantize: bool) -> anyhow::Res
 /// - CSV:   `id,f32,f32,...`
 fn read_jsonl(input: &str) -> anyhow::Result<Vec<vectro_lib::Embedding>> {
     use std::io::{BufRead, BufReader};
-    let infile = std::fs::File::open(input)
-        .map_err(|e| anyhow::anyhow!("cannot open {input}: {e}"))?;
+    let infile =
+        std::fs::File::open(input).map_err(|e| anyhow::anyhow!("cannot open {input}: {e}"))?;
     let reader = BufReader::new(infile);
     let mut embeddings = Vec::new();
 
@@ -325,7 +377,7 @@ pub fn compress_nf4(input: &str, output: &str) -> anyhow::Result<usize> {
     let pb = ProgressBar::new(count as u64);
     pb.set_style(
         ProgressStyle::with_template("{spinner} [{bar:40}] {pos}/{len} {msg}")
-            .unwrap()
+            .unwrap_or_else(|_| unreachable!("hardcoded progress template is always valid"))
             .progress_chars("=> "),
     );
     pb.set_message("encoding NF4…");
@@ -369,9 +421,14 @@ pub fn compress_pq(input: &str, output: &str, m: usize, k: usize) -> anyhow::Res
     }
 
     let pb = ProgressBar::new_spinner();
-    pb.set_style(ProgressStyle::with_template("{spinner} {msg}").unwrap());
+    pb.set_style(
+        ProgressStyle::with_template("{spinner} {msg}")
+            .unwrap_or_else(|_| unreachable!("hardcoded progress template is always valid")),
+    );
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
-    pb.set_message(format!("training PQ codebook on {count} vectors (m={m}, k={k})…"));
+    pb.set_message(format!(
+        "training PQ codebook on {count} vectors (m={m}, k={k})…"
+    ));
 
     let vecs: Vec<Vec<f32>> = embeddings.iter().map(|e| e.vector.clone()).collect();
     let codebook = vectro_lib::quant::pq::train_pq_codebook(&vecs, m, k, 25, 42)
@@ -422,7 +479,7 @@ pub fn compress_rq(
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::with_template("{spinner:.green} {msg}")
-            .unwrap()
+            .unwrap_or_else(|_| unreachable!("hardcoded progress template is always valid"))
             .tick_strings(&["\u{2014}", "\\", "|", "/"]),
     );
     pb.set_message("loading embeddings for RQ training…");
@@ -434,7 +491,9 @@ pub fn compress_rq(
     let mut embeddings: Vec<vectro_lib::Embedding> = Vec::new();
     for line in reader.lines() {
         let line = line?;
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
         let e: vectro_lib::Embedding = serde_json::from_str(&line)?;
         embeddings.push(e);
     }
@@ -447,9 +506,8 @@ pub fn compress_rq(
     let vecs: Vec<Vec<f32>> = embeddings.iter().map(|e| e.vector.clone()).collect();
     // Train on at most 10 000 vectors for speed
     let train_vecs: Vec<Vec<f32>> = vecs.iter().take(10_000).cloned().collect();
-    let codebook = vectro_lib::quant::rq::train_rq_codebook(
-        &train_vecs, n_passes, m, k, 25, 42
-    ).map_err(|e| anyhow::anyhow!(e))?;
+    let codebook = vectro_lib::quant::rq::train_rq_codebook(&train_vecs, n_passes, m, k, 25, 42)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     pb.set_message("encoding…");
     let flat_codes = vectro_lib::quant::rq::rq_encode_flat(&codebook, &vecs);
@@ -488,9 +546,9 @@ pub fn compress_auto(
 ) -> anyhow::Result<usize> {
     match vectro_lib::auto_select_format(target_cosine, target_compression) {
         "int8" => compress_stream(input, output, true),
-        "nf4"  => compress_nf4(input, output),
-        "pq"   => compress_pq(input, output, 16, 64),
-        _      => compress_rq(input, output, 2, 16, 64),
+        "nf4" => compress_nf4(input, output),
+        "pq" => compress_pq(input, output, 16, 64),
+        _ => compress_rq(input, output, 2, 16, 64),
     }
 }
 
@@ -503,8 +561,12 @@ mod tests {
     fn compress_small_file() {
         let tmp_in = NamedTempFile::new().unwrap();
         let in_path = tmp_in.path().to_str().unwrap().to_string();
-        std::fs::write(&in_path, r#"{"id":"one","vector":[1.0,0.0]}
-{"id":"two","vector":[0.0,1.0]}"#).unwrap();
+        std::fs::write(
+            &in_path,
+            r#"{"id":"one","vector":[1.0,0.0]}
+{"id":"two","vector":[0.0,1.0]}"#,
+        )
+        .unwrap();
 
         let tmp_out = NamedTempFile::new().unwrap();
         let out_path = tmp_out.path().to_str().unwrap().to_string();
@@ -520,9 +582,13 @@ mod tests {
     fn compress_quantized() {
         let tmp_in = NamedTempFile::new().unwrap();
         let in_path = tmp_in.path().to_str().unwrap().to_string();
-        std::fs::write(&in_path, r#"{"id":"one","vector":[1.0,2.0,3.0]}
+        std::fs::write(
+            &in_path,
+            r#"{"id":"one","vector":[1.0,2.0,3.0]}
 {"id":"two","vector":[4.0,5.0,6.0]}
-{"id":"three","vector":[7.0,8.0,9.0]}"#).unwrap();
+{"id":"three","vector":[7.0,8.0,9.0]}"#,
+        )
+        .unwrap();
 
         let tmp_out = NamedTempFile::new().unwrap();
         let out_path = tmp_out.path().to_str().unwrap().to_string();
@@ -559,12 +625,16 @@ mod tests {
     fn compress_with_empty_lines() {
         let tmp_in = NamedTempFile::new().unwrap();
         let in_path = tmp_in.path().to_str().unwrap().to_string();
-        std::fs::write(&in_path, r#"
+        std::fs::write(
+            &in_path,
+            r#"
 {"id":"one","vector":[1.0,0.0]}
 
 {"id":"two","vector":[0.0,1.0]}
 
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let tmp_out = NamedTempFile::new().unwrap();
         let out_path = tmp_out.path().to_str().unwrap().to_string();

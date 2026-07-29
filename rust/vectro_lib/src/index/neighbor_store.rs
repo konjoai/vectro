@@ -87,7 +87,10 @@ mod tests {
     fn neighbors_wire_format_matches_legacy_u64() {
         // A small graph: 2 nodes, ragged layers, ids that exercise multi-byte.
         let graph: Vec<Vec<NeighborList>> = vec![
-            vec![NeighborList::from_slice(&[1, 2, 300]), NeighborList::from_slice(&[2])],
+            vec![
+                NeighborList::from_slice(&[1, 2, 300]),
+                NeighborList::from_slice(&[2]),
+            ],
             vec![NeighborList::from_slice(&[0])],
         ];
 
@@ -100,11 +103,18 @@ mod tests {
         // Serialize the equivalent legacy structure directly.
         let legacy: Vec<Vec<Vec<u64>>> = graph
             .iter()
-            .map(|ls| ls.iter().map(|l| l.iter().map(|&x| x as u64).collect()).collect())
+            .map(|ls| {
+                ls.iter()
+                    .map(|l| l.iter().map(|&x| x as u64).collect())
+                    .collect()
+            })
             .collect();
         let via_legacy = bincode::serialize(&legacy).unwrap();
 
-        assert_eq!(via_helper, via_legacy, "wire format diverged from legacy u64 layout");
+        assert_eq!(
+            via_helper, via_legacy,
+            "wire format diverged from legacy u64 layout"
+        );
 
         // And it round-trips back to the same in-memory graph.
         let back: Wrap = bincode::deserialize(&via_helper).unwrap();

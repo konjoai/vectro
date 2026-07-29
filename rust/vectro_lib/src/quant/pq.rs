@@ -62,7 +62,10 @@ pub fn train_pq_codebook(
         return Err(format!("n_centroids={n_centroids} exceeds u8 max 256"));
     }
     if n_centroids > training_data.len() {
-        return Err(format!("n_centroids={n_centroids} > n_training={}", training_data.len()));
+        return Err(format!(
+            "n_centroids={n_centroids} > n_training={}",
+            training_data.len()
+        ));
     }
 
     let sub_dim = d / n_subspaces;
@@ -78,7 +81,11 @@ pub fn train_pq_codebook(
     let cap = n_centroids.saturating_mul(TRAIN_POINTS_PER_CENTROID);
     let sample: Vec<&Vec<f32>> = if training_data.len() > cap {
         let stride = training_data.len() / cap;
-        training_data.iter().step_by(stride.max(1)).take(cap).collect()
+        training_data
+            .iter()
+            .step_by(stride.max(1))
+            .take(cap)
+            .collect()
     } else {
         training_data.iter().collect()
     };
@@ -175,13 +182,7 @@ fn kmeans_pp_init(data: &[&[f32]], k: usize, sub_dim: usize, seed: u64) -> Vec<f
 
 /// Lloyd's K-means for a set of equal-length sub-vector slices.
 /// Returns a flat [K * sub_dim] vector of centroids.
-fn kmeans_lloyd(
-    data: &[&[f32]],
-    k: usize,
-    sub_dim: usize,
-    max_iter: usize,
-    seed: u64,
-) -> Vec<f32> {
+fn kmeans_lloyd(data: &[&[f32]], k: usize, sub_dim: usize, max_iter: usize, seed: u64) -> Vec<f32> {
     let n = data.len();
 
     // k-means++ initialisation: better-spread initial centroids.
@@ -238,7 +239,13 @@ fn kmeans_lloyd(
 /// Squared L2 distance between two equal-length slices.
 #[inline]
 pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| { let d = x - y; d * d }).sum()
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| {
+            let d = x - y;
+            d * d
+        })
+        .sum()
 }
 
 // ───────────────── fast nearest-centroid assignment (SIMD across K) ──────────
@@ -401,7 +408,6 @@ unsafe fn assign_argmin_neon(v: &[f32], ct: &[f32], norms: &[f32], k: usize, sub
     best as u8
 }
 
-
 /// Fused AVX2+FMA nearest-centroid: computes `dist = norms − 2·v·cᵀ` and tracks
 /// the running minimum **in registers**, 8 centroids at a time (256-bit lanes) —
 /// no per-point `dist` buffer. Mirrors [`assign_argmin_neon`]. Lane `l` holds
@@ -486,13 +492,18 @@ unsafe fn assign_argmin_avx2(v: &[f32], ct: &[f32], norms: &[f32], k: usize, sub
 /// `v.len() >= sub_dim`, `k <= MAX_K`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn assign_argmin_avx512(v: &[f32], ct: &[f32], norms: &[f32], k: usize, sub_dim: usize) -> u8 {
+unsafe fn assign_argmin_avx512(
+    v: &[f32],
+    ct: &[f32],
+    norms: &[f32],
+    k: usize,
+    sub_dim: usize,
+) -> u8 {
     use std::arch::x86_64::*;
     let two = _mm512_set1_ps(2.0);
     let mut min_vals = _mm512_set1_ps(f32::INFINITY);
     let mut min_idx = _mm512_setzero_si512();
-    let mut cur_idx =
-        _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    let mut cur_idx = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
     let sixteen = _mm512_set1_epi32(16);
 
     let kc = k & !15;
@@ -602,7 +613,13 @@ pub fn pq_encode_into(vectors: &[f32], cb: &PQCodebook, codes_out: &mut [u8]) {
 
     // Build the transposed-centroid LUTs once (read-only, shared across rows).
     let luts: Vec<SubspaceLut> = (0..m)
-        .map(|sub| build_subspace_lut(&cb.centroids[sub * cent_stride..(sub + 1) * cent_stride], k, sub_dim))
+        .map(|sub| {
+            build_subspace_lut(
+                &cb.centroids[sub * cent_stride..(sub + 1) * cent_stride],
+                k,
+                sub_dim,
+            )
+        })
         .collect();
 
     codes_out
@@ -718,7 +735,9 @@ mod tests {
         let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
         let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
         let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if na == 0.0 || nb == 0.0 { return -1.0; }
+        if na == 0.0 || nb == 0.0 {
+            return -1.0;
+        }
         dot / (na * nb)
     }
 
@@ -752,22 +771,28 @@ mod tests {
                 let t = Instant::now();
                 for _ in 0..iters {
                     for q in queries {
-                        acc += unsafe { assign_argmin_avx2(q, &lut.ct, &lut.norms, k, sub_dim) } as u64;
+                        acc += unsafe { assign_argmin_avx2(q, &lut.ct, &lut.norms, k, sub_dim) }
+                            as u64;
                     }
                 }
                 t.elapsed().as_nanos() as f64 / (iters * nq) as f64
-            } else { f64::NAN };
+            } else {
+                f64::NAN
+            };
 
             // avx512
             let avx512_ns = if is_x86_feature_detected!("avx512f") {
                 let t = Instant::now();
                 for _ in 0..iters {
                     for q in queries {
-                        acc += unsafe { assign_argmin_avx512(q, &lut.ct, &lut.norms, k, sub_dim) } as u64;
+                        acc += unsafe { assign_argmin_avx512(q, &lut.ct, &lut.norms, k, sub_dim) }
+                            as u64;
                     }
                 }
                 t.elapsed().as_nanos() as f64 / (iters * nq) as f64
-            } else { f64::NAN };
+            } else {
+                f64::NAN
+            };
 
             println!(
                 "k={k} sub_dim={sub_dim}: portable={portable_ns:.2}ns avx2={avx2_ns:.2}ns avx512={avx512_ns:.2}ns  avx512/avx2={:.3}x  (sink={acc})",
@@ -785,13 +810,24 @@ mod tests {
         let vecs = make_vecs(2000, d);
         let cb1 = train_pq_codebook(&vecs, m, k, 15, 7).unwrap();
         let cb2 = train_pq_codebook(&vecs, m, k, 15, 7).unwrap();
-        assert_eq!(cb1.centroids, cb2.centroids, "subsampled training not deterministic");
+        assert_eq!(
+            cb1.centroids, cb2.centroids,
+            "subsampled training not deterministic"
+        );
 
         // Codebook still reconstructs reasonably (encode→decode cosine).
         let codes = pq_encode(&vecs[..100], &cb1);
         let decoded = pq_decode(&codes, &cb1);
-        let avg: f32 = vecs[..100].iter().zip(&decoded).map(|(v, r)| cosine(v, r)).sum::<f32>() / 100.0;
-        assert!(avg >= 0.80, "subsampled-train reconstruction cosine {avg} < 0.80");
+        let avg: f32 = vecs[..100]
+            .iter()
+            .zip(&decoded)
+            .map(|(v, r)| cosine(v, r))
+            .sum::<f32>()
+            / 100.0;
+        assert!(
+            avg >= 0.80,
+            "subsampled-train reconstruction cosine {avg} < 0.80"
+        );
     }
 
     #[test]
@@ -807,7 +843,11 @@ mod tests {
 
         let codes = pq_encode(&vecs[..50], &cb);
         let decoded = pq_decode(&codes, &cb);
-        let cos_sum: f32 = vecs[..50].iter().zip(decoded.iter()).map(|(v, d)| cosine(v, d)).sum();
+        let cos_sum: f32 = vecs[..50]
+            .iter()
+            .zip(decoded.iter())
+            .map(|(v, d)| cosine(v, d))
+            .sum();
         let avg_cos = cos_sum / 50.0;
         // With d=64, M=8, K=16 the codebook is coarse but should average above 0.80
         assert!(avg_cos >= 0.80, "avg cosine {avg_cos} < 0.80");
@@ -839,7 +879,11 @@ mod tests {
         // Query == vecs[10] → should return index 10 in top-3
         let results = pq_search(&vecs[10], &codes, &cb, 3);
         let returned_indices: Vec<usize> = results.iter().map(|(i, _)| *i).collect();
-        assert!(returned_indices.contains(&10), "top-3 didn't contain exact match: {:?}", returned_indices);
+        assert!(
+            returned_indices.contains(&10),
+            "top-3 didn't contain exact match: {:?}",
+            returned_indices
+        );
     }
 
     #[test]
@@ -930,7 +974,11 @@ mod tests {
         pq_encode_into(&flat, &cb, &mut codes);
 
         for (i, row) in reference.iter().enumerate() {
-            assert_eq!(&codes[i * m..(i + 1) * m], row.as_slice(), "row {i} mismatch");
+            assert_eq!(
+                &codes[i * m..(i + 1) * m],
+                row.as_slice(),
+                "row {i} mismatch"
+            );
         }
     }
 }
