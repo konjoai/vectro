@@ -1,0 +1,12 @@
+# Konjo Python complexity ceiling — Konjo Forward Pillar 2.
+#
+# `radon cc . -n C` grade-C-or-worse function count: 58 today, spread across
+# demos/, api/, and python/ (largely v3_api.py, hnsw_api.py, migration.py,
+# interface.py). Refactoring 58 functions down a complexity grade is real
+# refactoring work, out of scope for this CI-reconnection track. Ratcheted
+# instead of left soft.
+#
+# Ratchet up only with a stated reason; ratchet down as functions are split.
+#
+# verified-against: f9dd8a1 (main), measured this reconciliation (2026-07-29)
+58

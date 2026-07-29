@@ -22,33 +22,72 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
       - run: pip install ruff mypy vulture bandit --quiet
+      # PROMOTED (kiban v1.9.0 reconciliation): 0 standing violations after
+      # `cargo fmt --all` (561 pre-existing diffs, pure formatting, no
+      # behavior change). See LEDGER.md's soft-step triage.
       - name: cargo fmt
-        continue-on-error: true
         run: cargo fmt --all -- --check
-      - name: clippy
-        continue-on-error: true
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::dbg_macro
+      # PROMOTED, split in two (kiban v1.9.0 reconciliation). The production
+      # -scope check below is the invariant CLAUDE.md actually names
+      # ("No unwrap()/expect() outside tests") -- 0 standing violations after
+      # fixing 15 real production-code unwrap()/expect() sites (see
+      # LEDGER.md). The full pedantic+all-targets sweep is a much bigger,
+      # separate concern (528 standing violations, almost entirely style/
+      # idiom lints, not the unwrap/expect security invariant) -- ratcheted,
+      # not driven to zero, and not left silently soft either: a NEW
+      # violation beyond the recorded ceiling now fails this job for real.
+      - name: clippy (production scope — unwrap/expect/panic/todo/dbg-macro)
+        run: cargo clippy --workspace --lib --bins --examples --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::dbg_macro
+      - name: clippy (pedantic + all-targets, ratcheted)
+        run: |
+          python3 .konjo/scripts/ceiling_check.py \
+            --ceiling-file .konjo/clippy-pedantic-ceiling.txt \
+            --name clippy-pedantic \
+            --measure-cmd 'cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::dbg_macro 2>&1 | grep "^error:" | grep -vc "^error: could not compile"'
+      # PROMOTED (kiban v1.9.0 reconciliation): `.cargo/audit.toml` ignores
+      # the 2 pyo3 advisories that need a breaking major-version upgrade
+      # (tracked in NEXT_SESSION_PROMPT.md) and the bincode "unmaintained"
+      # notice (storage-format migration, same tracking). Real vulnerable
+      # deps (rand, anyhow, rustls-webpki, pyo3's transitive rand) bumped
+      # within semver — 0 standing violations. See LEDGER.md.
       - name: cargo audit
-        continue-on-error: true
         run: cargo install cargo-audit --locked --quiet 2>/dev/null || true && cargo audit
+      # PROMOTED (kiban v1.9.0 reconciliation): this step had never actually
+      # run successfully -- `--config` is a top-level cargo-deny flag, not a
+      # `check` subcommand flag (`cargo deny check --config X` errors
+      # "unexpected argument"), and separately `.konjo/deny.toml` used a
+      # pre-0.14 schema (`copyleft`/`unlicensed`/`vulnerability`/`notice`
+      # keys removed upstream, see EmbarkStudios/cargo-deny#611). Both fixed;
+      # license allowlist gained `Unicode-3.0`; the two workspace path deps'
+      # wildcard version warnings resolved by pinning their version alongside
+      # the path. 0 standing violations. See LEDGER.md.
       - name: cargo deny
-        continue-on-error: true
-        run: cargo install cargo-deny --locked --quiet 2>/dev/null || true && cargo deny check --config .konjo/deny.toml
+        run: cargo install cargo-deny --locked --quiet 2>/dev/null || true && cargo deny --config .konjo/deny.toml check
+      # PROMOTED (kiban v1.9.0 reconciliation): 0 standing violations
+      # (verified clean before this reconciliation touched anything).
       - name: dead code (Rust)
-        continue-on-error: true
         run: |
           COUNT=$(RUSTFLAGS="-W dead_code" cargo check --workspace 2>&1 | grep -c "warning: dead_code" || true)
           echo "Dead code: $COUNT"
           [ "$COUNT" -gt 0 ] && exit 1; echo "✓"
+      # PROMOTED (kiban v1.9.0 reconciliation): 2 real findings (unused
+      # imports), fixed. 0 standing violations.
       - name: ruff lint
-        continue-on-error: true
         run: ruff check .
+      # PROMOTED (kiban v1.9.0 reconciliation): `ruff format .` applied (8
+      # files, pure formatting). 0 standing violations.
       - name: ruff format
-        continue-on-error: true
         run: ruff format --check .
-      - name: vulture
-        continue-on-error: true
-        run: vulture . --min-confidence 80
+      # RATCHETED (kiban v1.9.0 reconciliation): 11 standing findings, mostly
+      # unused-but-required interface parameters in connector/integration
+      # adapters (a real per-site vulture-allowlist-vs-delete call, not a
+      # mechanical fix) — see LEDGER.md. Never allowed to grow silently.
+      - name: vulture (ratcheted)
+        run: |
+          python3 .konjo/scripts/ceiling_check.py \
+            --ceiling-file .konjo/vulture-ceiling.txt \
+            --name vulture \
+            --measure-cmd 'vulture . --min-confidence 80 2>/dev/null | grep -v node_modules | wc -l'
   coverage:
     name: "G2 · Tests + Coverage"
     runs-on: ubuntu-latest
@@ -64,9 +103,33 @@ jobs:
           cargo install cargo-nextest --locked --quiet 2>/dev/null || true
           cargo install cargo-llvm-cov --locked --quiet 2>/dev/null || true
           pip install pytest pytest-cov --quiet && pip install -e . --quiet 2>/dev/null || true
+      # SOFT, owner + target date (kiban v1.9.0 reconciliation triage — not
+      # promoted, not deleted). Could not get a trustworthy measurement this
+      # reconciliation: the sandbox this triage ran in filled its disk
+      # (37GB effective quota) installing cargo-nextest + cargo-llvm-cov
+      # alongside the existing 6-27GB of target/ build artifacts across
+      # concurrently-running repos, and a real instrumented workspace run
+      # needs materially more headroom than a plain build. OWNER: next
+      # session picking up NEXT_SESSION_PROMPT.md's coverage item. TARGET:
+      # before the next Track-A vectro session closes, measure real coverage
+      # on a host with room and seed a `.konjo/coverage-floor.txt` ratchet
+      # (lopi's own `.konjo/coverage-floor.txt` precedent), same shape as
+      # every other ratchet this reconciliation added.
       - name: Rust coverage
         continue-on-error: true
         run: cargo llvm-cov nextest --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 80
+      # SOFT, owner + target date (kiban v1.9.0 reconciliation triage).
+      # `tests/` collection fails on 75 of ~90-odd files without the PyO3
+      # bindings built (`import vectro_py` guards fall through to a hard
+      # collection error, not the intended `pytest.mark.skipif`, on files
+      # that import it unconditionally at module scope rather than behind
+      # the try/except guard convention `test_retriever.py`/
+      # `test_hybrid_search.py` already use) -- confirmed by running
+      # `pytest --cov` directly this reconciliation. OWNER: next session.
+      # TARGET: run `maturin develop` first (or fix the ungated import
+      # sites to use the existing try/except guard convention, whichever a
+      # future session judges cheaper), then measure and seed a coverage
+      # floor.
       - name: Python coverage
         continue-on-error: true
         run: python -m pytest tests/ --cov=. --cov-report=json -x -q 2>/dev/null || true
@@ -84,6 +147,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: {shared-key: "konjo-${{ github.repository }}"}
       - run: cargo install cargo-mutants --locked --quiet 2>/dev/null || true
+      # SOFT, owner + target date (kiban v1.9.0 reconciliation triage — not
+      # promoted, not deleted). `cargo mutants --in-diff` scopes to the PR
+      # diff so it's cheap per-PR in real CI, but this reconciliation's own
+      # diff touches ~15 Rust files across error-handling fixes plus the
+      # perf-sensitive ivf_pq*.rs hot paths -- a full mutation run against
+      # that diff is a genuinely long, non-deterministic-runtime operation
+      # not practical to verify pass/fail inside this session's time budget.
+      # OWNER: next session. TARGET: run it for real once against a small,
+      # deliberately-mutated diff (this track's own KT-A1.1 kill-test
+      # already proves clippy/cargo-deny/cargo-audit go red on a real
+      # violation; mutation testing needs the equivalent kill-test before
+      # promotion, per this same triage's own standard).
       - name: Run mutation testing
         continue-on-error: true
         run: cargo mutants --in-diff <(git diff origin/${{ github.base_ref }}...HEAD) --timeout 60 --jobs 2 2>&1 | tee mutation_report.txt || true
@@ -98,29 +173,63 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
       - run: pip install radon --quiet
-      - name: Rust complexity
-        continue-on-error: true
-        run: cargo clippy --workspace --all-targets -- -A clippy::all -W clippy::cognitive_complexity --message-format json 2>/dev/null | python3 -c "import json,sys; count=sum(1 for line in sys.stdin for _ in [json.loads(line)] if _.get('reason')=='compiler-message' and 'cognitive_complexity' in str(_['message'].get('code',{})))" || true
-      - name: Python complexity
-        continue-on-error: true
+      # RATCHETED (kiban v1.9.0 reconciliation): 4 standing findings.
+      - name: Rust complexity (ratcheted)
         run: |
-          COUNT=$(radon cc . -n C --json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(len(v) for v in d.values()))" 2>/dev/null || echo 0)
-          [ "$COUNT" -gt 0 ] && radon cc . -n C -s && exit 1; echo "✓"
-      - name: File size
-        continue-on-error: true
+          python3 .konjo/scripts/ceiling_check.py \
+            --ceiling-file .konjo/rust-complexity-ceiling.txt \
+            --name rust-complexity \
+            --measure-cmd 'cargo clippy --workspace --all-targets --all-features --message-format json -- -A clippy::all -W clippy::cognitive_complexity 2>/dev/null | python3 -c "
+import json,sys
+count=0
+for line in sys.stdin:
+    try:
+        d=json.loads(line)
+    except Exception:
+        continue
+    if d.get(\"reason\")==\"compiler-message\":
+        msg=d.get(\"message\",{})
+        code=msg.get(\"code\") or {}
+        if code.get(\"code\")==\"clippy::cognitive_complexity\":
+            count+=1
+print(count)
+"'
+      # RATCHETED (kiban v1.9.0 reconciliation): 58 standing findings.
+      - name: Python complexity (ratcheted)
         run: |
-          OVERSIZED=""
-          while IFS= read -r -d '' f; do LC=$(wc -l < "$f"); [ "$LC" -gt 500 ] && OVERSIZED="${OVERSIZED}${f}: ${LC}\n"; done < <(find . \( -name "*.rs" -o -name "*.py" \) | grep -v target | grep -v __pycache__ | tr '\n' '\0')
-          [ -n "$OVERSIZED" ] && printf "%b" "$OVERSIZED" && exit 1; echo "✓"
-      - name: DRY
-        continue-on-error: true
+          python3 .konjo/scripts/ceiling_check.py \
+            --ceiling-file .konjo/python-complexity-ceiling.txt \
+            --name python-complexity \
+            --measure-cmd 'radon cc . -n C --exclude "*/node_modules/*" 2>/dev/null | grep -cE "^    [MFC] "'
+      # PROMOTED (kiban v1.9.0 reconciliation), blocking for every file NOT
+      # on the grandfather allowlist (`.konjo/oversized-allowlist.txt`, 33
+      # legacy files — same convention as squish's own
+      # `.konjo/oversized-allowlist.txt`). A brand-new oversized file fails
+      # immediately; the 33 grandfathered files are expected to shrink, not
+      # grow further, but that isn't mechanically re-checked per file yet.
+      - name: File size (blocking, grandfathered)
+        run: python3 .konjo/scripts/file_size_check.py .
+      # RATCHETED (kiban v1.9.0 reconciliation): 271 standing findings,
+      # overwhelmingly duplicate test-setup boilerplate across near-identical
+      # connector/integration test files.
+      - name: DRY (ratcheted)
         run: |
-          python3 .konjo/scripts/dry_check.py --threshold 0.85 --min-lines 20 --report dry_report.json
-          COUNT=$(python3 -c "import json; print(json.load(open('dry_report.json'))['count'])")
-          [ "$COUNT" -gt 0 ] && exit 1; echo "DRY ✓"
-      - name: Rustdoc
-        continue-on-error: true
-        run: RUSTDOCFLAGS="-D missing_docs" cargo doc --workspace --no-deps 2>&1 | grep -q "error" && exit 1 || echo "✓"
+          python3 .konjo/scripts/ceiling_check.py \
+            --ceiling-file .konjo/dry-ceiling.txt \
+            --name dry \
+            --measure-cmd 'python3 .konjo/scripts/dry_check.py --threshold 0.85 --min-lines 20 --report /tmp/dry_report.json >/dev/null 2>&1; python3 -c "import json; print(json.load(open(\"/tmp/dry_report.json\"))[\"count\"])"'
+      # RATCHETED (kiban v1.9.0 reconciliation): 24 standing findings, summed
+      # per-crate (a `--workspace` pass under-counts — cargo stops emitting a
+      # crate's diagnostics after that crate's own doc build fails, so a
+      # workspace-wide run silently drops any crate checked after the first
+      # failure; confirmed by comparing 23 (aggregate) against 24 (summed
+      # per-crate) this reconciliation — see `.konjo/rustdoc-ceiling.txt`).
+      - name: Rustdoc (ratcheted)
+        run: |
+          python3 .konjo/scripts/ceiling_check.py \
+            --ceiling-file .konjo/rustdoc-ceiling.txt \
+            --name rustdoc \
+            --measure-cmd 'for pkg in vectro_lib vectro_cli vectro_py generators; do RUSTDOCFLAGS="-D missing_docs" cargo doc -p $pkg --no-deps 2>&1 | grep -c "^error: missing documentation"; done | awk "{s+=\$1} END {print s}"'
   # G5 disabled — run locally: git diff HEAD~1 | python3 .konjo/scripts/konjo_review.py
   konjo-gate:
     name: "Konjo Gate — All Walls Clear"

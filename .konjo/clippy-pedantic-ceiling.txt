@@ -1,0 +1,32 @@
+# Konjo clippy::pedantic ceiling — Konjo Forward Pillar 2 (main is truth, gates only move up).
+#
+# The value below is `cargo clippy --workspace --all-targets --all-features --
+# -D warnings -D clippy::pedantic -D clippy::unwrap_used -D clippy::expect_used
+# -D clippy::panic -D clippy::todo -D clippy::dbg_macro`'s measured standing
+# error count (unique "error:" diagnostic lines, excluding "could not compile"
+# summary lines). This is the FULL strict set including clippy::pedantic
+# (style/idiom lints) and --all-targets (including test code); it is NOT the
+# same measurement as the separate, already-clean, blocking
+# unwrap/expect/panic/todo/dbg_macro-in-production-scope check (see
+# LEDGER.md's KT-A1.1 finding and soft-step triage) -- that one is a real
+# zero-standing-violation gate today. This ceiling exists because the
+# pedantic+test-code superset is not: 528 real violations measured, almost
+# entirely #[must_use] / doc-formatting / numeric-cast style lints, not the
+# unwrap/expect security invariant. Driving this to zero is real work (a
+# style pass across most of the Rust tree) explicitly out of scope for the
+# CI-reconnection track that seeded this file -- ratcheted instead of left
+# soft forever, matching the instruction that seeded it.
+#
+# NOTE ON MEASUREMENT: cargo aborts a target's own diagnostics on its first
+# hard error but does not necessarily continue past a failed dependency to
+# every downstream target in one aggregate `--workspace --all-targets` pass.
+# 528 is the count from one such aggregate pass; the true figure could be
+# marginally higher. Recorded as a real floor, not a verified exact total --
+# same "state the limit, don't hide it" discipline kiban's own gates use.
+#
+# Ratchet up only when a real net-new violation is deliberately accepted (say
+# why in the commit message and LEDGER.md); ratchet down as the debt is paid
+# off. Never raise it to paper over a regression.
+#
+# verified-against: f9dd8a1 (main), measured this reconciliation (2026-07-29)
+528

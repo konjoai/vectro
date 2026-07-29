@@ -1,0 +1,15 @@
+# Konjo vulture (dead-code) ceiling — Konjo Forward Pillar 2.
+#
+# `vulture . --min-confidence 80` (excluding node_modules), measured standing
+# finding count. 11 findings today: mostly unused-but-required interface
+# parameters (integration adapter methods that must accept a kwarg to satisfy
+# an external library's call signature even when unused) and a couple of
+# genuinely unused imports/locals not yet cleaned up. Not driven to zero this
+# reconciliation -- each finding needs a per-site call (delete vs. `# noqa` /
+# vulture allowlist for a real interface-compat case), which is real
+# case-by-case work, not a mechanical fix. Ratcheted instead of left soft.
+#
+# Ratchet up only with a stated reason; ratchet down as findings are cleared.
+#
+# verified-against: f9dd8a1 (main), measured this reconciliation (2026-07-29)
+11

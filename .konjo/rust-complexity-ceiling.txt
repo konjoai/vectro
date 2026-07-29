@@ -1,0 +1,11 @@
+# Konjo Rust cognitive-complexity ceiling — Konjo Forward Pillar 2.
+#
+# `cargo clippy --workspace --all-targets --all-features -A clippy::all -W
+# clippy::cognitive_complexity` standing finding count: 4 today. Refactoring
+# these down a complexity grade is real refactoring work, out of scope for
+# this CI-reconnection track. Ratcheted instead of left soft.
+#
+# Ratchet up only with a stated reason; ratchet down as functions are split.
+#
+# verified-against: f9dd8a1 (main), measured this reconciliation (2026-07-29)
+4

@@ -1,0 +1,17 @@
+# Konjo rustdoc missing_docs ceiling — Konjo Forward Pillar 2.
+#
+# `RUSTDOCFLAGS="-D missing_docs" cargo doc -p <crate> --no-deps`'s measured
+# standing error count, summed per-crate (a single `--workspace` pass
+# under-counts: cargo stops emitting a crate's diagnostics after that crate's
+# own doc build fails, so a workspace-wide run silently drops any crate
+# checked after the first failure -- confirmed by comparing an aggregate run,
+# 23, against the real per-crate sum, 24, this reconciliation). 24 today,
+# across vectro_lib (20) / vectro_cli (2) / vectro_py (1) / generators (1)
+# public items (methods, struct fields, associated functions, crate-root
+# docs). Writing 24 real doc comments is real work, out of scope for this
+# CI-reconnection track. Ratcheted instead of left soft.
+#
+# Ratchet up only with a stated reason; ratchet down as docs are written.
+#
+# verified-against: f9dd8a1 (main), measured this reconciliation (2026-07-29)
+24
