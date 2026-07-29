@@ -1,0 +1,21 @@
+# cargo-audit configuration — Konjo Quality Framework.
+#
+# Created during the kiban v1.9.0 reconciliation (Track A1): `cargo audit`
+# (konjo-gate.yml G1) had no config, so every RUSTSEC advisory against any
+# dependency -- including the two below that need a breaking pyo3 upgrade
+# out of this track's scope -- would fail the (currently soft) step. Kept in
+# sync with `.konjo/deny.toml`'s `[advisories].ignore` list; if you change one,
+# change both.
+[advisories]
+ignore = [
+    # pyo3 0.20.3: both require a major pyo3 upgrade (>=0.24.1 / >=0.29.0),
+    # a breaking API change across vectro_py's whole binding surface --
+    # real Rust implementation work, out of scope for this CI-reconnection
+    # track. See .konjo/deny.toml and NEXT_SESSION_PROMPT.md.
+    "RUSTSEC-2025-0020",
+    "RUSTSEC-2026-0177",
+    # bincode 1.3.3: "unmaintained" (governance/harassment incident, not a
+    # vulnerability). vectro's on-disk format is bincode-encoded; migrating
+    # off it is a real storage-format migration, out of scope here.
+    "RUSTSEC-2025-0141",
+]
