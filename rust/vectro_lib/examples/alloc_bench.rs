@@ -19,12 +19,20 @@ use vectro_lib::index::hnsw::HnswIndex;
 
 fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
     (0..n)
-        .map(|i| (0..d).map(|j| ((i * d + j) as f32 * 0.0013).sin()).collect())
+        .map(|i| {
+            (0..d)
+                .map(|j| ((i * d + j) as f32 * 0.0013).sin())
+                .collect()
+        })
         .collect()
 }
 
 fn main() {
-    let alloc = if cfg!(feature = "mimalloc") { "mimalloc" } else { "system" };
+    let alloc = if cfg!(feature = "mimalloc") {
+        "mimalloc"
+    } else {
+        "system"
+    };
     let (n, d, m, ef_c) = (200_000usize, 128usize, 16usize, 200usize);
     let nq = 50_000usize;
     let (k, ef) = (10usize, 64usize);
@@ -48,10 +56,7 @@ fn main() {
     let mut best_qps = 0.0f64;
     for _ in 0..3 {
         let t = Instant::now();
-        let sink: usize = queries
-            .par_iter()
-            .map(|q| idx.search(q, k, ef).len())
-            .sum();
+        let sink: usize = queries.par_iter().map(|q| idx.search(q, k, ef).len()).sum();
         let secs = t.elapsed().as_secs_f64();
         std::hint::black_box(sink);
         best_qps = best_qps.max(nq as f64 / secs);

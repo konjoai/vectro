@@ -19,6 +19,7 @@ Examples:
     python scripts/bench_scale.py --format bigann --base base.u8bin \
         --query query.u8bin --gt gt.ibin --n 10_000_000 --index hnsw
 """
+
 from __future__ import annotations
 
 import argparse

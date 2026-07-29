@@ -6,7 +6,7 @@ mod wasm;
 
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Embedding {
@@ -61,8 +61,8 @@ impl EmbeddingDataset {
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let mut f = File::open(path)?;
         // detect if file is our streaming format by checking header
-        let header   = b"VECTRO+STREAM1\n";
-        let qheader  = b"VECTRO+QSTREAM1\n";
+        let header = b"VECTRO+STREAM1\n";
+        let qheader = b"VECTRO+QSTREAM1\n";
         let pqheader = b"VECTRO+PQSTREAM1\n";
         let rqheader = b"VECTRO+RQSTREAM1\n";
         let max_len = [header.len(), qheader.len(), pqheader.len(), rqheader.len()]
@@ -99,49 +99,48 @@ impl EmbeddingDataset {
         // rewind and check for qheader
         f.seek(SeekFrom::Start(0))?;
         let mut qsig = vec![0u8; qheader.len()];
-        if f.read_exact(&mut qsig).is_ok()
-            && qsig.as_slice() == qheader {
-                // we've consumed the header already; proceed (tables follow)
-                // quantized stream layout: u32(table_count) u32(dim) [tables serialized as bincode] then repeated len-prefixed records: bincode((id:String, qvec:Vec<u8>))
-                let mut buf4 = [0u8; 4];
-                f.read_exact(&mut buf4)?;
-                let _table_count = u32::from_le_bytes(buf4) as usize;
-                f.read_exact(&mut buf4)?;
-                let _dim = u32::from_le_bytes(buf4) as usize;
-                // read tables blob length
-                f.read_exact(&mut buf4)?;
-                let tables_len = u32::from_le_bytes(buf4) as usize;
-                let mut tblbuf = vec![0u8; tables_len];
-                f.read_exact(&mut tblbuf)?;
-                let _tables: Vec<crate::search::quant::QuantTable> = bincode::deserialize(&tblbuf)?;
+        if f.read_exact(&mut qsig).is_ok() && qsig.as_slice() == qheader {
+            // we've consumed the header already; proceed (tables follow)
+            // quantized stream layout: u32(table_count) u32(dim) [tables serialized as bincode] then repeated len-prefixed records: bincode((id:String, qvec:Vec<u8>))
+            let mut buf4 = [0u8; 4];
+            f.read_exact(&mut buf4)?;
+            let _table_count = u32::from_le_bytes(buf4) as usize;
+            f.read_exact(&mut buf4)?;
+            let _dim = u32::from_le_bytes(buf4) as usize;
+            // read tables blob length
+            f.read_exact(&mut buf4)?;
+            let tables_len = u32::from_le_bytes(buf4) as usize;
+            let mut tblbuf = vec![0u8; tables_len];
+            f.read_exact(&mut tblbuf)?;
+            let _tables: Vec<crate::search::quant::QuantTable> = bincode::deserialize(&tblbuf)?;
 
-                // now read quantized entries
-                let mut embeddings = Vec::new();
-                loop {
-                    let mut lenbuf = [0u8; 4];
-                    match f.read_exact(&mut lenbuf) {
-                        Ok(_) => {
-                            let len = u32::from_le_bytes(lenbuf) as usize;
-                            let mut buf = vec![0u8; len];
-                            f.read_exact(&mut buf)?;
-                            let rec: (String, Vec<u8>) = bincode::deserialize(&buf)?;
-                            // dequantize
-                            let id = rec.0;
-                            let qv = rec.1;
-                            // naive dequantize each value using tables sequentially
-                            // if tables length mismatch, we'll skip
-                            let mut v = Vec::with_capacity(qv.len());
-                            for (i, &b) in qv.iter().enumerate() {
-                                let val = _tables[i].dequantize(b);
-                                v.push(val);
-                            }
-                            embeddings.push(Embedding::new(id, v));
+            // now read quantized entries
+            let mut embeddings = Vec::new();
+            loop {
+                let mut lenbuf = [0u8; 4];
+                match f.read_exact(&mut lenbuf) {
+                    Ok(_) => {
+                        let len = u32::from_le_bytes(lenbuf) as usize;
+                        let mut buf = vec![0u8; len];
+                        f.read_exact(&mut buf)?;
+                        let rec: (String, Vec<u8>) = bincode::deserialize(&buf)?;
+                        // dequantize
+                        let id = rec.0;
+                        let qv = rec.1;
+                        // naive dequantize each value using tables sequentially
+                        // if tables length mismatch, we'll skip
+                        let mut v = Vec::with_capacity(qv.len());
+                        for (i, &b) in qv.iter().enumerate() {
+                            let val = _tables[i].dequantize(b);
+                            v.push(val);
                         }
-                        Err(_) => break,
+                        embeddings.push(Embedding::new(id, v));
                     }
+                    Err(_) => break,
                 }
-                return Ok(EmbeddingDataset { embeddings });
             }
+            return Ok(EmbeddingDataset { embeddings });
+        }
 
         // PQSTREAM1: codebook blob + per-vector bincode((id: String, code: Vec<u8>))
         if n >= pqheader.len() && sig[..pqheader.len()] == *pqheader {
@@ -232,7 +231,6 @@ pub fn auto_select_format(target_cosine: f32, target_compression: f32) -> &'stat
 pub mod search {
     use crate::Embedding;
     use rayon::prelude::*;
-    
 
     /// Compute dot product between two same-length slices
     fn dot(a: &[f32], b: &[f32]) -> f32 {
@@ -258,11 +256,7 @@ pub mod search {
 
     /// Naive top-k nearest neighbors by cosine similarity.
     /// Returns a Vec of (id, score) sorted by descending score.
-    pub fn top_k<'a>(
-        dataset: &'a [Embedding],
-        query: &[f32],
-        k: usize,
-    ) -> Vec<(&'a str, f32)> {
+    pub fn top_k<'a>(dataset: &'a [Embedding], query: &[f32], k: usize) -> Vec<(&'a str, f32)> {
         let mut scores: Vec<(&str, f32)> = dataset
             .par_iter()
             .map(|e| (e.id.as_str(), cosine(&e.vector, query)))
@@ -303,7 +297,11 @@ pub mod search {
                 }
             }
 
-            Self { ids, normalized, dim }
+            Self {
+                ids,
+                normalized,
+                dim,
+            }
         }
 
         /// Single query top-k using the cached normalized vectors. Query will be normalized.
@@ -331,10 +329,7 @@ pub mod search {
         /// Batch top-k: accept multiple queries and return a Vec per query.
         pub fn batch_top_k(&self, queries: &[Vec<f32>], k: usize) -> Vec<Vec<(&str, f32)>> {
             // Parallelize across queries
-            queries
-                .par_iter()
-                .map(|q| self.top_k(q, k))
-                .collect()
+            queries.par_iter().map(|q| self.top_k(q, k)).collect()
         }
     }
 
@@ -382,15 +377,29 @@ pub mod search {
             let mut maxs = vec![f32::NEG_INFINITY; dim];
             for v in vectors {
                 for (i, x) in v.iter().enumerate() {
-                    if *x < mins[i] { mins[i] = *x }
-                    if *x > maxs[i] { maxs[i] = *x }
+                    if *x < mins[i] {
+                        mins[i] = *x
+                    }
+                    if *x > maxs[i] {
+                        maxs[i] = *x
+                    }
                 }
             }
-            let tables: Vec<QuantTable> = mins.into_iter().zip(maxs).map(|(min, max)| QuantTable::new(min, max)).collect();
+            let tables: Vec<QuantTable> = mins
+                .into_iter()
+                .zip(maxs)
+                .map(|(min, max)| QuantTable::new(min, max))
+                .collect();
 
-            let qvecs: Vec<Vec<u8>> = vectors.iter().map(|v| {
-                v.iter().enumerate().map(|(i, x)| tables[i].quantize(*x)).collect()
-            }).collect();
+            let qvecs: Vec<Vec<u8>> = vectors
+                .iter()
+                .map(|v| {
+                    v.iter()
+                        .enumerate()
+                        .map(|(i, x)| tables[i].quantize(*x))
+                        .collect()
+                })
+                .collect();
 
             (tables, qvecs)
         }
@@ -412,32 +421,56 @@ pub mod search {
             let vectors: Vec<Vec<f32>> = dataset.iter().map(|e| e.vector.clone()).collect();
             let (tables, qvecs) = quant::quantize_dataset(&vectors);
             let dim = tables.len();
-            Self { ids, tables, qvecs, dim, normalized_cache: None }
+            Self {
+                ids,
+                tables,
+                qvecs,
+                dim,
+                normalized_cache: None,
+            }
         }
 
         /// Dequantize a u8 vector into f32 vector
         fn dequantize_vec(&self, q: &[u8]) -> Vec<f32> {
-            q.iter().enumerate().map(|(i, &b)| self.tables[i].dequantize(b)).collect()
+            q.iter()
+                .enumerate()
+                .map(|(i, &b)| self.tables[i].dequantize(b))
+                .collect()
         }
 
         /// Top-k: dequantize vectors lazily and compute cosine with normalized query
         pub fn top_k(&self, query: &[f32], k: usize) -> Vec<(&str, f32)> {
-            if query.len() != self.dim { return vec![]; }
+            if query.len() != self.dim {
+                return vec![];
+            }
             let qnorm = norm(query);
-            if qnorm == 0.0 { return vec![]; }
+            if qnorm == 0.0 {
+                return vec![];
+            }
             let qnormed: Vec<f32> = query.iter().map(|v| v / qnorm).collect();
 
             let mut scores: Vec<(&str, f32)> = match &self.normalized_cache {
-                Some(cache) => cache.par_iter().zip(self.ids.par_iter()).map(|(v, id)| {
-                    (id.as_str(), dot(v, &qnormed))
-                }).collect(),
-                None => self.qvecs.par_iter().zip(self.ids.par_iter()).map(|(qv, id)| {
-                    let v = self.dequantize_vec(qv);
-                    // normalize dequantized vector
-                    let n = norm(&v);
-                    let score = if n == 0.0 { -1.0 } else { dot(&v, &qnormed) / n };
-                    (id.as_str(), score)
-                }).collect(),
+                Some(cache) => cache
+                    .par_iter()
+                    .zip(self.ids.par_iter())
+                    .map(|(v, id)| (id.as_str(), dot(v, &qnormed)))
+                    .collect(),
+                None => self
+                    .qvecs
+                    .par_iter()
+                    .zip(self.ids.par_iter())
+                    .map(|(qv, id)| {
+                        let v = self.dequantize_vec(qv);
+                        // normalize dequantized vector
+                        let n = norm(&v);
+                        let score = if n == 0.0 {
+                            -1.0
+                        } else {
+                            dot(&v, &qnormed) / n
+                        };
+                        (id.as_str(), score)
+                    })
+                    .collect(),
             };
 
             scores.par_sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -450,11 +483,19 @@ pub mod search {
 
         /// Precompute and cache normalized dequantized vectors to accelerate scoring.
         pub fn precompute_normalized(&mut self) {
-            let cache: Vec<Vec<f32>> = self.qvecs.iter().map(|qv| {
-                let v = self.dequantize_vec(qv);
-                let n = norm(&v);
-                if n == 0.0 { v.into_iter().map(|_| 0.0).collect() } else { v.into_iter().map(|x| x / n).collect() }
-            }).collect();
+            let cache: Vec<Vec<f32>> = self
+                .qvecs
+                .iter()
+                .map(|qv| {
+                    let v = self.dequantize_vec(qv);
+                    let n = norm(&v);
+                    if n == 0.0 {
+                        v.into_iter().map(|_| 0.0).collect()
+                    } else {
+                        v.into_iter().map(|x| x / n).collect()
+                    }
+                })
+                .collect();
             self.normalized_cache = Some(cache);
         }
     }
@@ -540,20 +581,18 @@ pub mod search {
             })
             .collect();
 
-        combined.sort_unstable_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        combined
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         combined.truncate(k);
         combined
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn roundtrip_save_load() {
@@ -575,7 +614,7 @@ mod tests {
         let ds = EmbeddingDataset::new();
         assert_eq!(ds.len(), 0);
         assert!(ds.is_empty());
-        
+
         let mut ds2 = EmbeddingDataset::new();
         ds2.add(Embedding::new("test", vec![1.0, 2.0, 3.0]));
         assert_eq!(ds2.len(), 1);
@@ -593,27 +632,27 @@ mod tests {
     fn test_streaming_format_load() {
         let tmp = NamedTempFile::new().expect("create temp file");
         let path = tmp.path().to_str().unwrap().to_string();
-        
+
         // Write streaming format manually
         let mut f = std::fs::File::create(&path).expect("create file");
         f.write_all(b"VECTRO+STREAM1\n").expect("write header");
-        
+
         // Write first embedding
         let e1 = Embedding::new("test1", vec![1.0, 2.0]);
         let bytes1 = bincode::serialize(&e1).expect("serialize");
         let len1 = (bytes1.len() as u32).to_le_bytes();
         f.write_all(&len1).expect("write len");
         f.write_all(&bytes1).expect("write bytes");
-        
+
         // Write second embedding
         let e2 = Embedding::new("test2", vec![3.0, 4.0]);
         let bytes2 = bincode::serialize(&e2).expect("serialize");
         let len2 = (bytes2.len() as u32).to_le_bytes();
         f.write_all(&len2).expect("write len");
         f.write_all(&bytes2).expect("write bytes");
-        
+
         drop(f);
-        
+
         let loaded = EmbeddingDataset::load(&path).expect("load");
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded.embeddings[0].id, "test1");
@@ -624,31 +663,31 @@ mod tests {
     fn test_quantized_stream_format_load() {
         let tmp = NamedTempFile::new().expect("create temp file");
         let path = tmp.path().to_str().unwrap().to_string();
-        
+
         // Create embeddings
         let e1 = Embedding::new("qtest1", vec![1.0, 2.0, 3.0]);
         let e2 = Embedding::new("qtest2", vec![4.0, 5.0, 6.0]);
         let vectors = vec![e1.vector.clone(), e2.vector.clone()];
-        
+
         // Quantize
         let (tables, qvecs) = search::quant::quantize_dataset(&vectors);
-        
+
         // Write quantized stream format
         let mut f = std::fs::File::create(&path).expect("create file");
         f.write_all(b"VECTRO+QSTREAM1\n").expect("write header");
-        
+
         // Write table count and dim
         let table_count = (tables.len() as u32).to_le_bytes();
         let dim = (tables.len() as u32).to_le_bytes();
         f.write_all(&table_count).expect("write table count");
         f.write_all(&dim).expect("write dim");
-        
+
         // Serialize and write tables
         let tables_blob = bincode::serialize(&tables).expect("serialize tables");
         let tables_len = (tables_blob.len() as u32).to_le_bytes();
         f.write_all(&tables_len).expect("write tables len");
         f.write_all(&tables_blob).expect("write tables");
-        
+
         // Write quantized embeddings
         for (i, qv) in qvecs.iter().enumerate() {
             let id = if i == 0 { "qtest1" } else { "qtest2" };
@@ -658,9 +697,9 @@ mod tests {
             f.write_all(&len).expect("write len");
             f.write_all(&bytes).expect("write bytes");
         }
-        
+
         drop(f);
-        
+
         let loaded = EmbeddingDataset::load(&path).expect("load");
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded.embeddings[0].id, "qtest1");
@@ -670,12 +709,12 @@ mod tests {
     #[test]
     fn test_cosine_similarity_edge_cases() {
         use crate::search::cosine;
-        
+
         // Different lengths
         let a = vec![1.0, 2.0];
         let b = vec![1.0, 2.0, 3.0];
         assert_eq!(cosine(&a, &b), -1.0);
-        
+
         // Zero vectors
         let zero = vec![0.0, 0.0];
         let nonzero = vec![1.0, 2.0];
@@ -687,11 +726,11 @@ mod tests {
     #[test]
     fn test_searchindex_zero_norm_query() {
         use crate::search::SearchIndex;
-        
+
         let a = Embedding::new("a", vec![1.0, 2.0]);
         let ds = vec![a];
         let idx = SearchIndex::from_dataset(&ds);
-        
+
         // Query with zero norm
         let zero_query = vec![0.0, 0.0];
         let results = idx.top_k(&zero_query, 1);
@@ -701,12 +740,12 @@ mod tests {
     #[test]
     fn test_searchindex_from_zero_norm_vectors() {
         use crate::search::SearchIndex;
-        
+
         let a = Embedding::new("zero", vec![0.0, 0.0]);
         let b = Embedding::new("nonzero", vec![1.0, 2.0]);
         let ds = vec![a, b];
         let idx = SearchIndex::from_dataset(&ds);
-        
+
         let query = vec![1.0, 0.0];
         let results = idx.top_k(&query, 2);
         assert_eq!(results.len(), 2);
@@ -715,12 +754,12 @@ mod tests {
     #[test]
     fn test_quantized_index_zero_norm() {
         use crate::search::QuantizedIndex;
-        
+
         let a = Embedding::new("zero", vec![0.0, 0.0]);
         let b = Embedding::new("nonzero", vec![1.0, 2.0]);
         let ds = vec![a, b];
         let idx = QuantizedIndex::from_dataset(&ds);
-        
+
         let query = vec![1.0, 0.0];
         let results = idx.top_k(&query, 2);
         assert_eq!(results.len(), 2);
@@ -729,11 +768,11 @@ mod tests {
     #[test]
     fn test_quantized_index_zero_query() {
         use crate::search::QuantizedIndex;
-        
+
         let a = Embedding::new("a", vec![1.0, 2.0]);
         let ds = vec![a];
         let idx = QuantizedIndex::from_dataset(&ds);
-        
+
         let zero_query = vec![0.0, 0.0];
         let results = idx.top_k(&zero_query, 1);
         assert!(results.is_empty());
@@ -742,11 +781,11 @@ mod tests {
     #[test]
     fn test_quantized_index_dim_mismatch() {
         use crate::search::QuantizedIndex;
-        
+
         let a = Embedding::new("a", vec![1.0, 2.0]);
         let ds = vec![a];
         let idx = QuantizedIndex::from_dataset(&ds);
-        
+
         let wrong_query = vec![1.0, 2.0, 3.0];
         let results = idx.top_k(&wrong_query, 1);
         assert!(results.is_empty());
@@ -755,17 +794,17 @@ mod tests {
     #[test]
     fn test_quantized_index_with_precompute() {
         use crate::search::QuantizedIndex;
-        
+
         let a = Embedding::new("a", vec![1.0, 0.0]);
         let b = Embedding::new("b", vec![0.0, 1.0]);
         let ds = vec![a, b];
         let mut idx = QuantizedIndex::from_dataset(&ds);
-        
+
         // Test without precompute
         let query = vec![1.0, 0.0];
         let results1 = idx.top_k(&query, 1);
         assert_eq!(results1[0].0, "a");
-        
+
         // Test with precompute
         idx.precompute_normalized();
         let results2 = idx.top_k(&query, 1);
@@ -775,12 +814,12 @@ mod tests {
     #[test]
     fn test_quant_table_edge_cases() {
         use crate::search::quant::QuantTable;
-        
+
         // Min equals max
         let table = QuantTable::new(1.0, 1.0);
         assert_eq!(table.quantize(1.0), 0u8);
         assert_eq!(table.dequantize(128), 1.0);
-        
+
         // Normal range
         let table2 = QuantTable::new(0.0, 10.0);
         let q = table2.quantize(5.0);
@@ -791,7 +830,7 @@ mod tests {
     #[test]
     fn test_quantize_empty_dataset() {
         use crate::search::quant::quantize_dataset;
-        
+
         let empty: Vec<Vec<f32>> = vec![];
         let (tables, qvecs) = quantize_dataset(&empty);
         assert!(tables.is_empty());
@@ -872,7 +911,11 @@ mod tests {
 
         // dequantize first vector
         let q0 = &qvecs[0];
-        let deq0: Vec<f32> = q0.iter().enumerate().map(|(i, &b)| tables[i].dequantize(b)).collect();
+        let deq0: Vec<f32> = q0
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| tables[i].dequantize(b))
+            .collect();
         assert!((deq0[0] - 1.0).abs() < 1e-2 || (deq0[0] - 1.0).abs() < 1e-1);
 
         // Compare top-k between float index and quantized index

@@ -172,9 +172,15 @@ impl BinaryVector {
         Self { packed, dim }
     }
     pub fn decode(&self) -> Vec<f32> {
-        (0..self.dim).map(|i| {
-            if (self.packed[i / 8] >> (i % 8)) & 1 == 1 { 1.0f32 } else { -1.0f32 }
-        }).collect()
+        (0..self.dim)
+            .map(|i| {
+                if (self.packed[i / 8] >> (i % 8)) & 1 == 1 {
+                    1.0f32
+                } else {
+                    -1.0f32
+                }
+            })
+            .collect()
     }
 
     /// Asymmetric cosine distance to a full-precision unit query, computed
@@ -271,7 +277,10 @@ unsafe fn pack_signs_avx2(v: &[f32], packed: &mut [u8]) {
 
 /// Encode a batch of f32 vectors to binary in parallel.
 pub fn encode_batch(vectors: &[Vec<f32>], normalize: bool) -> Vec<BinaryVector> {
-    vectors.par_iter().map(|v| BinaryVector::encode_fast(v, normalize)).collect()
+    vectors
+        .par_iter()
+        .map(|v| BinaryVector::encode_fast(v, normalize))
+        .collect()
 }
 
 /// Decode a batch of BinaryVectors back to f32 in parallel.
@@ -325,7 +334,9 @@ mod tests {
     /// activate where the host advertises the feature.
     #[test]
     fn encode_fast_matches_scalar() {
-        for &d in &[0usize, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 127, 128, 768] {
+        for &d in &[
+            0usize, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 127, 128, 768,
+        ] {
             let v: Vec<f32> = (0..d)
                 .map(|i| ((i as f32 * 0.37).sin() - 0.1) * 1e3)
                 .collect();
@@ -364,8 +375,11 @@ mod tests {
         let dec = bv.decode();
         // Should get sign pattern correct
         for (orig, &d) in v.iter().zip(dec.iter()) {
-            if *orig > 0.0 { assert_eq!(d, 1.0); }
-            else { assert_eq!(d, -1.0); }
+            if *orig > 0.0 {
+                assert_eq!(d, 1.0);
+            } else {
+                assert_eq!(d, -1.0);
+            }
         }
     }
 
@@ -388,7 +402,9 @@ mod tests {
 
     #[test]
     fn odd_dimension() {
-        let v: Vec<f32> = (0..13).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let v: Vec<f32> = (0..13)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
         let bv = BinaryVector::encode(&v, false);
         assert_eq!(bv.packed.len(), 2); // ceil(13/8)
         let dec = bv.decode();
@@ -403,7 +419,10 @@ mod tests {
             vec![-1.0, -1.0, -1.0, -1.0],
             vec![1.0, -1.0, 1.0, -1.0],
         ];
-        let db: Vec<BinaryVector> = db_vecs.iter().map(|v| BinaryVector::encode(v, false)).collect();
+        let db: Vec<BinaryVector> = db_vecs
+            .iter()
+            .map(|v| BinaryVector::encode(v, false))
+            .collect();
         let query = vec![1.0f32, 1.0, 1.0, 1.0];
         let results = binary_search(&query, &db, 1, false);
         assert_eq!(results[0].0, 0); // exact match → index 0
@@ -423,7 +442,11 @@ mod tests {
     #[test]
     fn batch_encode_decode() {
         let vecs: Vec<Vec<f32>> = (0..20)
-            .map(|i| (0..32).map(|j| if (i + j) % 2 == 0 { 0.5f32 } else { -0.5f32 }).collect())
+            .map(|i| {
+                (0..32)
+                    .map(|j| if (i + j) % 2 == 0 { 0.5f32 } else { -0.5f32 })
+                    .collect()
+            })
             .collect();
         let encoded = encode_batch(&vecs, true);
         let decoded = decode_batch(&encoded);
@@ -441,10 +464,9 @@ mod proptest_tests {
     fn arb_nonzero_vec(d: usize) -> impl Strategy<Value = Vec<f32>> {
         // Use a range where x² * d stays well below f32::MAX (3.4e38).
         // With max |x| ≤ 1e18: sum(x²) ≤ d * 1e36 ≤ 3.2e37 for d=32.
-        prop::collection::vec(-1e18f32..1e18f32, d)
-            .prop_filter("degenerate zero vector", |v| {
-                v.iter().any(|x| x.abs() > 1e-10)
-            })
+        prop::collection::vec(-1e18f32..1e18f32, d).prop_filter("degenerate zero vector", |v| {
+            v.iter().any(|x| x.abs() > 1e-10)
+        })
     }
 
     proptest! {

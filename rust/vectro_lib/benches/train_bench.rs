@@ -22,7 +22,11 @@ use vectro_lib::quant::rq::{rq_decode_flat, rq_encode_flat, train_rq_codebook, R
 /// Deterministic synthetic vectors (same generator as simd_bench for parity).
 fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
     (0..n)
-        .map(|i| (0..d).map(|j| ((i * d + j) as f32 * 0.0013_f32).sin()).collect())
+        .map(|i| {
+            (0..d)
+                .map(|j| ((i * d + j) as f32 * 0.0013_f32).sin())
+                .collect()
+        })
         .collect()
 }
 
@@ -168,7 +172,11 @@ fn bench_ivf_search(c: &mut Criterion) {
         idx.add_batch(&vecs);
         // Distinct queries (offset generator so they differ from stored vectors).
         let queries: Vec<Vec<f32>> = (0..N_QUERIES)
-            .map(|i| (0..d).map(|j| (((i + 7) * d + j) as f32 * 0.0011_f32).cos()).collect())
+            .map(|i| {
+                (0..d)
+                    .map(|j| (((i + 7) * d + j) as f32 * 0.0011_f32).cos())
+                    .collect()
+            })
             .collect();
         let mut qi = 0usize;
         group.bench_function(format!("search_n20k_d{d}_probe16_k10"), |b| {
@@ -231,7 +239,8 @@ fn bench_ivfpq_search(c: &mut Criterion) {
     let vecs = make_vecs(N, D);
 
     let mut idx = IvfPqIndex::new(N_LISTS, N_PROBE);
-    idx.train(&vecs, 8, 256, 10, 42).expect("ivfpq train failed");
+    idx.train(&vecs, 8, 256, 10, 42)
+        .expect("ivfpq train failed");
     for v in &vecs {
         idx.add(v);
     }
@@ -263,7 +272,8 @@ fn bench_ivfpq_search_batch(c: &mut Criterion) {
     let vecs = make_vecs(N, D);
 
     let mut idx = IvfPqIndex::new(N_LISTS, N_PROBE);
-    idx.train(&vecs, 64, 256, 10, 42).expect("ivfpq train failed");
+    idx.train(&vecs, 64, 256, 10, 42)
+        .expect("ivfpq train failed");
     for v in &vecs {
         idx.add(v);
     }

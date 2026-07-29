@@ -145,8 +145,10 @@ impl BM25Index {
         // ── Step 4: build the inverted index (term → [(doc_idx, tf)]) ──────────
         // Pre-sized per term from the document-frequency counts so the posting
         // Vecs never reallocate.
-        let mut postings: HashMap<String, Vec<(u32, u32)>> =
-            df.iter().map(|(t, &c)| (t.clone(), Vec::with_capacity(c as usize))).collect();
+        let mut postings: HashMap<String, Vec<(u32, u32)>> = df
+            .iter()
+            .map(|(t, &c)| (t.clone(), Vec::with_capacity(c as usize)))
+            .collect();
         for (doc_idx, tf_map) in doc_term_freqs.iter().enumerate() {
             for (term, &tf) in tf_map {
                 if let Some(p) = postings.get_mut(term) {
@@ -358,10 +360,7 @@ mod tests {
         let idx = small_index();
         // A query whose tokens are all OOV → no document can score > 0
         let results = idx.top_k("xyzzy quux frobnitz", 5);
-        assert!(
-            results.is_empty(),
-            "OOV query should return empty results"
-        );
+        assert!(results.is_empty(), "OOV query should return empty results");
     }
 
     #[test]
@@ -401,7 +400,9 @@ mod tests {
     fn synth_corpus(n_docs: usize, vocab: usize, doc_len: usize, seed: u64) -> Vec<String> {
         let mut s = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut next = move || {
-            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (s >> 33) as f64 / (1u64 << 31) as f64
         };
         (0..n_docs)
@@ -451,7 +452,10 @@ mod tests {
             gs.sort_by(|a, b| a.partial_cmp(b).unwrap());
             ws.sort_by(|a, b| a.partial_cmp(b).unwrap());
             for (a, b) in gs.iter().zip(&ws) {
-                assert!((a - b).abs() <= 1e-4, "score mismatch for {q:?}: {a} vs {b}");
+                assert!(
+                    (a - b).abs() <= 1e-4,
+                    "score mismatch for {q:?}: {a} vs {b}"
+                );
             }
         }
     }
@@ -497,12 +501,8 @@ mod tests {
     #[test]
     fn test_build_with_params() {
         // k1=0 → TF is completely ignored; every matched doc gets the same IDF
-        let idx = BM25Index::build_with_params(
-            &["d0", "d1"],
-            &["fox fox fox", "fox once"],
-            0.0,
-            0.75,
-        );
+        let idx =
+            BM25Index::build_with_params(&["d0", "d1"], &["fox fox fox", "fox once"], 0.0, 0.75);
         let tokens = vec!["fox".to_owned()];
         let s0 = idx.score_doc(&tokens, 0);
         let s1 = idx.score_doc(&tokens, 1);

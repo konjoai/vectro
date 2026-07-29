@@ -10,17 +10,21 @@
 //!   HNSW recall@10: reported by `recall_at_k_bench`
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use vectro_lib::quant::sq2::Sq2Vector;
-use vectro_lib::quant::sq3::Sq3Vector;
-use vectro_lib::quant::{int8, nf4};
 use vectro_lib::index::hnsw::HnswIndex;
 use vectro_lib::index::ivf::IvfIndex;
 use vectro_lib::index::ivf_pq::IvfPqIndex;
 use vectro_lib::index::quant_hnsw::{Bf16HnswIndex, Int8HnswIndex, Nf4HnswIndex};
+use vectro_lib::quant::sq2::Sq2Vector;
+use vectro_lib::quant::sq3::Sq3Vector;
+use vectro_lib::quant::{int8, nf4};
 
 fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
     (0..n)
-        .map(|i| (0..d).map(|j| ((i * d + j) as f32 * 0.0013_f32).sin()).collect())
+        .map(|i| {
+            (0..d)
+                .map(|j| ((i * d + j) as f32 * 0.0013_f32).sin())
+                .collect()
+        })
         .collect()
 }
 
@@ -159,7 +163,8 @@ fn bench_ivfpq_search(c: &mut Criterion) {
 
     let mut idx = IvfPqIndex::new(64, 8);
     // D=128, M=8 sub-spaces → sub_dim=16; 64 PQ centroids per sub-space.
-    idx.train(&vecs, 8, 64, 10, 42).expect("IvfPqIndex train failed");
+    idx.train(&vecs, 8, 64, 10, 42)
+        .expect("IvfPqIndex train failed");
     for v in &vecs {
         idx.add(v);
     }

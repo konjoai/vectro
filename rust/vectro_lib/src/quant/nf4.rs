@@ -435,7 +435,10 @@ unsafe fn avx2_abs_max(v: &[f32]) -> f32 {
 
 /// Encode a batch of f32 vectors to NF4 in parallel.
 pub fn encode_batch(vectors: &[Vec<f32>]) -> Vec<Nf4Vector> {
-    vectors.par_iter().map(|v| Nf4Vector::encode_fast(v)).collect()
+    vectors
+        .par_iter()
+        .map(|v| Nf4Vector::encode_fast(v))
+        .collect()
 }
 
 /// Encode one vector's NF4 nibbles directly into `packed_out` (length
@@ -522,7 +525,11 @@ mod tests {
             batch_encode_packed_into(&flat, n, d, &mut packed, &mut scales);
             for r in 0..n {
                 let enc = Nf4Vector::encode_fast(&flat[r * d..r * d + d]);
-                assert_eq!(&packed[r * bpv..r * bpv + bpv], &enc.packed[..], "d={d} row={r}");
+                assert_eq!(
+                    &packed[r * bpv..r * bpv + bpv],
+                    &enc.packed[..],
+                    "d={d} row={r}"
+                );
                 assert_eq!(scales[r], enc.scale, "d={d} row={r} scale");
             }
         }
@@ -536,14 +543,19 @@ mod tests {
         if !(is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")) {
             return;
         }
-        for dim in [1usize, 2, 15, 16, 31, 32, 33, 63, 64, 96, 127, 128, 129, 256, 768, 769] {
+        for dim in [
+            1usize, 2, 15, 16, 31, 32, 33, 63, 64, 96, 127, 128, 129, 256, 768, 769,
+        ] {
             let v: Vec<f32> = (0..dim).map(|i| ((i as f32 * 0.013) - 0.5).sin()).collect();
             let q: Vec<f32> = (0..dim).map(|i| ((i as f32 * 0.027) + 0.2).cos()).collect();
             let enc = Nf4Vector::encode_fast(&v);
             let scalar = enc.cosine_dist_to_query_scalar(&q);
             // SAFETY: avx2+fma checked above.
             let simd = unsafe { enc.cosine_dist_to_query_avx2(&q) };
-            assert!((scalar - simd).abs() < 1e-4, "dim={dim}: scalar={scalar} simd={simd}");
+            assert!(
+                (scalar - simd).abs() < 1e-4,
+                "dim={dim}: scalar={scalar} simd={simd}"
+            );
         }
     }
 
@@ -552,14 +564,18 @@ mod tests {
         let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
         let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
         let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if na == 0.0 || nb == 0.0 { return -1.0; }
+        if na == 0.0 || nb == 0.0 {
+            return -1.0;
+        }
         dot / (na * nb)
     }
 
     #[test]
     fn roundtrip_cosine_quality() {
         // d=768, normally-distributed values — matches the primary benchmark vector shape
-        let v: Vec<f32> = (0..768).map(|i| ((i as f32 * 0.007) - 2.688).sin() * 0.8).collect();
+        let v: Vec<f32> = (0..768)
+            .map(|i| ((i as f32 * 0.007) - 2.688).sin() * 0.8)
+            .collect();
         let enc = Nf4Vector::encode(&v);
         let dec = enc.decode();
         assert_eq!(dec.len(), 768);
@@ -581,19 +597,24 @@ mod tests {
             state ^= state << 17;
             state
         };
-        for &dim in &[1usize, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 33, 128, 255, 256, 767, 768] {
+        for &dim in &[
+            1usize, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 33, 128, 255, 256, 767, 768,
+        ] {
             for trial in 0..16 {
                 let v: Vec<f32> = (0..dim)
                     .map(|_| {
                         let r = (next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5; // ~[-0.5, 0.5)
-                        // Occasional 1e6-magnitude spike to stress abs-max + clamp.
+                                                                                   // Occasional 1e6-magnitude spike to stress abs-max + clamp.
                         let mag = if next() & 0xF == 0 { 1.0e6 } else { 1.0 };
                         r * 2.0 * mag
                     })
                     .collect();
                 let s = Nf4Vector::encode(&v);
                 let f = Nf4Vector::encode_fast(&v);
-                assert_eq!(s.packed, f.packed, "packed mismatch dim={dim} trial={trial}");
+                assert_eq!(
+                    s.packed, f.packed,
+                    "packed mismatch dim={dim} trial={trial}"
+                );
                 assert_eq!(s.scale, f.scale, "scale mismatch dim={dim} trial={trial}");
                 assert_eq!(s.dim, f.dim);
             }
@@ -607,7 +628,9 @@ mod tests {
         assert_eq!(enc.scale, 1.0);
         let dec = enc.decode();
         // All decoded values should be NF4_LEVELS[nearest_nf4(0)] * 1.0 = 0.0
-        for x in &dec { assert!(x.abs() < 1e-5); }
+        for x in &dec {
+            assert!(x.abs() < 1e-5);
+        }
     }
 
     #[test]
@@ -666,10 +689,9 @@ mod proptest_tests {
     fn arb_nonzero_vec(d: usize) -> impl Strategy<Value = Vec<f32>> {
         // Use a range that covers wide dynamic range but keeps x² * d well below
         // f32::MAX (3.4e38).  With max |x| ≤ 1e18: sum(x²) ≤ d * 1e36 ≤ 3.2e37.
-        prop::collection::vec(-1e18f32..1e18f32, d)
-            .prop_filter("degenerate zero vector", |v| {
-                v.iter().any(|x| x.abs() > 1e-6)
-            })
+        prop::collection::vec(-1e18f32..1e18f32, d).prop_filter("degenerate zero vector", |v| {
+            v.iter().any(|x| x.abs() > 1e-6)
+        })
     }
 
     proptest! {

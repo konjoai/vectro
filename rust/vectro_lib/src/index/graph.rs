@@ -41,8 +41,17 @@ impl Graph {
     /// Empty graph; layer-0 nodes get `m0 + 1` slots each. `m0 ≤ 254` (a u8 fill
     /// count, +1 transient) — true for every sane HNSW `m` (default `m=16`).
     pub(crate) fn new(m0: usize) -> Self {
-        assert!(m0 <= 254, "m0 must be ≤ 254 (m ≤ 127) for the flat layer-0 store");
-        Self { m0, stride: m0 + 1, l0: Vec::new(), l0_len: Vec::new(), upper: Vec::new() }
+        assert!(
+            m0 <= 254,
+            "m0 must be ≤ 254 (m ≤ 127) for the flat layer-0 store"
+        );
+        Self {
+            m0,
+            stride: m0 + 1,
+            l0: Vec::new(),
+            l0_len: Vec::new(),
+            upper: Vec::new(),
+        }
     }
 
     /// Append a new node at `level` (its layers are `0..=level`), all empty.
@@ -103,7 +112,11 @@ impl Graph {
     pub(crate) fn push(&mut self, node: usize, layer: usize, id: NodeId) {
         if layer == 0 {
             let len = self.l0_len[node] as usize;
-            debug_assert!(len < self.stride, "layer-0 slot overflow (len {len}, stride {})", self.stride);
+            debug_assert!(
+                len < self.stride,
+                "layer-0 slot overflow (len {len}, stride {})",
+                self.stride
+            );
             self.l0[node * self.stride + len] = id;
             self.l0_len[node] = (len + 1) as u8;
         } else {
@@ -159,7 +172,13 @@ pub(crate) mod graph_serde {
             .iter()
             .map(|layers| layers.iter().map(|l| l.to_vec()).collect())
             .collect();
-        Wire { m0: graph.m0, l0: graph.l0.clone(), l0_len: graph.l0_len.clone(), upper }.serialize(s)
+        Wire {
+            m0: graph.m0,
+            l0: graph.l0.clone(),
+            l0_len: graph.l0_len.clone(),
+            upper,
+        }
+        .serialize(s)
     }
 
     pub fn deserialize<'de, D>(d: D) -> Result<Graph, D::Error>
@@ -172,7 +191,13 @@ pub(crate) mod graph_serde {
             .into_iter()
             .map(|layers| layers.into_iter().map(NeighborList::from_vec).collect())
             .collect();
-        Ok(Graph { m0: w.m0, stride: w.m0 + 1, l0: w.l0, l0_len: w.l0_len, upper })
+        Ok(Graph {
+            m0: w.m0,
+            stride: w.m0 + 1,
+            l0: w.l0,
+            l0_len: w.l0_len,
+            upper,
+        })
     }
 }
 
@@ -202,7 +227,10 @@ mod tests {
     #[test]
     fn from_layered_preserves_adjacency() {
         let layered: Vec<Vec<NeighborList>> = vec![
-            vec![NeighborList::from_slice(&[1, 2, 300]), NeighborList::from_slice(&[2])],
+            vec![
+                NeighborList::from_slice(&[1, 2, 300]),
+                NeighborList::from_slice(&[2]),
+            ],
             vec![NeighborList::from_slice(&[0])],
         ];
         let g = Graph::from_layered(layered, 32);

@@ -12,16 +12,15 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+use ndarray::{Array1, Array2, Array3};
+use numpy::{
+    IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
-use numpy::{
-    IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2,
-    PyReadonlyArray3,
-};
-use ndarray::{Array1, Array2, Array3};
-use vectro_lib::{Embedding, EmbeddingDataset};
-use vectro_lib::search::{SearchIndex, QuantizedIndex};
 use std::collections::HashMap;
+use vectro_lib::search::{QuantizedIndex, SearchIndex};
+use vectro_lib::{Embedding, EmbeddingDataset};
 
 /// Python wrapper for Embedding
 #[pyclass]
@@ -51,7 +50,11 @@ impl PyEmbedding {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyEmbedding(id='{}', dim={})", self.inner.id, self.inner.vector.len())
+        format!(
+            "PyEmbedding(id='{}', dim={})",
+            self.inner.id,
+            self.inner.vector.len()
+        )
     }
 }
 
@@ -89,23 +92,26 @@ impl PyEmbeddingDataset {
     }
 
     fn get_embedding(&self, index: usize) -> Option<PyEmbedding> {
-        self.inner.embeddings.get(index).map(|e| PyEmbedding { inner: e.clone() })
+        self.inner
+            .embeddings
+            .get(index)
+            .map(|e| PyEmbedding { inner: e.clone() })
     }
 
     fn get_vectors(&self, py: Python<'_>) -> PyResult<Py<PyArray2<f32>>> {
         if self.inner.is_empty() {
             return Ok(Array2::zeros((0, 0)).into_pyarray(py).to_owned());
         }
-        
+
         let dim = self.inner.embeddings[0].vector.len();
         let mut array = Array2::zeros((self.inner.len(), dim));
-        
+
         for (i, embedding) in self.inner.embeddings.iter().enumerate() {
             for (j, &value) in embedding.vector.iter().enumerate() {
                 array[[i, j]] = value;
             }
         }
-        
+
         Ok(array.into_pyarray(py).to_owned())
     }
 
@@ -124,15 +130,14 @@ impl PyEmbeddingDataset {
     /// Construct an empty EmbeddingDataset (alias for `new()`).
     #[staticmethod]
     fn empty() -> Self {
-        Self { inner: EmbeddingDataset::new() }
+        Self {
+            inner: EmbeddingDataset::new(),
+        }
     }
 
     /// Build an EmbeddingDataset from parallel ids and vector lists.
     #[staticmethod]
-    fn from_embeddings(
-        ids: Vec<String>,
-        vectors: Vec<Vec<f32>>,
-    ) -> PyResult<Self> {
+    fn from_embeddings(ids: Vec<String>, vectors: Vec<Vec<f32>>) -> PyResult<Self> {
         if ids.len() != vectors.len() {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "ids length ({}) != vectors length ({})",
@@ -168,23 +173,31 @@ impl PySearchIndex {
     #[staticmethod]
     fn from_dataset(dataset: &PyEmbeddingDataset) -> PyResult<Self> {
         let index = SearchIndex::from_dataset(&dataset.inner.embeddings);
-        
+
         // Build ID->index mapping
         let mut id_to_index = HashMap::new();
         for (idx, embedding) in dataset.inner.embeddings.iter().enumerate() {
             id_to_index.insert(embedding.id.clone(), idx);
         }
-        
-        Ok(Self { inner: index, id_to_index })
+
+        Ok(Self {
+            inner: index,
+            id_to_index,
+        })
     }
 
-    fn search_vector(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, top_k: usize) -> PyResult<Py<PyTuple>> {
+    fn search_vector(
+        &self,
+        py: Python<'_>,
+        query: PyReadonlyArray1<f32>,
+        top_k: usize,
+    ) -> PyResult<Py<PyTuple>> {
         let query_vec = query.as_array().to_vec();
         let results = self.inner.top_k(&query_vec, top_k);
-        
+
         let mut indices = Vec::new();
         let mut similarities = Vec::new();
-        
+
         // The results are (id, similarity) pairs, we need to convert to indices
         for (id, similarity) in results {
             // Find the index of this ID in the original dataset
@@ -195,38 +208,44 @@ impl PySearchIndex {
                 similarities.push(similarity);
             }
         }
-        
+
         let indices_array: &PyArray1<usize> = Array1::from(indices).into_pyarray(py);
         let similarities_array: &PyArray1<f32> = Array1::from(similarities).into_pyarray(py);
-        
+
         Ok(PyTuple::new(py, [indices_array.as_ref(), similarities_array.as_ref()]).into())
     }
 
-    fn batch_search(&self, py: Python<'_>, queries: PyReadonlyArray2<f32>, top_k: usize) -> PyResult<Py<PyList>> {
+    fn batch_search(
+        &self,
+        py: Python<'_>,
+        queries: PyReadonlyArray2<f32>,
+        top_k: usize,
+    ) -> PyResult<Py<PyList>> {
         let queries_array = queries.as_array();
         let mut all_results = Vec::new();
-        
+
         for query_row in queries_array.outer_iter() {
             let query_vec = query_row.to_vec();
             let results = self.inner.top_k(&query_vec, top_k);
-            
+
             let mut indices = Vec::new();
             let mut similarities = Vec::new();
-            
+
             for (id, similarity) in results {
                 if let Some(index) = self.find_id_index(id) {
                     indices.push(index);
                     similarities.push(similarity);
                 }
             }
-            
+
             let indices_array: &PyArray1<usize> = Array1::from(indices).into_pyarray(py);
             let similarities_array: &PyArray1<f32> = Array1::from(similarities).into_pyarray(py);
-            let result_tuple = PyTuple::new(py, [indices_array.as_ref(), similarities_array.as_ref()]);
-            
+            let result_tuple =
+                PyTuple::new(py, [indices_array.as_ref(), similarities_array.as_ref()]);
+
             all_results.push(result_tuple);
         }
-        
+
         Ok(PyList::new(py, all_results).into())
     }
 
@@ -254,33 +273,41 @@ impl PyQuantizedIndex {
     #[staticmethod]
     fn from_dataset(dataset: &PyEmbeddingDataset) -> PyResult<Self> {
         let index = QuantizedIndex::from_dataset(&dataset.inner.embeddings);
-        
+
         // Build ID->index mapping
         let mut id_to_index = HashMap::new();
         for (idx, embedding) in dataset.inner.embeddings.iter().enumerate() {
             id_to_index.insert(embedding.id.clone(), idx);
         }
-        
-        Ok(Self { inner: index, id_to_index })
+
+        Ok(Self {
+            inner: index,
+            id_to_index,
+        })
     }
 
-    fn search_vector(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, top_k: usize) -> PyResult<Py<PyTuple>> {
+    fn search_vector(
+        &self,
+        py: Python<'_>,
+        query: PyReadonlyArray1<f32>,
+        top_k: usize,
+    ) -> PyResult<Py<PyTuple>> {
         let query_vec = query.as_array().to_vec();
         let results = self.inner.top_k(&query_vec, top_k);
-        
+
         let mut indices = Vec::new();
         let mut similarities = Vec::new();
-        
+
         for (id, similarity) in results {
             if let Some(index) = self.find_id_index(id) {
                 indices.push(index);
                 similarities.push(similarity);
             }
         }
-        
+
         let indices_array: &PyArray1<usize> = Array1::from(indices).into_pyarray(py);
         let similarities_array: &PyArray1<f32> = Array1::from(similarities).into_pyarray(py);
-        
+
         Ok(PyTuple::new(py, [indices_array.as_ref(), similarities_array.as_ref()]).into())
     }
 
@@ -309,40 +336,47 @@ impl PyQuantizedIndex {
 
 /// Compression utilities
 #[pyfunction]
-fn compress_embeddings(py: Python<'_>, vectors: PyReadonlyArray2<f32>, ids: Option<Vec<String>>) -> PyResult<Py<PyTuple>> {
+fn compress_embeddings(
+    py: Python<'_>,
+    vectors: PyReadonlyArray2<f32>,
+    ids: Option<Vec<String>>,
+) -> PyResult<Py<PyTuple>> {
     let vectors_array = vectors.as_array();
     let mut dataset = EmbeddingDataset::new();
-    
+
     for (i, vector_row) in vectors_array.outer_iter().enumerate() {
-        let id = ids.as_ref().and_then(|ids| ids.get(i).cloned())
-                   .unwrap_or_else(|| format!("vec_{}", i));
+        let id = ids
+            .as_ref()
+            .and_then(|ids| ids.get(i).cloned())
+            .unwrap_or_else(|| format!("vec_{}", i));
         let vector_vec = vector_row.to_vec();
         dataset.add(Embedding::new(id, vector_vec));
     }
-    
+
     // Create both regular and quantized indices
     let search_index = SearchIndex::from_dataset(&dataset.embeddings);
     let quantized_index = QuantizedIndex::from_dataset(&dataset.embeddings);
-    
+
     // Build ID->index mapping
     let mut id_to_index = HashMap::new();
     for (idx, embedding) in dataset.embeddings.iter().enumerate() {
         id_to_index.insert(embedding.id.clone(), idx);
     }
-    
-    let py_search_index = PySearchIndex { 
-        inner: search_index, 
-        id_to_index: id_to_index.clone()
+
+    let py_search_index = PySearchIndex {
+        inner: search_index,
+        id_to_index: id_to_index.clone(),
     };
-    let py_quantized_index = PyQuantizedIndex { 
-        inner: quantized_index, 
-        id_to_index
+    let py_quantized_index = PyQuantizedIndex {
+        inner: quantized_index,
+        id_to_index,
     };
-    
-    Ok(PyTuple::new(py, &[
-        py_search_index.into_py(py),
-        py_quantized_index.into_py(py)
-    ]).into())
+
+    Ok(PyTuple::new(
+        py,
+        &[py_search_index.into_py(py), py_quantized_index.into_py(py)],
+    )
+    .into())
 }
 
 /// Quality analysis utilities
@@ -350,38 +384,41 @@ fn compress_embeddings(py: Python<'_>, vectors: PyReadonlyArray2<f32>, ids: Opti
 fn analyze_compression_quality(
     original: PyReadonlyArray2<f32>,
     compressed_index: &PyQuantizedIndex,
-    num_samples: Option<usize>
+    num_samples: Option<usize>,
 ) -> PyResult<HashMap<String, f32>> {
     let samples = num_samples.unwrap_or(100);
     let original_array = original.as_array();
     let mut total_similarity = 0.0f32;
     let mut max_similarity = 0.0f32;
     let mut min_similarity = 1.0f32;
-    
+
     let actual_samples = samples.min(original_array.nrows());
-    
+
     for i in 0..actual_samples {
         let query = original_array.row(i).to_vec();
         let results = compressed_index.inner.top_k(&query, 1);
-        
+
         if let Some((_, similarity)) = results.first() {
             total_similarity += similarity;
             max_similarity = max_similarity.max(*similarity);
             min_similarity = min_similarity.min(*similarity);
         }
     }
-    
+
     let avg_similarity = total_similarity / actual_samples as f32;
     let compression_ratio = compressed_index.compression_ratio();
-    
+
     let mut analysis = HashMap::new();
     analysis.insert("average_similarity".to_string(), avg_similarity);
     analysis.insert("max_similarity".to_string(), max_similarity);
     analysis.insert("min_similarity".to_string(), min_similarity);
     analysis.insert("compression_ratio".to_string(), compression_ratio);
-    analysis.insert("memory_savings_percent".to_string(), (1.0 - 1.0/compression_ratio) * 100.0);
+    analysis.insert(
+        "memory_savings_percent".to_string(),
+        (1.0 - 1.0 / compression_ratio) * 100.0,
+    );
     analysis.insert("samples_analyzed".to_string(), actual_samples as f32);
-    
+
     Ok(analysis)
 }
 
@@ -391,15 +428,15 @@ fn benchmark_search_performance(
     index: &PySearchIndex,
     queries: PyReadonlyArray2<f32>,
     top_k: usize,
-    num_runs: Option<usize>
+    num_runs: Option<usize>,
 ) -> PyResult<HashMap<String, f32>> {
     use std::time::Instant;
-    
+
     let runs = num_runs.unwrap_or(10);
     let queries_array = queries.as_array();
     let mut total_time = 0.0;
     let mut successful_queries = 0;
-    
+
     for _ in 0..runs {
         for query_row in queries_array.outer_iter() {
             let start = Instant::now();
@@ -410,38 +447,41 @@ fn benchmark_search_performance(
             successful_queries += 1;
         }
     }
-    
+
     let avg_latency_ms = if successful_queries > 0 {
         total_time / successful_queries as f32
     } else {
         0.0
     };
-    
+
     let queries_per_second = if avg_latency_ms > 0.0 {
         1000.0 / avg_latency_ms
     } else {
         0.0
     };
-    
+
     let mut benchmark = HashMap::new();
     benchmark.insert("average_latency_ms".to_string(), avg_latency_ms);
     benchmark.insert("queries_per_second".to_string(), queries_per_second);
     benchmark.insert("successful_queries".to_string(), successful_queries as f32);
-    benchmark.insert("total_runs".to_string(), (runs * queries_array.nrows()) as f32);
-    
+    benchmark.insert(
+        "total_runs".to_string(),
+        (runs * queries_array.nrows()) as f32,
+    );
+
     Ok(benchmark)
 }
 
 // ─────────────────────── Phase-16 algorithm bindings ──────────────────────
 
-use vectro_lib::quant::{int8, nf4, binary, pq, bf16};
 use vectro_lib::index::bm25::BM25Index;
 use vectro_lib::index::hnsw::HnswIndex;
 use vectro_lib::index::ivf::IvfIndex;
 use vectro_lib::index::ivf_pq::IvfPqIndex;
 use vectro_lib::index::quant_hnsw::{
-    Bf16HnswIndex, Int8HnswIndex, Nf4HnswIndex, Sq2HnswIndex, BinaryHnswIndex,
+    Bf16HnswIndex, BinaryHnswIndex, Int8HnswIndex, Nf4HnswIndex, Sq2HnswIndex,
 };
+use vectro_lib::quant::{bf16, binary, int8, nf4, pq};
 
 /// INT8 symmetric abs-max quantizer (Python binding).
 #[pyclass]
@@ -453,7 +493,9 @@ struct PyInt8Encoder {
 impl PyInt8Encoder {
     #[new]
     fn new() -> Self {
-        Self { vectors: Vec::new() }
+        Self {
+            vectors: Vec::new(),
+        }
     }
 
     fn encode(&mut self, vectors: Vec<Vec<f32>>) {
@@ -516,7 +558,9 @@ struct PyNf4Encoder {
 impl PyNf4Encoder {
     #[new]
     fn new() -> Self {
-        Self { vectors: Vec::new() }
+        Self {
+            vectors: Vec::new(),
+        }
     }
 
     fn encode(&mut self, vectors: Vec<Vec<f32>>) {
@@ -542,7 +586,9 @@ struct PyBinaryEncoder {
 impl PyBinaryEncoder {
     #[new]
     fn new() -> Self {
-        Self { vectors: Vec::new() }
+        Self {
+            vectors: Vec::new(),
+        }
     }
 
     fn encode(&mut self, vectors: Vec<Vec<f32>>) {
@@ -569,7 +615,10 @@ struct PyPQCodebook {
 impl PyPQCodebook {
     #[new]
     fn new() -> Self {
-        Self { codebook: None, codes: Vec::new() }
+        Self {
+            codebook: None,
+            codes: Vec::new(),
+        }
     }
 
     fn train(
@@ -593,19 +642,17 @@ impl PyPQCodebook {
     }
 
     fn encode(&mut self, vectors: Vec<Vec<f32>>) -> PyResult<()> {
-        let cb = self
-            .codebook
-            .as_ref()
-            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("train() must be called first"))?;
+        let cb = self.codebook.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("train() must be called first")
+        })?;
         self.codes = pq::pq_encode(&vectors, cb);
         Ok(())
     }
 
     fn search(&self, query: Vec<f32>, top_k: usize) -> PyResult<Vec<(usize, f32)>> {
-        let cb = self
-            .codebook
-            .as_ref()
-            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("train() must be called first"))?;
+        let cb = self.codebook.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("train() must be called first")
+        })?;
         Ok(pq::pq_search(&query, &self.codes, cb, top_k))
     }
 
@@ -614,7 +661,10 @@ impl PyPQCodebook {
             None => "PyPQCodebook(untrained)".to_string(),
             Some(cb) => format!(
                 "PyPQCodebook(M={}, K={}, sub_dim={}, n_encoded={})",
-                cb.n_subspaces, cb.n_centroids, cb.sub_dim, self.codes.len()
+                cb.n_subspaces,
+                cb.n_centroids,
+                cb.sub_dim,
+                self.codes.len()
             ),
         }
     }
@@ -642,7 +692,9 @@ impl PyHnswIndex {
                 )))
             }
         };
-        Ok(Self { inner: HnswIndex::with_metric(m, ef_construction, metric) })
+        Ok(Self {
+            inner: HnswIndex::with_metric(m, ef_construction, metric),
+        })
     }
 
     fn add(&mut self, vector: Vec<f32>) {
@@ -675,7 +727,10 @@ impl PyHnswIndex {
         let rows: Vec<Vec<f32>> = if let Some(flat) = arr.as_slice() {
             (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect()
         } else {
-            arr.rows().into_iter().map(|row| row.iter().copied().collect()).collect()
+            arr.rows()
+                .into_iter()
+                .map(|row| row.iter().copied().collect())
+                .collect()
         };
         // `rows` is owned Rust data; the graph build runs GIL-free.
         py.allow_threads(|| {
@@ -722,7 +777,10 @@ impl PyHnswIndex {
         let res = py.allow_threads(|| self.inner.search(&owned, k, ef));
         let ids: Vec<i64> = res.iter().map(|&(id, _)| id as i64).collect();
         let dists: Vec<f32> = res.iter().map(|&(_, d)| d).collect();
-        (Array1::from(ids).into_pyarray(py), Array1::from(dists).into_pyarray(py))
+        (
+            Array1::from(ids).into_pyarray(py),
+            Array1::from(dists).into_pyarray(py),
+        )
     }
 
     /// Search with an allow-list of node IDs.
@@ -739,10 +797,13 @@ impl PyHnswIndex {
         let allowed: HashSet<usize> = allowed_ids.into_iter().collect();
         let q = query.as_array();
         match q.as_slice() {
-            Some(s) => self.inner.search_filtered(s, k, ef, |id| allowed.contains(&id)),
+            Some(s) => self
+                .inner
+                .search_filtered(s, k, ef, |id| allowed.contains(&id)),
             None => {
                 let v: Vec<f32> = q.iter().copied().collect();
-                self.inner.search_filtered(&v, k, ef, |id| allowed.contains(&id))
+                self.inner
+                    .search_filtered(&v, k, ef, |id| allowed.contains(&id))
             }
         }
     }
@@ -863,7 +924,9 @@ struct PyBf16Encoder {
 impl PyBf16Encoder {
     #[new]
     fn new() -> Self {
-        Self { vectors: Vec::new() }
+        Self {
+            vectors: Vec::new(),
+        }
     }
 
     /// Encode a list of f32 vectors to BF16.
@@ -902,9 +965,10 @@ impl PyBf16Encoder {
     /// Cosine distance between two stored vectors (by index).
     fn cosine_dist(&self, i: usize, j: usize) -> PyResult<f32> {
         if i >= self.vectors.len() || j >= self.vectors.len() {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                format!("index out of range: i={i}, j={j}, n={}", self.vectors.len()),
-            ));
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "index out of range: i={i}, j={j}, n={}",
+                self.vectors.len()
+            )));
         }
         Ok(self.vectors[i].cosine_dist(&self.vectors[j]))
     }
@@ -928,17 +992,31 @@ struct PyIvfIndex {
 impl PyIvfIndex {
     #[new]
     fn new(n_lists: usize, n_probe: usize) -> Self {
-        Self { inner: IvfIndex::new(n_lists, n_probe) }
+        Self {
+            inner: IvfIndex::new(n_lists, n_probe),
+        }
     }
 
     /// Train the coarse quantizer from example vectors.
-    fn train(&mut self, py: Python<'_>, vectors: Vec<Vec<f32>>, max_iter: usize, seed: u64) -> PyResult<()> {
+    fn train(
+        &mut self,
+        py: Python<'_>,
+        vectors: Vec<Vec<f32>>,
+        max_iter: usize,
+        seed: u64,
+    ) -> PyResult<()> {
         py.allow_threads(|| self.inner.train(&vectors, max_iter, seed))
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Zero-copy train from a numpy array (shape [N, D]).
-    fn train_np(&mut self, py: Python<'_>, array: PyReadonlyArray2<f32>, max_iter: usize, seed: u64) -> PyResult<()> {
+    fn train_np(
+        &mut self,
+        py: Python<'_>,
+        array: PyReadonlyArray2<f32>,
+        max_iter: usize,
+        seed: u64,
+    ) -> PyResult<()> {
         let arr = array.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
         // Borrow contiguous rows directly; only copy when the array is strided.
@@ -950,8 +1028,11 @@ impl PyIvfIndex {
                 py.allow_threads(|| self.inner.train(&rows, max_iter, seed))
             }
             None => {
-                let owned: Vec<Vec<f32>> =
-                    arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
+                let owned: Vec<Vec<f32>> = arr
+                    .rows()
+                    .into_iter()
+                    .map(|r| r.iter().copied().collect())
+                    .collect();
                 py.allow_threads(|| self.inner.train(&owned, max_iter, seed))
             }
         }
@@ -977,8 +1058,11 @@ impl PyIvfIndex {
                 });
             }
             None => {
-                let owned: Vec<Vec<f32>> =
-                    arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
+                let owned: Vec<Vec<f32>> = arr
+                    .rows()
+                    .into_iter()
+                    .map(|r| r.iter().copied().collect())
+                    .collect();
                 py.allow_threads(|| {
                     self.inner.add_batch(&owned);
                 });
@@ -994,7 +1078,12 @@ impl PyIvfIndex {
 
     /// Zero-copy search from a 1-D numpy query vector. Releases the GIL during
     /// the search so a Python threadpool scales across cores.
-    fn search_np(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
+    fn search_np(
+        &self,
+        py: Python<'_>,
+        query: PyReadonlyArray1<f32>,
+        k: usize,
+    ) -> Vec<(usize, f32)> {
         let owned: Vec<f32> = query.as_array().iter().copied().collect();
         py.allow_threads(|| self.inner.search(&owned, k))
     }
@@ -1029,7 +1118,8 @@ impl PyIvfIndex {
             Some(s) => self.inner.search_filtered(s, k, |id| allowed.contains(&id)),
             None => {
                 let v: Vec<f32> = q.iter().copied().collect();
-                self.inner.search_filtered(&v, k, |id| allowed.contains(&id))
+                self.inner
+                    .search_filtered(&v, k, |id| allowed.contains(&id))
             }
         }
     }
@@ -1047,7 +1137,8 @@ impl PyIvfIndex {
 
     /// Persist to file (bincode).
     fn save(&self, path: &str) -> PyResult<()> {
-        self.inner.save(std::path::Path::new(path))
+        self.inner
+            .save(std::path::Path::new(path))
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
     }
 
@@ -1060,7 +1151,11 @@ impl PyIvfIndex {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyIvfIndex(n_lists={}, trained={})", self.inner.n_lists, self.inner.is_trained())
+        format!(
+            "PyIvfIndex(n_lists={}, trained={})",
+            self.inner.n_lists,
+            self.inner.is_trained()
+        )
     }
 }
 
@@ -1074,7 +1169,9 @@ struct PyIvfPqIndex {
 impl PyIvfPqIndex {
     #[new]
     fn new(n_lists: usize, n_probe: usize) -> Self {
-        Self { inner: IvfPqIndex::new(n_lists, n_probe) }
+        Self {
+            inner: IvfPqIndex::new(n_lists, n_probe),
+        }
     }
 
     /// Train the coarse quantizer and PQ codebook.
@@ -1087,8 +1184,11 @@ impl PyIvfPqIndex {
         max_iter: usize,
         seed: u64,
     ) -> PyResult<()> {
-        py.allow_threads(|| self.inner.train(&vectors, n_subspaces, n_centroids, max_iter, seed))
-            .map_err(pyo3::exceptions::PyValueError::new_err)
+        py.allow_threads(|| {
+            self.inner
+                .train(&vectors, n_subspaces, n_centroids, max_iter, seed)
+        })
+        .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Zero-copy train from a numpy array (shape [N, D]).
@@ -1108,12 +1208,21 @@ impl PyIvfPqIndex {
         match arr.as_slice() {
             Some(flat) => {
                 let rows: Vec<&[f32]> = (0..n).map(|i| &flat[i * d..(i + 1) * d]).collect();
-                py.allow_threads(|| self.inner.train(&rows, n_subspaces, n_centroids, max_iter, seed))
+                py.allow_threads(|| {
+                    self.inner
+                        .train(&rows, n_subspaces, n_centroids, max_iter, seed)
+                })
             }
             None => {
-                let owned: Vec<Vec<f32>> =
-                    arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
-                py.allow_threads(|| self.inner.train(&owned, n_subspaces, n_centroids, max_iter, seed))
+                let owned: Vec<Vec<f32>> = arr
+                    .rows()
+                    .into_iter()
+                    .map(|r| r.iter().copied().collect())
+                    .collect();
+                py.allow_threads(|| {
+                    self.inner
+                        .train(&owned, n_subspaces, n_centroids, max_iter, seed)
+                })
             }
         }
         .map_err(pyo3::exceptions::PyValueError::new_err)
@@ -1137,8 +1246,11 @@ impl PyIvfPqIndex {
                 });
             }
             None => {
-                let owned: Vec<Vec<f32>> =
-                    arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect();
+                let owned: Vec<Vec<f32>> = arr
+                    .rows()
+                    .into_iter()
+                    .map(|r| r.iter().copied().collect())
+                    .collect();
                 py.allow_threads(|| {
                     self.inner.add_batch(&owned);
                 });
@@ -1154,7 +1266,12 @@ impl PyIvfPqIndex {
 
     /// Zero-copy search from a 1-D numpy query vector. Releases the GIL during
     /// the search so a Python threadpool scales across cores.
-    fn search_np(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
+    fn search_np(
+        &self,
+        py: Python<'_>,
+        query: PyReadonlyArray1<f32>,
+        k: usize,
+    ) -> Vec<(usize, f32)> {
         let owned: Vec<f32> = query.as_array().iter().copied().collect();
         py.allow_threads(|| self.inner.search(&owned, k))
     }
@@ -1210,7 +1327,9 @@ impl PyIvfPqIndex {
 
     /// Persist to file (bincode).
     fn save(&self, path: &str) -> PyResult<()> {
-        self.inner.save(path).map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
+        self.inner
+            .save(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
     }
 
     /// Load from file.
@@ -1222,7 +1341,11 @@ impl PyIvfPqIndex {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyIvfPqIndex(n_lists={}, trained={})", self.inner.n_lists(), self.inner.is_trained())
+        format!(
+            "PyIvfPqIndex(n_lists={}, trained={})",
+            self.inner.n_lists(),
+            self.inner.is_trained()
+        )
     }
 }
 
@@ -1259,11 +1382,17 @@ impl PyIvfPq4Index {
         // Own the data so the heavy build can run with the GIL released.
         let data: Vec<Vec<f32>> = match arr.as_slice() {
             Some(flat) => (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect(),
-            None => arr.rows().into_iter().map(|r| r.iter().copied().collect()).collect(),
+            None => arr
+                .rows()
+                .into_iter()
+                .map(|r| r.iter().copied().collect())
+                .collect(),
         };
         let inner = py
             .allow_threads(|| {
-                vectro_lib::index::ivf_pq4::IvfPq4Index::build(&data, n_lists, n_probe, m, max_iter, seed)
+                vectro_lib::index::ivf_pq4::IvfPq4Index::build(
+                    &data, n_lists, n_probe, m, max_iter, seed,
+                )
             })
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
         Ok(Self { inner })
@@ -1281,7 +1410,12 @@ impl PyIvfPq4Index {
 
     /// Zero-copy search from a 1-D numpy query, GIL released during the scan so a
     /// Python threadpool scales across cores.
-    fn search_np(&self, py: Python<'_>, query: PyReadonlyArray1<f32>, k: usize) -> Vec<(usize, f32)> {
+    fn search_np(
+        &self,
+        py: Python<'_>,
+        query: PyReadonlyArray1<f32>,
+        k: usize,
+    ) -> Vec<(usize, f32)> {
         let owned: Vec<f32> = query.as_array().iter().copied().collect();
         py.allow_threads(|| self.inner.search(&owned, k))
     }
@@ -1339,7 +1473,9 @@ macro_rules! quant_hnsw_pyclass {
         impl $pyname {
             #[new]
             fn new(m: usize, ef_construction: usize) -> Self {
-                Self { inner: <$inner>::new(m, ef_construction) }
+                Self {
+                    inner: <$inner>::new(m, ef_construction),
+                }
             }
 
             fn add(&mut self, vector: Vec<f32>) {
@@ -1364,7 +1500,10 @@ macro_rules! quant_hnsw_pyclass {
                 let rows: Vec<Vec<f32>> = if let Some(flat) = arr.as_slice() {
                     (0..n).map(|i| flat[i * d..(i + 1) * d].to_vec()).collect()
                 } else {
-                    arr.rows().into_iter().map(|row| row.iter().copied().collect()).collect()
+                    arr.rows()
+                        .into_iter()
+                        .map(|row| row.iter().copied().collect())
+                        .collect()
                 };
                 // `rows` is owned Rust data; the graph build runs GIL-free.
                 py.allow_threads(|| {
@@ -1423,11 +1562,15 @@ macro_rules! quant_hnsw_pyclass {
                 let arr = queries.as_array();
                 let d = arr.ncols();
                 if let Some(flat) = arr.as_slice() {
-                    py.allow_threads(|| self.inner.search_rerank_batch_flat(flat, d, k, ef, rerank_k))
+                    py.allow_threads(|| {
+                        self.inner
+                            .search_rerank_batch_flat(flat, d, k, ef, rerank_k)
+                    })
                 } else {
                     let owned: Vec<f32> = arr.iter().copied().collect();
                     py.allow_threads(|| {
-                        self.inner.search_rerank_batch_flat(&owned, d, k, ef, rerank_k)
+                        self.inner
+                            .search_rerank_batch_flat(&owned, d, k, ef, rerank_k)
                     })
                 }
             }
@@ -1524,12 +1667,13 @@ macro_rules! quant_hnsw_pyclass {
                 let allowed: HashSet<usize> = allowed_ids.into_iter().collect();
                 let q = query.as_array();
                 match q.as_slice() {
-                    Some(s) => {
-                        self.inner.search_filtered(s, k, ef, |id| allowed.contains(&id))
-                    }
+                    Some(s) => self
+                        .inner
+                        .search_filtered(s, k, ef, |id| allowed.contains(&id)),
                     None => {
                         let v: Vec<f32> = q.iter().copied().collect();
-                        self.inner.search_filtered(&v, k, ef, |id| allowed.contains(&id))
+                        self.inner
+                            .search_filtered(&v, k, ef, |id| allowed.contains(&id))
                     }
                 }
             }
@@ -1568,10 +1712,10 @@ macro_rules! quant_hnsw_pyclass {
     };
 }
 
-quant_hnsw_pyclass!(PyBf16HnswIndex,   Bf16HnswIndex,   "BF16");
-quant_hnsw_pyclass!(PyInt8HnswIndex,   Int8HnswIndex,   "INT8");
-quant_hnsw_pyclass!(PyNf4HnswIndex,    Nf4HnswIndex,    "NF4");
-quant_hnsw_pyclass!(PySq2HnswIndex,    Sq2HnswIndex,    "SQ2");
+quant_hnsw_pyclass!(PyBf16HnswIndex, Bf16HnswIndex, "BF16");
+quant_hnsw_pyclass!(PyInt8HnswIndex, Int8HnswIndex, "INT8");
+quant_hnsw_pyclass!(PyNf4HnswIndex, Nf4HnswIndex, "NF4");
+quant_hnsw_pyclass!(PySq2HnswIndex, Sq2HnswIndex, "SQ2");
 quant_hnsw_pyclass!(PyBinaryHnswIndex, BinaryHnswIndex, "Binary");
 
 /// Encode a single f32 vector to INT8 using SIMD-dispatched abs-max quantisation.
@@ -1633,13 +1777,7 @@ fn quantize_nf4_batch<'py>(
         let packed_slice = unsafe { packed_arr.as_slice_mut()? };
         let scales_slice = unsafe { scales_arr.as_slice_mut()? };
         py.allow_threads(|| {
-            vectro_lib::quant::nf4::batch_encode_packed_into(
-                flat,
-                n,
-                d,
-                packed_slice,
-                scales_slice,
-            )
+            vectro_lib::quant::nf4::batch_encode_packed_into(flat, n, d, packed_slice, scales_slice)
         });
     }
     Ok((packed_arr, scales_arr))
@@ -1698,7 +1836,12 @@ fn quantize_int8_batch<'py>(
         let scales_slice = unsafe { scales_arr.as_slice_mut()? };
         py.allow_threads(|| {
             vectro_lib::quant::int8::batch_encode_checked_into_with_range(
-                flat, n, d, codes_slice, scales_slice, range_factor,
+                flat,
+                n,
+                d,
+                codes_slice,
+                scales_slice,
+                range_factor,
             )
         })
     };
@@ -1750,7 +1893,11 @@ fn quantize_int8_batch_normalized<'py>(
         let scales_slice = unsafe { scales_arr.as_slice_mut()? };
         py.allow_threads(|| {
             vectro_lib::quant::int8::batch_encode_normalized_checked_into(
-                flat, n, d, codes_slice, scales_slice,
+                flat,
+                n,
+                d,
+                codes_slice,
+                scales_slice,
             )
         })
     };
@@ -1799,7 +1946,11 @@ fn quantize_int8_batch_from_f16<'py>(
         let scales_slice = unsafe { scales_arr.as_slice_mut()? };
         py.allow_threads(|| {
             vectro_lib::quant::int8::batch_encode_f16_checked_into(
-                f16_flat, n, d, codes_slice, scales_slice,
+                f16_flat,
+                n,
+                d,
+                codes_slice,
+                scales_slice,
             )
         })
     };
@@ -1881,7 +2032,12 @@ fn pq_encode_batch<'py>(
 
     let vflat: Vec<f32> = varr.iter().copied().collect();
     let cflat: Vec<f32> = centroids.as_array().iter().copied().collect();
-    let cb = pq::PQCodebook { n_subspaces: m, n_centroids: k, sub_dim, centroids: cflat };
+    let cb = pq::PQCodebook {
+        n_subspaces: m,
+        n_centroids: k,
+        sub_dim,
+        centroids: cflat,
+    };
 
     let mut codes_flat = vec![0u8; n * m];
     pq::pq_encode_into(&vflat, &cb, &mut codes_flat);
@@ -1957,12 +2113,7 @@ impl PyBM25Index {
 
     /// Build with custom k1 / b BM25 parameters.
     #[staticmethod]
-    fn build_with_params(
-        ids: Vec<String>,
-        texts: Vec<String>,
-        k1: f32,
-        b: f32,
-    ) -> PyResult<Self> {
+    fn build_with_params(ids: Vec<String>, texts: Vec<String>, k1: f32, b: f32) -> PyResult<Self> {
         if ids.len() != texts.len() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "ids and texts must have the same length",
@@ -2090,7 +2241,10 @@ fn vectro_py(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // Add version info
     m.add("__version__", "4.10.0")?;
     m.add("__author__", "Wesley Scholl")?;
-    m.add("__description__", "Python bindings for Vectro high-performance vector compression and search")?;
+    m.add(
+        "__description__",
+        "Python bindings for Vectro high-performance vector compression and search",
+    )?;
 
     Ok(())
 }

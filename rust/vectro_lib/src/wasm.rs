@@ -109,7 +109,11 @@ mod tests {
     fn test_encode_int8_output_length() {
         let vec: Vec<f32> = (0..768).map(|i| (i as f32 - 383.5) / 100.0).collect();
         let codes = encode_int8(&vec);
-        assert_eq!(codes.len(), 768, "INT8 codes length must equal input dimension");
+        assert_eq!(
+            codes.len(),
+            768,
+            "INT8 codes length must equal input dimension"
+        );
     }
 
     #[wasm_bindgen_test]
@@ -117,11 +121,7 @@ mod tests {
         let vec: Vec<f32> = (0..64).map(|i| (i as f32 - 31.5) / 10.0).collect();
         let codes = encode_int8(&vec);
         for &c in &codes {
-            assert!(
-                c >= -128 && c <= 127,
-                "INT8 code {} out of i8 range",
-                c
-            );
+            assert!(c >= -128 && c <= 127, "INT8 code {} out of i8 range", c);
         }
     }
 
@@ -201,7 +201,11 @@ mod tests {
     #[wasm_bindgen_test]
     fn test_encode_nf4_dim_passthrough() {
         let vec: Vec<f32> = vec![0.1_f32; 42];
-        assert_eq!(encode_nf4_dim(&vec), 42, "encode_nf4_dim must return input length");
+        assert_eq!(
+            encode_nf4_dim(&vec),
+            42,
+            "encode_nf4_dim must return input length"
+        );
     }
 
     // ── Cross-method coherence ───────────────────────────────────────────────

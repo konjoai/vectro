@@ -162,9 +162,7 @@ class TestPQRustPath(unittest.TestCase):
             den = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1) + 1e-8
             return float((num / den).mean())
 
-        self.assertAlmostEqual(
-            mean_cos(self.data, rec_rust), mean_cos(self.data, rec_np), places=4
-        )
+        self.assertAlmostEqual(mean_cos(self.data, rec_rust), mean_cos(self.data, rec_np), places=4)
 
 
 if __name__ == "__main__":

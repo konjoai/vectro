@@ -1,5 +1,8 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use vectro_lib::{Embedding, search::{SearchIndex, QuantizedIndex}};
+use vectro_lib::{
+    search::{QuantizedIndex, SearchIndex},
+    Embedding,
+};
 
 // synthetic dataset generator
 fn make_dataset(n: usize, dim: usize) -> Vec<Embedding> {
@@ -22,18 +25,24 @@ fn bench_search(c: &mut Criterion) {
     let float_idx = SearchIndex::from_dataset(&ds);
     let mut qidx = QuantizedIndex::from_dataset(&ds);
 
-    c.bench_function("float_topk", |b| b.iter(|| {
-        let _ = float_idx.top_k(&query, 10);
-    }));
+    c.bench_function("float_topk", |b| {
+        b.iter(|| {
+            let _ = float_idx.top_k(&query, 10);
+        })
+    });
 
-    c.bench_function("quant_topk_on_the_fly", |b| b.iter(|| {
-        let _ = qidx.top_k(&query, 10);
-    }));
+    c.bench_function("quant_topk_on_the_fly", |b| {
+        b.iter(|| {
+            let _ = qidx.top_k(&query, 10);
+        })
+    });
 
     qidx.precompute_normalized();
-    c.bench_function("quant_topk_precomputed", |b| b.iter(|| {
-        let _ = qidx.top_k(&query, 10);
-    }));
+    c.bench_function("quant_topk_precomputed", |b| {
+        b.iter(|| {
+            let _ = qidx.top_k(&query, 10);
+        })
+    });
 }
 
 criterion_group!(benches, bench_search);

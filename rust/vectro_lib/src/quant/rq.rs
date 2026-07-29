@@ -147,7 +147,10 @@ pub fn rq_encode_flat(codebook: &RQCodebook, vecs: &[Vec<f32>]) -> Vec<Vec<u8>> 
 
 /// Decode flat codes `[n_vecs][n_passes * n_subspaces]` → `[n_vecs][dim]`.
 pub fn rq_decode_flat(codebook: &RQCodebook, codes: &[Vec<u8>]) -> Vec<Vec<f32>> {
-    codes.par_iter().map(|flat| decode_one(codebook, flat)).collect()
+    codes
+        .par_iter()
+        .map(|flat| decode_one(codebook, flat))
+        .collect()
 }
 
 /// Decode nested codes `[n_vecs][n_passes][n_subspaces]` → `[n_vecs][dim]`.

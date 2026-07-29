@@ -151,12 +151,14 @@ def _build_vectro(
     m = int(m)
     try:
         import vectro_py  # type: ignore[import]
+
         rust_idx = vectro_py.PyHnswIndex(m, int(ef_construction))
         rust_idx.add_np(np.ascontiguousarray(corpus, dtype=np.float32))
         byte_size = len(corpus) * corpus.shape[1] * 4 + len(corpus) * m * 2 * 8
         return {"backend": "rust", "idx": rust_idx}, byte_size
     except ImportError:
         from python.hnsw_api import HNSWIndex  # type: ignore[import]
+
         py_idx = HNSWIndex(M=m, ef_construction=ef_construction, space="cosine")
         py_idx.add(corpus)
         byte_size = len(corpus) * corpus.shape[1] * 4 + len(corpus) * m * 2 * 8
@@ -385,8 +387,8 @@ def run_benchmark(
                 }
                 continue
 
-            r1  = recall_at_k(predictions, ground_truth, 1)
-            r5  = recall_at_k(predictions, ground_truth, 5)
+            r1 = recall_at_k(predictions, ground_truth, 1)
+            r5 = recall_at_k(predictions, ground_truth, 5)
             r10 = recall_at_k(predictions, ground_truth, 10)
 
             print(f"{name:<18} {build_sec:>8.2f} {qps:>8,.0f} {r1:>6.3f} {r5:>6.3f} {r10:>6.3f}")

@@ -89,7 +89,11 @@ unsafe fn sq3_dot_norm_avx2(packed: &[u8], query: &[f32], n: usize, scale: f32) 
     let mut nrm = _mm256_setzero_ps();
     let qp = query.as_ptr();
     // Number of 8-dim groups whose 3 code bytes + 1 load-slack byte are in range.
-    let max_groups = if packed.len() >= 4 { (packed.len() - 4) / 3 + 1 } else { 0 };
+    let max_groups = if packed.len() >= 4 {
+        (packed.len() - 4) / 3 + 1
+    } else {
+        0
+    };
     let full = (n / 8).min(max_groups);
     for g in 0..full {
         let base = g * 3;
@@ -103,7 +107,10 @@ unsafe fn sq3_dot_norm_avx2(packed: &[u8], query: &[f32], n: usize, scale: f32) 
         let code_f = _mm256_cvtepi32_ps(codes);
         // dv = scale · ((2·code − 7) · ⅛)
         let two_code = _mm256_add_ps(code_f, code_f);
-        let dv = _mm256_mul_ps(scale_v, _mm256_mul_ps(_mm256_sub_ps(two_code, seven), eighth));
+        let dv = _mm256_mul_ps(
+            scale_v,
+            _mm256_mul_ps(_mm256_sub_ps(two_code, seven), eighth),
+        );
         let q8 = _mm256_loadu_ps(qp.add(g * 8));
         dot = _mm256_fmadd_ps(dv, q8, dot);
         nrm = _mm256_fmadd_ps(dv, dv, nrm);
@@ -233,7 +240,9 @@ mod tests {
     fn unit_vec(d: usize, seed: f32) -> Vec<f32> {
         let v: Vec<f32> = (0..d).map(|i| (i as f32 * seed + 0.1).sin()).collect();
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm == 0.0 { return v; }
+        if norm == 0.0 {
+            return v;
+        }
         v.into_iter().map(|x| x / norm).collect()
     }
 
@@ -241,7 +250,9 @@ mod tests {
         let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
         let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
         let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if na * nb == 0.0 { return 0.0; }
+        if na * nb == 0.0 {
+            return 0.0;
+        }
         (dot / (na * nb)).clamp(-1.0, 1.0)
     }
 
@@ -292,7 +303,11 @@ mod tests {
                 (lo | hi) & 0x7
             };
             let want = enc.scale * ((2 * code as i32 - 7) as f32 / 8.0);
-            assert_eq!(got.to_bits(), want.to_bits(), "decode mismatch at index {i}");
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "decode mismatch at index {i}"
+            );
         }
     }
 

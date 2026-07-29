@@ -34,7 +34,6 @@ from python import (  # noqa: E402
     CompressionOptimizer,
     create_custom_profile,
     get_version_info,
-    get_backend_info,
 )
 
 

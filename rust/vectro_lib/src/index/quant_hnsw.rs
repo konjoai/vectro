@@ -62,7 +62,7 @@ pub type BinaryHnswIndex = QuantHnswIndex<BinaryQuantizer>;
 /// save/load, and vacuum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(
-    serialize   = "Q::Encoded: Serialize",
+    serialize = "Q::Encoded: Serialize",
     deserialize = "Q::Encoded: for<'de2> Deserialize<'de2>"
 ))]
 pub struct QuantHnswIndex<Q: Quantizer> {
@@ -148,7 +148,10 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
     /// bytes per vector (¼ of an f32 store) and unlocks high-recall search over
     /// otherwise-lossy (binary, NF4) graphs.
     pub fn enable_rerank(&mut self) {
-        assert!(self.encoded.is_empty(), "enable_rerank must be called before building");
+        assert!(
+            self.encoded.is_empty(),
+            "enable_rerank must be called before building"
+        );
         self.rerank_codes = Some(Vec::new());
     }
 
@@ -165,7 +168,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         for &x in normalized {
             out.push((x * scale).round().clamp(-127.0, 127.0) as i8);
         }
-        if scale > 0.0 { abs_max / 127.0 } else { 0.0 }
+        if scale > 0.0 {
+            abs_max / 127.0
+        } else {
+            0.0
+        }
     }
 
     /// Number of vectors currently stored (including soft-deleted).
@@ -223,8 +230,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
     fn apply_center(&self, normalized: &[f32]) -> Vec<f32> {
         match &self.center {
             Some(c) if c.len() == normalized.len() => {
-                let centered: Vec<f32> =
-                    normalized.iter().zip(c.iter()).map(|(x, m)| x - m).collect();
+                let centered: Vec<f32> = normalized
+                    .iter()
+                    .zip(c.iter())
+                    .map(|(x, m)| x - m)
+                    .collect();
                 Self::normalize(&centered)
             }
             _ => normalized.to_vec(),
@@ -298,7 +308,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         // INT8 this quantises the query for the VNNI integer dot; for other
         // codecs it owns the f32 query. The build path scores against
         // `build_vectors` in f32, so no preparation is needed there.
-        let prepared = if use_f32 { None } else { Some(Q::prepare(query)) };
+        let prepared = if use_f32 {
+            None
+        } else {
+            Some(Q::prepare(query))
+        };
         let prepared = prepared.as_ref();
         super::scratch::with_visited(self.encoded.len(), |visited| {
             // Packed-u64 heaps (see super::pack_key): native integer ordering,
@@ -450,7 +464,12 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                     .unwrap_or_else(|| Q::decode(&self.encoded[nb_id], 0));
                 let mut scored: Vec<(f32, usize)> = self.neighbors[nb_id][lc]
                     .iter()
-                    .map(|&n| (self.node_dist(n as usize, &nb_query, None, use_f32), n as usize))
+                    .map(|&n| {
+                        (
+                            self.node_dist(n as usize, &nb_query, None, use_f32),
+                            n as usize,
+                        )
+                    })
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let kept = self.select_heuristic(&scored, max_m, use_f32);
@@ -478,7 +497,8 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         if building {
             self.build_vectors.push(norm_vec.clone());
         }
-        self.neighbors.push(vec![NeighborList::new(); node_level + 1]);
+        self.neighbors
+            .push(vec![NeighborList::new(); node_level + 1]);
         self.deleted.push(false);
 
         match self.entry_point {
@@ -600,7 +620,9 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                     .collect()
             })
             .collect();
-        let (ep, max_level) = ep_state.into_inner().unwrap_or_else(PoisonError::into_inner);
+        let (ep, max_level) = ep_state
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
         self.entry_point = Some(ep);
         self.max_level = max_level;
     }
@@ -737,7 +759,12 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
                 let nb_query = &self.build_vectors[nb_id];
                 let mut scored: Vec<(f32, usize)> = lock
                     .iter()
-                    .map(|&nbr| (self.node_dist(nbr as usize, nb_query, None, true), nbr as usize))
+                    .map(|&nbr| {
+                        (
+                            self.node_dist(nbr as usize, nb_query, None, true),
+                            nbr as usize,
+                        )
+                    })
                     .collect();
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let kept = self.select_heuristic(&scored, max_m, true);
@@ -874,7 +901,11 @@ impl<Q: Quantizer> QuantHnswIndex<Q> {
         k: usize,
         ef: usize,
     ) -> f32 {
-        assert_eq!(queries.len(), ground_truth.len(), "queries/gt length mismatch");
+        assert_eq!(
+            queries.len(),
+            ground_truth.len(),
+            "queries/gt length mismatch"
+        );
         let total: f32 = queries
             .iter()
             .zip(ground_truth.iter())
@@ -1001,7 +1032,11 @@ mod tests {
     /// (the index normalises internally).
     fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
         (0..n)
-            .map(|i| (0..d).map(|j| ((i * d + j) as f32 * 0.017 + 0.1).sin()).collect())
+            .map(|i| {
+                (0..d)
+                    .map(|j| ((i * d + j) as f32 * 0.017 + 0.1).sin())
+                    .collect()
+            })
             .collect()
     }
 
@@ -1017,7 +1052,11 @@ mod tests {
                     .map(|(i, v)| {
                         let v_n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
                         let dot: f32 = q.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
-                        let cos = if q_n * v_n > 0.0 { dot / (q_n * v_n) } else { -1.0 };
+                        let cos = if q_n * v_n > 0.0 {
+                            dot / (q_n * v_n)
+                        } else {
+                            -1.0
+                        };
                         (i, cos)
                     })
                     .collect();
@@ -1050,11 +1089,11 @@ mod tests {
         };
     }
 
-    smoke_test!(smoke_bf16,   Bf16Quantizer);
-    smoke_test!(smoke_int8,   Int8Quantizer);
-    smoke_test!(smoke_nf4,    Nf4Quantizer);
-    smoke_test!(smoke_sq3,    Sq3Quantizer);
-    smoke_test!(smoke_sq2,    Sq2Quantizer);
+    smoke_test!(smoke_bf16, Bf16Quantizer);
+    smoke_test!(smoke_int8, Int8Quantizer);
+    smoke_test!(smoke_nf4, Nf4Quantizer);
+    smoke_test!(smoke_sq3, Sq3Quantizer);
+    smoke_test!(smoke_sq2, Sq2Quantizer);
     smoke_test!(smoke_binary, BinaryQuantizer);
 
     // ── recall@10 ≥ min_recall for each quantizer ─────────────────────────────
@@ -1079,11 +1118,11 @@ mod tests {
         };
     }
 
-    recall_test!(recall_bf16,   Bf16Quantizer,   0.95);
-    recall_test!(recall_int8,   Int8Quantizer,   0.90);
-    recall_test!(recall_nf4,    Nf4Quantizer,    0.75);
-    recall_test!(recall_sq3,    Sq3Quantizer,    0.70);
-    recall_test!(recall_sq2,    Sq2Quantizer,    0.55);
+    recall_test!(recall_bf16, Bf16Quantizer, 0.95);
+    recall_test!(recall_int8, Int8Quantizer, 0.90);
+    recall_test!(recall_nf4, Nf4Quantizer, 0.75);
+    recall_test!(recall_sq3, Sq3Quantizer, 0.70);
+    recall_test!(recall_sq2, Sq2Quantizer, 0.55);
     // Binary (1-bit) has very limited angular resolution in 64-d; realistic target.
     recall_test!(recall_binary, BinaryQuantizer, 0.20);
 
@@ -1236,11 +1275,11 @@ mod tests {
         };
     }
 
-    save_load_test!(save_load_bf16,   Bf16Quantizer);
-    save_load_test!(save_load_int8,   Int8Quantizer);
-    save_load_test!(save_load_nf4,    Nf4Quantizer);
-    save_load_test!(save_load_sq3,    Sq3Quantizer);
-    save_load_test!(save_load_sq2,    Sq2Quantizer);
+    save_load_test!(save_load_bf16, Bf16Quantizer);
+    save_load_test!(save_load_int8, Int8Quantizer);
+    save_load_test!(save_load_nf4, Nf4Quantizer);
+    save_load_test!(save_load_sq3, Sq3Quantizer);
+    save_load_test!(save_load_sq2, Sq2Quantizer);
     save_load_test!(save_load_binary, BinaryQuantizer);
 
     // ── delete + vacuum ───────────────────────────────────────────────────────

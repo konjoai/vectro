@@ -13,7 +13,8 @@ fn compress_quantized_and_load_roundtrip() {
     let outp = out.path().to_path_buf();
 
     // produce quantized stream
-    let n = vectro_cli::compress_stream(path.to_str().unwrap(), outp.to_str().unwrap(), true).expect("compress");
+    let n = vectro_cli::compress_stream(path.to_str().unwrap(), outp.to_str().unwrap(), true)
+        .expect("compress");
     assert_eq!(n, 2);
 
     // load using library (should read QSTREAM and dequantize)

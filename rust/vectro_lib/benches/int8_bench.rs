@@ -12,7 +12,11 @@ use vectro_lib::quant::int8::{encode_batch, Int8Vector};
 
 fn make_vecs(n: usize, d: usize) -> Vec<Vec<f32>> {
     (0..n)
-        .map(|i| (0..d).map(|j| ((i * d + j) as f32 * 0.0013_f32).sin()).collect())
+        .map(|i| {
+            (0..d)
+                .map(|j| ((i * d + j) as f32 * 0.0013_f32).sin())
+                .collect()
+        })
         .collect()
 }
 
@@ -72,7 +76,11 @@ fn bench_int8_hnsw_search(c: &mut Criterion) {
     const N: usize = 20_000;
     const D: usize = 768;
     let vecs: Vec<Vec<f32>> = (0..N)
-        .map(|i| (0..D).map(|j| ((i * D + j) as f32 * 0.0013_f32).sin()).collect())
+        .map(|i| {
+            (0..D)
+                .map(|j| ((i * D + j) as f32 * 0.0013_f32).sin())
+                .collect()
+        })
         .collect();
     let mut idx = Int8HnswIndex::new(16, 100);
     idx.add_batch(&vecs);
