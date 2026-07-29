@@ -7,8 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added (benchmarks — recall-matched percentile harness, audit item 5.2)
-- `benchmarks/harness/` — the measurement gate every later optimization sprint
+### Changed (Konjo -- kiban v1.9.0 reconciliation, Track A1)
+- **Pins reconciled**: `.konjo/kiban.ref` (`v1.1.0`) and `KIBAN_REF` in
+  `konjo-gates.yml` (`v1.1.5`) had drifted apart and were both ~8 minors
+  behind kiban's real `v1.9.0`. Both bumped to `v1.9.0`; a new
+  `.konjo/scripts/check_kiban_pin.py` blocking CI step fails on any future
+  divergence between the two.
+- **`gate_polarity` full-tree baseline**: 14 standing findings -- 2 real
+  defects fixed (`scripts/validate_paper_results.py`'s quantization-quality
+  and latency gates silently passed on empty results, same fail-open shape
+  kiban's own polarity engine was built to catch), 12 documented false
+  positives (3 flagged as real kiban engine gaps to report upstream). See
+  `LEDGER.md`'s `Gate-Polarity-Baseline-1`.
+- **KT-A1.1 kill-test**: found kiban's generic `konjo-gates` `clippy` tool
+  command has no per-repo flag override and never actually enforced
+  vectro's "no unwrap/expect" policy -- the gate reconnection is real
+  (confirmed BLOCKED on a deliberate unused-import violation), but that one
+  specific invariant had zero blocking CI enforcement anywhere until this
+  sprint. See `LEDGER.md`'s `KT-A1.1` entry.
+- **15 real production `unwrap()`/`expect()` sites fixed** (2 crates, 8
+  files) to make the promoted clippy gate genuinely clean, closing the gap
+  KT-A1.1 found. `cargo build`/`cargo test --workspace` (308 tests) stayed
+  green throughout. See `LEDGER.md`'s `Unwrap-Expect-Cleanup-1`.
+- **`.konjo/deny.toml` fixed**: the `cargo deny` CI step had never actually
+  run -- `--config` was passed to the wrong subcommand, and the config used
+  a pre-cargo-deny-0.20 schema (`copyleft`/`unlicensed`/`vulnerability`/
+  `notice` keys, removed upstream). Fixed both; added `Unicode-3.0` to the
+  license allowlist; pinned versions on 2 intra-workspace path deps to clear
+  the `wildcards` bans check. 0 standing violations.
+- **`cargo audit` promoted**: `rand`, `anyhow`, `rustls-webpki` bumped within
+  semver to close 4 real RUSTSEC vulnerabilities; new `.cargo/audit.toml`
+  explicitly ignores 2 pyo3 advisories (need a breaking major upgrade,
+  tracked in `NEXT_SESSION_PROMPT.md`) and bincode's unmaintained notice
+  (storage-format migration, same tracking).
+- **All 16 `continue-on-error` soft steps in `konjo-gate.yml` triaged**: 9
+  promoted to blocking (0 standing violations each), 5 ratcheted (never
+  regress past a recorded ceiling in `.konjo/*-ceiling.txt`, via one new
+  generic `.konjo/scripts/ceiling_check.py`), 2 kept soft with a named
+  owner + target date (Rust/Python coverage, mutation testing -- real
+  measurement blocked on this sprint's sandbox disk / missing `maturin
+  develop` / time budget, not silently deferred). Full table in
+  `LEDGER.md`'s `Konjo-Gate-Reconciliation-1`.
+- **`.konjo/profile.yml` reconciled** against kiban v1.9.0's
+  `profiles/vectro.yml` field-by-field, not copied blind: `cargo-audit`
+  promoted `contract_gates` → `format_lint` (the substantive kiban-side
+  change); kiban's stale `prove.min_effect_pct: null` and missing
+  `longrun_globs` were **not** applied over this repo's already-more-advanced
+  real state (a measured, activated prove gate would have regressed). New
+  `claude_contract` block added.
+- **`CLAUDE.md` converted** to the Phase-13 section contract (Org rules /
+  Stack / Commands / Invariants / Repo map / Repo-specific rules). Every
+  invariant now names its enforcing gate or says `ADVISORY` -- re-verified
+  against this repo's real, current gates (not kiban's proposal verbatim),
+  since several changed status during this same sprint. Verified clean
+  against kiban's real `check_contract()` (`ok=True`). `.konjo/profile.yml`'s
+  `claude_contract.advisory` flipped to `false` in the same PR (0 standing
+  violations -- matches lopi's own precedent).
+
+### Added (benchmarks -- recall-matched percentile harness, audit item 5.2)
+- `benchmarks/harness/` -- the measurement gate every later optimization sprint
   merges through (the audit's binding pre-flight; ships before any optimization
   is attempted). Real-dataset (SIFT1M/GIST1M `.fvecs`/`.ivecs`) loaders with a
   checksummed downloader and an extensible `LOADERS` registry; a recall-matched
@@ -30,13 +87,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   floor). The full SIFT1M/GIST1M baseline table and the INT8/IVF-PQ4 baselines
   are produced with the built extension on the target (Apple Silicon) host.
 
-### Added (INT8 — NEON `sdot` integer distance kernel, audit item 2.1)
-- `rust/vectro_lib/src/quant/int8.rs` — `dot_i8_sdot`, an aarch64 FEAT_DotProd
+### Added (INT8 -- NEON `sdot` integer distance kernel, audit item 2.1)
+- `rust/vectro_lib/src/quant/int8.rs` -- `dot_i8_sdot`, an aarch64 FEAT_DotProd
   integer i8×i8 INT8 distance kernel mirroring the shipped x86 AVX-512-VNNI
   design: `Int8Query::Prepared` quantizes the query once per search, the hot
   loop is a pure-integer `sdot` accumulate (4 × i32×4 accumulators, 64
   codes/iter, 16-wide cleanup, scalar tail), then one horizontal add and scale
-  multiply — replacing the previous path that widened every i8 lane to f32.
+  multiply -- replacing the previous path that widened every i8 lane to f32.
   Runtime `dotprod` detection with the widen-to-f32 NEON path retained as
   fallback. Because aarch64 `sdot` is natively signed i8×i8 (unlike VNNI's u8×i8
   offset trick) the dot is computed directly with no bias correction; integer
@@ -51,29 +108,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Performance: NOT measured.** The end-to-end kill-test (SIFT1M int8-HNSW QPS
   at recall@10 = 0.95 + ns/vector microbenchmark) requires Apple Silicon /
   FEAT_DotProd hardware; this sprint ran on x86_64 Linux. **No speedup is
-  claimed** — the gate is pre-registered PLANNED/PENDING in `PERF_FINDINGS.md`
+  claimed** -- the gate is pre-registered PLANNED/PENDING in `PERF_FINDINGS.md`
   and must run on target hardware before the win is cited. Correctness is
   proven; performance is not.
 
 ### Fixed (docs)
-- `README.md` — version drift: badge and ASCII banner advertised 5.0.0 against
+- `README.md` -- version drift: badge and ASCII banner advertised 5.0.0 against
   the 5.24.0 package (audit item 5.3).
 
-### Performance (HNSW — BFS graph reordering for cache locality)
-- `rust/vectro_lib/src/index/hnsw.rs` — new `HnswIndex::reorder_for_locality()`,
+### Performance (HNSW -- BFS graph reordering for cache locality)
+- `rust/vectro_lib/src/index/hnsw.rs` -- new `HnswIndex::reorder_for_locality()`,
   implementing item 3.2 of `VECTRO_OPTIMIZATION_AUDIT_2026-07.md`. Renumbers
   every node by BFS order from the entry point over the layer-0 graph, so a
-  beam expansion's neighbour ids — and the vectors/tombstones they index
-  into — cluster into fewer cache lines and pages instead of being scattered
+  beam expansion's neighbour ids -- and the vectors/tombstones they index
+  into -- cluster into fewer cache lines and pages instead of being scattered
   across insertion order (which is essentially random with respect to graph
   adjacency). Nodes unreachable from the entry point at layer 0 (rare,
   disconnected components) are appended after the BFS-visited set in their
   original relative order. Returns `new_to_old` so callers with external
   state keyed by the old ids (metadata, string-id maps) can remap it; this
-  index's own tombstones are carried through automatically. Pure relabeling —
+  index's own tombstones are carried through automatically. Pure relabeling --
   no distance computation changes.
 - **Measured** (release build, this host: 4-core Xeon @ 2.10GHz, 260 MiB L3,
-  n=200,000, d=768, ~586 MiB vector store — past L3 — m=16, ef_construction=200,
+  n=200,000, d=768, ~586 MiB vector store -- past L3 -- m=16, ef_construction=200,
   k=10, ef=64, 3000 queries, best-of-5, 3 independent builds):
 
   | Run | R@10 before → after | single-query QPS | batch QPS (`search_batch_flat`) |
@@ -84,7 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Recall is bit-identical before/after in every run (reordering is a pure
   permutation); the concurrent build's own run-to-run recall variance
-  (0.171–0.187) is unrelated to reordering — see `build_concurrent`'s
+  (0.171–0.187) is unrelated to reordering -- see `build_concurrent`'s
   "schedule-dependent, not bit-reproducible" note. QPS gain lands inside the
   audit's predicted 1.2–2× range, comfortably outside this host's documented
   ±10–15% noise floor. Reproduce with
@@ -92,15 +149,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Verification:** 4 new unit tests (bijection, recall-preservation,
   tombstone-preservation, empty-index no-op) plus the full `vectro_lib` suite
   green (246 tests); `cargo clippy -- -D warnings` clean. Not yet wired
-  through `PyO3`/`python/vectro.py` — this ships the Rust-core primitive and
+  through `PyO3`/`python/vectro.py` -- this ships the Rust-core primitive and
   its kill-test; binding it into the save/build lifecycle is a follow-on.
 
-### Performance (IVF-PQ search — prefetch hides the ADC scan's code-row DRAM latency)
-- `rust/vectro_lib/src/index/ivf_pq.rs` — `adc_rank`'s posting-list scan calls
+### Performance (IVF-PQ search -- prefetch hides the ADC scan's code-row DRAM latency)
+- `rust/vectro_lib/src/index/ivf_pq.rs` -- `adc_rank`'s posting-list scan calls
   `code_row(gid)` per candidate, indexing the flat `pq_codes` buffer by global
   insertion id. Since posting lists are grouped by coarse cluster, not
   insertion order, `gid` lands at an essentially random offset across the
-  whole `[n_vectors * n_subspaces]`-byte buffer — a likely DRAM-latency miss
+  whole `[n_vectors * n_subspaces]`-byte buffer -- a likely DRAM-latency miss
   per candidate at scale, unlike the small `[M * K]` ADC distance table built
   once per query, which stays cache-resident across the whole scan (the
   actual "memory-bound at K=256" cost flagged in the prior IVF-PQ coarse-scan
@@ -109,28 +166,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_mm_prefetch`, no-op elsewhere) issues a hint for the code row 8 candidates
   ahead of the one currently being scored, overlapping that DRAM latency with
   the current candidate's (mostly cache-resident) `adc_distance` compute
-  instead of stalling on it serially. Pure latency-hiding — no numeric or
+  instead of stalling on it serially. Pure latency-hiding -- no numeric or
   ranking change.
 - **Measured** (release build, n=500,000, d=128, n_lists=1024, n_probe=32,
   M=16, K=256, single-query `search`, 2,000 synthetic unit-norm queries):
   458 → ~650 qps (**~1.4×**), consistent across repeated runs.
 - **Verification:** full `vectro_lib` test suite green (238 tests, including
-  `ivf_pq` recall/self-nearest/batch-parity guards — the prefetch changes no
+  `ivf_pq` recall/self-nearest/batch-parity guards -- the prefetch changes no
   computed distance or ranking, only memory-access order);
   `aarch64-unknown-linux-gnu` cross `cargo check` clean (both the NEON `prfm`
   inline-asm and x86_64 `_mm_prefetch` arms are `#[cfg]`-gated and mutually
   exclusive, each with a `SAFETY` comment for the `unsafe-budget` gate).
 
-### Performance (PQ4 fast-scan — NEON `vqtbl1q_u8` closes the aarch64 gap)
-- `rust/vectro_lib/src/index/pq4.rs` — the PQ4 fast-scan (`IndexPQFastScan`
+### Performance (PQ4 fast-scan -- NEON `vqtbl1q_u8` closes the aarch64 gap)
+- `rust/vectro_lib/src/index/pq4.rs` -- the PQ4 fast-scan (`IndexPQFastScan`
   analogue, shared by `Pq4FlatIndex` and `IvfPq4Index`) had an AVX2 `pshufb`
   kernel on x86_64 but **fell back to the scalar gather on aarch64**, so Apple
-  Silicon — the flagship `bench-darwin-arm64` target — never got the fast-scan
+  Silicon -- the flagship `bench-darwin-arm64` target -- never got the fast-scan
   win. Added `scan_neon`: NEON's `vqtbl1q_u8` is the direct analogue of AVX2
   `pshufb`, resolving 16 candidates' per-subspace distances against the 16-byte
   LUT in one table lookup (a 32-candidate block is two lookups/subspace). Unlike
-  AVX2's `unpack{lo,hi}_epi8` — which permutes candidate order within each
-  128-bit lane and needs the `PERM` table to invert — `vqtbl1q_u8` +
+  AVX2's `unpack{lo,hi}_epi8` -- which permutes candidate order within each
+  128-bit lane and needs the `PERM` table to invert -- `vqtbl1q_u8` +
   `vget_{low,high}` preserve candidate order, so results store straight to the
   output with no permute. NEON is mandatory in the aarch64 base ISA, so the path
   is unconditional (no runtime detection); the scalar reference remains for
@@ -144,15 +201,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measured via the existing `bench-darwin-arm64` harness; the AVX2 twin
   documents ~22× over the scalar gather on that platform's SIMD.
 
-### Changed (CI — konjo-gates provisions the Rust toolchain)
+### Changed (CI -- konjo-gates provisions the Rust toolchain)
 - The kiban `konjo-gates` workflow job installed only Python, so its
   `repo:*` gates had no `cargo`, `cargo-deny`, or `cargo-mutants` available
   and failed spuriously as "net-new findings" on every Rust diff. Now sets up
   the Rust toolchain plus those tools so the gates evaluate the real diff
   instead of erroring out before they can run (#100).
 
-### Performance (IVF/IVF-PQ training — GEMM k-means assignment)
-- `rust/vectro_lib/src/index/kmeans.rs` (new) — a shared `assign_nearest`
+### Performance (IVF/IVF-PQ training -- GEMM k-means assignment)
+- `rust/vectro_lib/src/index/kmeans.rs` (new) -- a shared `assign_nearest`
   helper for Lloyd's k-means assignment step, used by both `ivf_pq.rs`
   (cosine, coarse-quantiser training) and `ivf.rs` (L2, IVF-Flat training).
   Both previously scored each point against every centroid with a separate
@@ -161,19 +218,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rayon-parallel row-chunks and scores each chunk as one
   `data_tile · centroidsᵀ` GEMM (pure-Rust `matrixmultiply` via `ndarray`,
   same tiling pattern as `IvfPqIndex::search_batch_flat`'s coarse scan) before
-  a per-row argmax — reusing the centroid matrix across the tile instead of
+  a per-row argmax -- reusing the centroid matrix across the tile instead of
   re-streaming it per point. A whole-dataset single GEMM was tried first and
   measured **slower** (it runs on one thread, losing the per-point
   parallelism the old loop had); row-chunk tiling keeps both the GEMM's
   centroid-matrix reuse and rayon-parallel throughput across points.
   `quant/pq.rs`'s per-subspace k-means already has its own SIMD-across-K
-  (NEON/AVX2/AVX-512) assignment kernel tuned for its small `sub_dim` — left
+  (NEON/AVX2/AVX-512) assignment kernel tuned for its small `sub_dim` -- left
   unchanged, since it is a more specialized optimization than a generic GEMM
   for that shape.
 - **Measured** (release build, n=50,000, d=100, synthetic unit-norm vectors,
   `IvfPqIndex::train`, M=10 subspaces, K=32, seed 42): IVF-PQ training time
   at n_lists=128: 0.284s → 0.196s (1.45×); n_lists=512: 0.990s → 0.559s
-  (1.77×); n_lists=1024: 1.909s → 1.152s (1.66×) — the gap widens with
+  (1.77×); n_lists=1024: 1.909s → 1.152s (1.66×) -- the gap widens with
   `n_lists`, as expected for an `O(n·k·d)` assignment step.
 - **Verification:** new `index::kmeans::tests` (cosine and L2 argmax parity
   vs the brute-force per-centroid loop, plus a deterministic tie-break case);
@@ -182,12 +239,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cargo check` clean (the helper is pure safe `ndarray`/`rayon`, no new
   `unsafe`, so it is inherently arch-agnostic).
 
-### Performance (IVF-PQ — SIMD coarse scan via a shared distance module)
-- New `rust/vectro_lib/src/index/simd.rs` — a single source of truth for the
+### Performance (IVF-PQ -- SIMD coarse scan via a shared distance module)
+- New `rust/vectro_lib/src/index/simd.rs` -- a single source of truth for the
   SIMD f32 `dot_f32` / `l2_sq` kernels (NEON on aarch64, AVX2+FMA on x86_64
   runtime-detected, SimSIMD fallback). HNSW's private kernels are removed and it
   now delegates here (dedup, no behaviour change), and **IVF / IVF-PQ's
-  `cosine_dist` now uses it instead of per-call SimSIMD dispatch** — paid over
+  `cosine_dist` now uses it instead of per-call SimSIMD dispatch** -- paid over
   every centroid in the coarse-quantiser scan and on every k-means assignment.
   Benefits **IVF training / k-means** (assignment is `n_sample·n_lists·d`).
 - **Honest measurement:** this does *not* move IVF-PQ *search* QPS (glove-200K:
@@ -197,27 +254,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Net value of this change is the shared-module **dedup** + the **training**
   speedup; the ADC loop is the dedicated next lever for search throughput.
 
-### Added (IVF-PQ — batched, parallel, GIL-free search)
+### Added (IVF-PQ -- batched, parallel, GIL-free search)
 - `IvfPqIndex::search_batch_flat` (`rust/vectro_lib/src/index/ivf_pq.rs`) and the
   `PyIvfPqIndex.search_batch_np(queries, k, n_probe)` binding
   (`rust/vectro_py/src/lib.rs`): batch IVF-PQ search parallelised across queries
   with rayon and the **GIL released**, mirroring the HNSW `search_batch_np` path.
-  Replaces the per-query Python loop (a PyO3 call + Python overhead per query) —
+  Replaces the per-query Python loop (a PyO3 call + Python overhead per query) --
   the throughput path for at-scale serving. `benchmark_ivfpq_scale.py` now drives
   vectro through this batch entry for an apples-to-apples comparison with FAISS's
   batched `search`.
 
-### Fixed (IVF-PQ — k-means++ init was O(n·k²·d), now O(n·k·d))
-- `rust/vectro_lib/src/index/ivf_pq.rs` — `kmeans_pp_init` recomputed each
+### Fixed (IVF-PQ -- k-means++ init was O(n·k²·d), now O(n·k·d))
+- `rust/vectro_lib/src/index/ivf_pq.rs` -- `kmeans_pp_init` recomputed each
   point's distance to **every** already-chosen centroid on every round (and ran
   serially), making IVF training scale as O(n·k²·d). Rewrote it to the standard
   running-minimum form (update against only the new centroid each round, in
   parallel), matching the already-correct `ivf.rs` / `pq.rs`. **IVF-PQ training
-  100.1s → 2.4s (42×) at 512 lists on glove-100 (50K train sample, M=50)** —
+  100.1s → 2.4s (42×) at 512 lists on glove-100 (50K train sample, M=50)** --
   now faster than FAISS `IndexIVFPQ` (2.9s) at matched recall (0.848 vs 0.859).
 
-### Added (IVF-PQ at-scale benchmark — the "fits the machine" story)
-- `benchmarks/benchmark_ivfpq_scale.py` — builds vectro IVF-PQ at a
+### Added (IVF-PQ at-scale benchmark -- the "fits the machine" story)
+- `benchmarks/benchmark_ivfpq_scale.py` -- builds vectro IVF-PQ at a
   parametrised scale and reports build time, **measured RSS**, the analytic
   footprint vs float32-flat / HNSW-float32, recall@k vs exact brute-force GT,
   a QPS `n_probe` sweep, a 100M/1B memory projection, and an optional FAISS
@@ -229,33 +286,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FAISS at high `n_lists` (scalar `cosine_dist`), and IVF-PQ search lacks a
   batched/parallel binding + PQ fast-scan (single-query Python loop today).
 
-### Performance (HNSW search — x86_64 reaches parity with the aarch64 hot path)
-- **AVX2+FMA dot kernel** (`rust/vectro_lib/src/index/hnsw.rs`, `dot_f32_avx2`) —
+### Performance (HNSW search -- x86_64 reaches parity with the aarch64 hot path)
+- **AVX2+FMA dot kernel** (`rust/vectro_lib/src/index/hnsw.rs`, `dot_f32_avx2`) --
   the search distance hot loop had a hand-rolled NEON dot on aarch64 but fell
   back to **SimSIMD per-call dispatch on x86_64**, whose indirection dominates at
   the low dims typical of ANN search (d≈100). Adds the x86 analogue of the NEON
   kernel (4× `f32x8` FMA accumulators), runtime-detected via
   `is_x86_feature_detected!`.
-- **x86_64 software prefetch** (`prefetch_vec_full`) — the two-neighbour-ahead
+- **x86_64 software prefetch** (`prefetch_vec_full`) -- the two-neighbour-ahead
   full-vector prefetch in the beam loop was aarch64-only; added the `_mm_prefetch`
   equivalent so cold neighbour vectors stream in while the current distance
   computes.
-- **Pre-sized candidate heaps** — the beam-search `cands`/`window` heaps now
+- **Pre-sized candidate heaps** -- the beam-search `cands`/`window` heaps now
   reserve `ef` up front, removing per-query heap-growth reallocations.
 - Net on glove-100 (50K×100, ef=100): **batch search 20,250 → 22,718 QPS (+12%)**
   at identical recall (~0.918), narrowing the gap to hnswlib/faiss to ~1.4×.
 
-### Added (HNSW — zero-copy single-query results + GIL release)
+### Added (HNSW -- zero-copy single-query results + GIL release)
 - `PyHnswIndex.search_arrays_np` returns `(int64 ids, float32 distances)` numpy
   arrays directly with the **GIL released** during the search, and
   `HNSWIndex.search` uses it on the unfiltered rust hot path. Avoids the
   per-query list-of-tuples allocation and lets multiple Python threads search
   concurrently: single-query serving scales **4,890 → 8,578 QPS at 4 threads
   (~1.75×)**. (Single-threaded single-query remains bound by Python per-call
-  overhead — use `search_batch` for maximum throughput.)
+  overhead -- use `search_batch` for maximum throughput.)
 
-### Added (HNSW — batched Python search closes the single-query gap)
-- `HNSWIndex.search_batch(queries, k, ef, filter=None)` (`python/hnsw_api.py`) —
+### Added (HNSW -- batched Python search closes the single-query gap)
+- `HNSWIndex.search_batch(queries, k, ef, filter=None)` (`python/hnsw_api.py`) --
   a high-throughput multi-query entry point. On a rust-backed cosine index with
   no metadata filter it delegates to the native `search_batch_np` (rayon-parallel
   across queries, GIL released), avoiding the per-query Python call overhead that
@@ -265,11 +322,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(q, k)` int64 indices / float32 distances, `-1`/`inf`-padded for short rows.
   Backed by a new `RustHnswBackend.search_batch` wrapper and 5 parity tests.
 
-### Performance (PQ encode — AVX2+FMA nearest-centroid on x86_64)
+### Performance (PQ encode -- AVX2+FMA nearest-centroid on x86_64)
 - **AVX2+FMA nearest-centroid kernel** (`rust/vectro_lib/src/quant/pq.rs`,
   `assign_argmin_avx2`). The PQ assignment hot loop (`pq_encode_into` →
   `assign_nearest`, also k-means training) had a fused NEON kernel for aarch64
-  but fell back to **portable scalar on x86_64** — leaving ~5× on the table vs
+  but fell back to **portable scalar on x86_64** -- leaving ~5× on the table vs
   FAISS's SIMD encoder on Intel/AMD. Mirrors the NEON kernel: computes
   `dist = ‖c_k‖² − 2·v·c_k` over the transposed centroid LUT, tracking the
   running argmin in 256-bit registers (8 centroids/step), runtime-detected via
@@ -278,26 +335,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   correctness baseline; a new `assign_nearest_simd_matches_portable` test
   asserts distance parity (indices may differ only on genuine FMA-rounding ties).
 
-### Performance (high-dim search — full-vector prefetch flips the d≥256 loss)
+### Performance (high-dim search -- full-vector prefetch flips the d≥256 loss)
 - **Software-pipelined full-vector prefetch** (`rust/vectro_lib/src/index/hnsw.rs`,
   `prefetch_vec_full`). Diagnosed via a feature-gated distance-eval counter
   (`--features distcount`): at matched `ef`, **vectro already does ≤ faiss's
   distance evaluations at ≥ faiss's recall** (nytimes-256: 0.80× the evals,
-  *higher* recall) — so its graph and beam search are not the problem. A kernel
+  *higher* recall) -- so its graph and beam search are not the problem. A kernel
   micro-benchmark showed the distance kernel runs at ~22 M dist/s in isolation
   but only ~3.4 M/s in-search: the high-dim cost is **cold-memory latency**, not
   compute. The old prefetch primed only the *first* cache line of each neighbour,
   so the distance loop then stalled demand-loading the other ~`dim/16` lines.
   Prefetching the **whole vector span**, pipelined two neighbours ahead, hides
   that latency. Single-thread, same harness:
-  - **nytimes-256-angular (d=256, cosine): 3,589 → 6,532 QPS @ R0.85 — now beats
+  - **nytimes-256-angular (d=256, cosine): 3,589 → 6,532 QPS @ R0.85 -- now beats
     faiss 4,433 by +47 %** (was a 19 % loss).
-  - **fashion-mnist-784 (d=784, L2): 18,010 → 26,908 (+49 %)** — faiss gap
+  - **fashion-mnist-784 (d=784, L2): 18,010 → 26,908 (+49 %)** -- faiss gap
     1.67× → 1.1×, tied at high recall (Q@.99 11,238 vs 11,828).
-  - **glove-100 (d=100, 1.18M): 4,778 vs faiss 3,242 — +47 %** (no low-dim
+  - **glove-100 (d=100, 1.18M): 4,778 vs faiss 3,242 -- +47 %** (no low-dim
     regression; build 124 s vs 501 s). Recall and memory unchanged.
   - **sift-128-euclidean (d=128, 1M, L2): +19 % → +37 %** across recall levels
-    (Q@.85 28,799 vs 24,266; Q@.99 5,564 vs 4,061; build 65 s vs 281 s) — the
+    (Q@.85 28,799 vs 24,266; Q@.99 5,564 vs 4,061; build 65 s vs 281 s) -- the
     win grows with recall, confirming the fix holds at 1M scale.
   Net: vectro now beats faiss search QPS at d=100/128/256 and ties at d=784
   (high recall), while building 3–4× faster at equal recall and memory.
@@ -306,14 +363,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `‖v‖²` cache (`norms_sq`, serde-skipped, rebuilt on load), so each L2 eval is a
   single dot product (matches faiss's `IndexFlatL2`).
 - Diagnostic `distcount` feature (vectro_lib + vectro_py) exposing
-  `dist_evals_reset`/`dist_evals_get` to Python. Off by default — never shipped.
+  `dist_evals_reset`/`dist_evals_get` to Python. Off by default -- never shipped.
 
 ### Fixed (vacuum dropped the metric)
-- **`HnswIndex::vacuum` now preserves the index's [`Metric`]** — it rebuilt via
+- **`HnswIndex::vacuum` now preserves the index's [`Metric`]** -- it rebuilt via
   `HnswIndex::new` (always cosine), silently re-normalising an L2/IP index's
   vectors. Test: `vacuum_preserves_l2_metric`.
 
-### Added (HNSW distance metrics — L2 + inner product)
+### Added (HNSW distance metrics -- L2 + inner product)
 - **`Metric::{Cosine, L2, InnerProduct}` for `HnswIndex`** (`rust/vectro_lib/src/index/hnsw.rs`,
   `HnswIndex::with_metric`; Python `PyHnswIndex(m, ef, metric)` accepting
   `"cosine"`/`"l2"`/`"ip"` and aliases). Cosine stores unit-normalised vectors;
@@ -324,19 +381,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     recall ceiling 0.9993 (faiss 0.9996); build **5.5 s vs faiss 16.9 s (3× faster)**.
   - IP is raw `-dot` (matches hnswlib's `InnerProductSpace`): navigable in the
     similar-norm regime (unit vectors: recall@10 ≥ 0.85), **not** a general MIPS
-    solver for wildly varying norms (no augmentation — documented in the test).
+    solver for wildly varying norms (no augmentation -- documented in the test).
   Tests: `l2_metric_finds_euclidean_neighbours`, `inner_product_ranks_by_dot`.
 
 ### Fixed (packed-heap ordering for negative distances)
 - **`pack_key`/`key_dist` now order *all* finite floats** (`rust/vectro_lib/src/index/mod.rs`)
   via the standard radix-sort float key (flip all bits for negatives, sign bit
   for non-negatives). The previous packing relied on raw IEEE-754 bits being
-  monotonic — true only for non-negative floats — so the `InnerProduct` metric's
+  monotonic -- true only for non-negative floats -- so the `InnerProduct` metric's
   negative `-dot` distances silently **inverted the beam heap** (IP recall 0.000).
   Non-negative ordering is byte-identical, so Cosine/L2 are unaffected.
   Test: `pack_key_orders_negative_distances`.
 
-### Performance (high-dim search — 8-accumulator SIMD)
+### Performance (high-dim search -- 8-accumulator SIMD)
 - **`dot_f32_neon` / `l2_sq_neon` widened from 4 to 8 f32x4 accumulators**
   (32 lanes/iter; `rust/vectro_lib/src/index/hnsw.rs`). M3 Firestorm issues 4 FP
   ops/cycle at ~3–4-cycle FMA latency, so 4 accumulator chains stall the pipes at
@@ -345,7 +402,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **fashion-mnist-784 L2, single-thread, same harness: +66 % search QPS**
     (Q@.85 10,172 → 16,914; Q@.95 6,762 → 11,365; Q@.99 4,238 → 7,247). Narrows
     the faiss gap at d=784 from 2.75× to 1.67×; closes further as ef grows (1.21×
-    at ef=320). At matched ef, recall is identical — the residual is pure kernel
+    at ef=320). At matched ef, recall is identical -- the residual is pure kernel
     throughput. **Honest status: faiss still leads raw search QPS at d≥256**
     (nytimes-256-angular: vectro ~3.5k vs faiss ~4.4k QPS @ R0.85), while vectro
     wins build time 3–4× and ties recall. Verified across d∈{1…784} by
@@ -354,16 +411,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance (HNSW memory + search at scale)
 - **Flat layer-0 graph + software prefetch** (`rust/vectro_lib/src/index/graph.rs`,
-  `hnsw.rs`) — closes the two categories the full 1.18M glove-100 benchmark showed
+  `hnsw.rs`) -- closes the two categories the full 1.18M glove-100 benchmark showed
   vectro losing/tying vs faiss. The graph was `Vec<Vec<SmallVec<[u32;32]>>>`: each
-  list reserved 128 B inline regardless of fill, plus per-node `Vec` headers — a
+  list reserved 128 B inline regardless of fill, plus per-node `Vec` headers -- a
   ~286 MB graph vs faiss's flat ~171 MB. New `Graph` stores layer 0 (≈99 % of
   nodes) as a single **flat fixed-slot `u32` array** + `u8` fill counts (FAISS's
   layout), with a compact `u32` on-disk wire (was `u64`-per-link) that
   deserialises straight into the flat store. Plus **prefetch-all-upfront** of a
   node's neighbour vectors before the distance loop, hiding DRAM latency once the
   473 MB vector buffer dwarfs cache.
-  - **Memory (1M): on-disk 647 vs faiss 644 MB, RSS 612 vs ~625 MB — was 759 MB
+  - **Memory (1M): on-disk 647 vs faiss 644 MB, RSS 612 vs ~625 MB -- was 759 MB
     (+18 % loss) → now parity/slight win.**
   - **Search (1M, high recall): vectro beats faiss +19 % to +51 %** (ef=160
     3,142 vs 2,079 QPS; ef=400 1,552 vs 1,169). Prefetch alone: +9–11 % at 200k.
@@ -372,9 +429,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `benchmarks/results/20260621_glove100_FULL_1M_final.json`.
 
 
-### Performance (fp16 → INT8 encode — 6.6× faster)
+### Performance (fp16 → INT8 encode -- 6.6× faster)
 - **Fused f16→INT8 encode** (`rust/vectro_lib/src/quant/int8.rs`,
-  `rust/vectro_py/src/lib.rs`) — `quantize_int8_batch_from_f16` had every
+  `rust/vectro_py/src/lib.rs`) -- `quantize_int8_batch_from_f16` had every
   bottleneck the f32 path shed in Phases 7–8 (a serial widen, a serial
   `ensure_finite`, an output 0-init, GIL held). New
   `batch_encode_f16_checked_into` widens, validates, and abs-max encodes in **one
@@ -385,40 +442,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at the exact (row, col). Removed the now-dead `ensure_finite`. Test:
   `f16_checked_encode_matches_f32_and_detects_nonfinite`.
 
-### Performance (PQ training + encode — now 2.2× faster than faiss)
+### Performance (PQ training + encode -- now 2.2× faster than faiss)
 - **Tolerance early-stop + fused SIMD argmin** (`rust/vectro_lib/src/quant/pq.rs`)
-  — two algorithmic wins that take PQ k-means training from parity to a decisive
+  -- two algorithmic wins that take PQ k-means training from parity to a decisive
   lead. (1) The convergence check required *zero* reassignments, which never
   happened (a fraction of a percent of boundary points always flip), so k-means
   ran all `max_iter` rounds; now it stops once <1% of points move (~25 → ~13
   iterations). (2) `assign_argmin_neon` fuses the nearest-centroid argmin into
   the distance loop, tracking the running minimum in NEON registers instead of
   writing a 256-float distance buffer per point. On glove-100 (n=50k, M=25,
-  K=256, M3): **PQ train 0.66 → 0.27 s — 2.2× faster than faiss** at equal quality
+  K=256, M3): **PQ train 0.66 → 0.27 s -- 2.2× faster than faiss** at equal quality
   (cosine 0.9524), still deterministic. The shared kernel also makes PQ **encode**
   ~1.9× faster (819 K → 1.54 M vec/s, 4.9× faster than faiss). Removed the now-dead
   `assign_dist_neon`. Raw: `benchmarks/results/20260620_phase9_pq_train_smash.json`.
 
 
-### Performance (INT8 encode — 100 M+ vec/s)
+### Performance (INT8 encode -- 100 M+ vec/s)
 - **Folded the NaN/Inf check into the encode pass** (`rust/vectro_lib/src/quant/int8.rs`,
-  `rust/vectro_py/src/lib.rs`) — Phase 7's *separate* parallel finite-scan over
+  `rust/vectro_py/src/lib.rs`) -- Phase 7's *separate* parallel finite-scan over
   the whole `[N,D]` array turned out to be the dominant cost (it doubled input
   memory traffic). New `batch_encode_checked_into_with_range` /
   `batch_encode_normalized_checked_into` validate each row while it is already hot
   in cache for the encode (SIMD `|x| < ∞` row scan, `first_non_finite_row`),
-  returning the first non-finite flat index — no separate pass. On an M3:
+  returning the first non-finite flat index -- no separate pass. On an M3:
   **d=64 66 → 191 M vec/s, d=100 40 → 125 M vec/s (~3×)**, now **2.4× faster than
   faiss ScalarQuantizer** at every dim. Reconstruction unchanged (cosine 1.0000);
   NaN/Inf still rejected with the exact (row, col), first offender deterministic.
-  (Also corrects the Phase 7 note: the normalized kernel was never slow — that was
+  (Also corrects the Phase 7 note: the normalized kernel was never slow -- that was
   a measurement under load; clean it ties/edges abs-max at ~207 M vec/s @ d=64.)
   Test: `checked_encode_matches_unchecked_and_detects_nonfinite`. Raw:
   `benchmarks/results/20260620_phase8_int8_folded_check.json`.
 
 ### Fixed
 - **Concurrent-build self-loop race** (`rust/vectro_lib/src/index/hnsw.rs`,
-  `quant_hnsw.rs`) — under the concurrent-insertion build (Phases 3 & 5) a node
+  `quant_hnsw.rs`) -- under the concurrent-insertion build (Phases 3 & 5) a node
   could become reachable via a concurrent inserter's reverse link *before* its
   own forward links were set, so the beam search occasionally returned the node
   itself and `connect_locked` wrote a **self-loop** into the graph (≈1 build in
@@ -429,7 +486,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance (INT8 encode)
 - **Parallelized `quantize_int8_batch`** (`rust/vectro_py/src/lib.rs`,
-  `rust/vectro_lib/src/quant/int8.rs`) — the batch INT8 encoder barely scaled
+  `rust/vectro_lib/src/quant/int8.rs`) -- the batch INT8 encoder barely scaled
   past one core (1.3× on 8 threads) because of two serial Amdahl bottlenecks: a
   serial NaN/Inf scan over the entire `[N,D]` input and the serial zero-init of
   the output buffer. Now the finite-check runs in parallel (new
@@ -442,22 +499,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `benchmarks/results/20260620_phase7_int8_encode_parallel.json`.
 
 ### Performance (PQ training)
-- **PQ k-means training-set subsampling** (`rust/vectro_lib/src/quant/pq.rs`) —
+- **PQ k-means training-set subsampling** (`rust/vectro_lib/src/quant/pq.rs`) --
   k-means doesn't need every point to place K centroids, so training now fits on
   a deterministic strided sample of ~64 points/centroid (the FAISS strategy). On
-  glove-100 (n=50k, M=25, K=256) this cuts PQ train **2.0 s → 0.66 s — parity
+  glove-100 (n=50k, M=25, K=256) this cuts PQ train **2.0 s → 0.66 s -- parity
   with faiss (0.60 s)** at equal reconstruction quality (cosine 0.9525 vs faiss
   0.951), still fully deterministic. For n ≤ cap it's a no-op (trains on
   everything). Measured negative results first and rejected them: a portable
   `matrixmultiply` GEMM (3.5 s) and an Accelerate `sgemm` assignment (7–12 s,
-  nested-parallelism) were both *slower* — a generic/BLAS matmul is the wrong
+  nested-parallelism) were both *slower* -- a generic/BLAS matmul is the wrong
   tool for PQ's thin `sub_dim`. Test:
   `train_subsamples_above_cap_and_stays_deterministic`. Raw:
   `benchmarks/results/20260620_phase6_pq_train_subsample.json`.
 
 ### Performance (quantized HNSW)
 - **Concurrent-insertion build for `QuantHnswIndex`** (`rust/vectro_lib/src/index/quant_hnsw.rs`)
-  — ported Phase 3's live-graph + per-node-`RwLock` build (with serial seed) to
+  -- ported Phase 3's live-graph + per-node-`RwLock` build (with serial seed) to
   the quantized index, replacing the chunked frozen-snapshot build. Build
   distances route through the exact f32 `build_vectors`, so even a 1-bit graph is
   built from full-precision geometry. On glove-100 (n=50k) **quant-HNSW build
@@ -470,13 +527,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Raw: `benchmarks/results/20260620_phase5_quant_concurrent_build.json`.
 
 ### Added
-- **Binary + INT8 re-rank pipeline** (`rust/vectro_lib/src/index/quant_hnsw.rs`) —
+- **Binary + INT8 re-rank pipeline** (`rust/vectro_lib/src/index/quant_hnsw.rs`) --
   `QuantHnswIndex::enable_rerank()` retains a near-lossless INT8 copy of every
   vector (abs-max quantised unit codes, ~¼ of an f32 store), and
   `search_rerank(query, k, ef, rerank_k)` navigates the (lossy) quantized graph
   for a wide candidate set then re-scores those candidates exactly against the
   INT8 store. On glove-100 (n=50k) this lifts **binary HNSW recall@10 from ~0.31
-  to 0.947 at 3.5× less vector memory than f32** (113 vs 400 B/vec) — a
+  to 0.947 at 3.5× less vector memory than f32** (113 vs 400 B/vec) -- a
   memory/recall regime faiss/hnswlib don't package. INT8 re-rank holds the recall
   of exact f32 re-rank (0.946 vs 0.953). Exposed on every quantized-HNSW Python
   class as `enable_rerank()`, `has_rerank()`, `search_rerank_np`, and
@@ -484,38 +541,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the INT8 store (so re-rank survives compaction) and save/load preserves it.
   - *Measured caveat:* flat binary Hamming is a weak prefilter (exact re-rank
     caps ~0.68); the **graph** is what makes re-rank reach 0.95. This is a memory
-    win, not a QPS win — f32 HNSW still leads QPS@recall.
+    win, not a QPS win -- f32 HNSW still leads QPS@recall.
   - Tests: `rerank_lifts_binary_recall`, `rerank_survives_save_load_and_vacuum`.
     Raw: `benchmarks/results/20260620_phase4_binary_rerank.json`.
 
 ### Fixed
-- `python/pipeline_checkpoint.py` — `_SCHEMA_VERSION` synced to the package
+- `python/pipeline_checkpoint.py` -- `_SCHEMA_VERSION` synced to the package
   `__version__` (was stale, failing `test_checkpoint_info_version`).
 
 ### Performance
 - **PQ SIMD assignment + native training** (`rust/vectro_lib/src/quant/pq.rs`,
-  `python/pq_api.py`) — added a SIMD-across-K nearest-centroid kernel: centroids
+  `python/pq_api.py`) -- added a SIMD-across-K nearest-centroid kernel: centroids
   are transposed to `ct[j*K+k]` and the assignment uses `argmin_k(‖c_k‖²−2·v·c_k)`,
   vectorizing the dot term over the wide K (=256) axis (NEON FMA, 4 centroids per
   step) instead of the tiny `sub_dim`. Used by both k-means training and encode.
   `pq_api.train_pq_codebook` now routes to a new Rust binding `pq_train_batch`
   (SIMD k-means), making PQ training **scikit-learn-free, deterministic/seeded**
   and ~1.6× faster than the old sklearn path. On glove-100 (n=50k, M=25, K=256):
-  - **Correction:** PQ *encode* was never a real weakness — vectro is **819 K vs
+  - **Correction:** PQ *encode* was never a real weakness -- vectro is **819 K vs
     faiss 315 K vec/s (2.6× faster)** via the Rust path. The roadmap's "18× slower"
     was the pure-NumPy fallback, not `pq_encode_into`.
   - Reconstruction cosine **0.954** (faiss parity). Training: vectro 2.0 s vs
-    faiss BLAS k-means 0.53 s — the one remaining PQ lag (batched-GEMM assignment
+    faiss BLAS k-means 0.53 s -- the one remaining PQ lag (batched-GEMM assignment
     is future work). Raw: `benchmarks/results/20260620_phase2_pq_simd.json`.
   Tests: `assign_nearest_matches_bruteforce_l2`.
 
 ### Fixed
-- `python/pipeline_checkpoint.py` — bumped `_SCHEMA_VERSION` to match the package
+- `python/pipeline_checkpoint.py` -- bumped `_SCHEMA_VERSION` to match the package
   `__version__` (was stale at 5.8.0 while the package moved to 5.9.0, failing
   `test_checkpoint_info_version`).
 
 ### Performance (HNSW)
-- **HNSW concurrent-insertion build** (`rust/vectro_lib/src/index/hnsw.rs`) —
+- **HNSW concurrent-insertion build** (`rust/vectro_lib/src/index/hnsw.rs`) --
   replaced the chunked, frozen-snapshot parallel build (which capped recall
   ≈ 0.997 because chunk-mates couldn't link to each other) with insertion
   against the **live** graph behind per-node `RwLock`s (hnswlib-style: full
@@ -524,8 +581,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first node of each thread's range never searches a near-empty graph. The build
   is deadlock-free (no thread holds two node locks at once) and poison-tolerant.
   On glove-100 (n=20k, single-thread search, recall-matched, best-of-3 QPS):
-  - **vectro now beats faiss-hnsw on QPS at every recall level** — ≈ +9% @R0.90,
-    +18% @R0.95, **+37% @R0.99** — while building **5.3× faster** (0.60s vs
+  - **vectro now beats faiss-hnsw on QPS at every recall level** -- ≈ +9% @R0.90,
+    +18% @R0.95, **+37% @R0.99** -- while building **5.3× faster** (0.60s vs
     3.16s). vs hnswlib: ~2× QPS, ~7× faster build.
   - max R@10 0.998 = serial-quality (glove's tie-bound ceiling; serial reaches
     0.9996). Concurrent wiring is schedule-dependent; node *levels* stay seeded.
@@ -534,7 +591,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tests: `concurrent_build_high_recall`, `concurrent_build_graph_is_valid`.
 
 ### Benchmarks
-- `scripts/benchmark_comprehensive.py` — comprehensive **real-data** head-to-head
+- `scripts/benchmark_comprehensive.py` -- comprehensive **real-data** head-to-head
   vs FAISS and hnswlib, across two axes: (1) ANN search Recall@10 vs QPS
   (single-thread, recall-matched, build time, index size) for vectro-hnsw /
   faiss-hnsw / faiss-ivf / hnswlib / exact-faiss; (2) quantization encode
@@ -546,16 +603,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/test_benchmark_comprehensive.py` (synthetic smoke tests, dep-gated).
   First real run (glove-100-angular, n=20k, single-thread, generic faiss-cpu):
   - vectro INT8 encode **10.9M vec/s vs FAISS ScalarQuantizer 4.4M** (2.5×,
-    cosine 1.0000) — vectro's core competency confirmed.
+    cosine 1.0000) -- vectro's core competency confirmed.
   - vectro PQ encode 47K vs FAISS IndexPQ 867K vec/s (same 16× ratio / 0.95
     cosine) and vectro's pure-Python HNSW ~248 vs faiss-hnsw ~10.8K QPS@R0.90
-    — honest losses that scope future work.
-- `scripts/benchmark_vs_faiss.py` — added `glove-25-angular` (127 MB) and
+    -- honest losses that scope future work.
+- `scripts/benchmark_vs_faiss.py` -- added `glove-25-angular` (127 MB) and
   `nytimes-256-angular` to the dataset registry.
-## [5.8.0] — 2026-06-19 — HNSW build + search routed through the Rust core
+## [5.8.0] -- 2026-06-19 -- HNSW build + search routed through the Rust core
 
 ### Performance
-- `python/hnsw_api.py` — `HNSWIndex` now delegates the graph **build and
+- `python/hnsw_api.py` -- `HNSWIndex` now delegates the graph **build and
   search** hot paths to the native `vectro_py.PyHnswIndex` (Rust + SimSIMD)
   via a new `backend="auto"` default. A complete, fast HNSW already existed in
   the Rust crate, but the public Python index ran a pure-Python graph. On
@@ -568,12 +625,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reproduce an identical graph.
 
 ### Added
-- `python/hnsw_rust.py` — `RustHnswBackend`, a thin cosine-only wrapper over
+- `python/hnsw_rust.py` -- `RustHnswBackend`, a thin cosine-only wrapper over
   `vectro_py.PyHnswIndex`, plus `rust_available()` / `normalize_rows()` helpers.
-- `HNSWIndex(..., backend=...)` — `"auto"` (default; Rust for `space="cosine"`
+- `HNSWIndex(..., backend=...)` -- `"auto"` (default; Rust for `space="cosine"`
   when the extension is present, else pure Python), `"rust"` (force native;
   raises if unavailable or for non-cosine spaces), `"python"` (force baseline).
-- `tests/test_hnsw_rust_backend.py` — 15 parity/behaviour tests covering
+- `tests/test_hnsw_rust_backend.py` -- 15 parity/behaviour tests covering
   build/search recall parity, metadata filtering, soft-delete, upsert,
   trace/stats/compact, `estimate_recall`, and save/load round-trip.
 
@@ -589,41 +646,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deterministically on load. Older `.npz` (v2) and legacy pickle files still
   load unchanged.
 
-## [5.7.0] — 2026-06-18 — PQ encode routed through the Rust SIMD kernel
+## [5.7.0] -- 2026-06-18 -- PQ encode routed through the Rust SIMD kernel
 
 ### Performance
-- `python/pq_api.py` — `pq_encode` now dispatches to a new zero-copy,
+- `python/pq_api.py` -- `pq_encode` now dispatches to a new zero-copy,
   rayon-parallel Rust kernel (`vectro_py.pq_encode_batch`) when the extension is
   installed, falling back to Mojo / NumPy otherwise. Like the v5.6.0 INT8 work,
   a fast Rust PQ path already existed but the Python API only used the
   per-sub-space NumPy loop. **~6.4× faster** (glove-100-style d=100, M=25,
   K=256: ~30K → ~192K vec/s) with **perfect code parity** to the NumPy baseline
   (identical reconstruction; only rare equidistant ties may differ by the
-  distance formula). Still trails FAISS `IndexPQ` (~870K vec/s) — an explicit
+  distance formula). Still trails FAISS `IndexPQ` (~870K vec/s) -- an explicit
   SIMD distance-table encoder is the next step.
 
 ### Added
-- `rust/vectro_lib/src/quant/pq.rs` — `pq_encode_into(vectors, &PQCodebook,
+- `rust/vectro_lib/src/quant/pq.rs` -- `pq_encode_into(vectors, &PQCodebook,
   codes_out)`: flat-slice, rayon-parallel batch PQ encode with no per-row heap
   allocation.
-- `rust/vectro_py/src/lib.rs` — `pq_encode_batch(vectors, centroids)` PyO3
+- `rust/vectro_py/src/lib.rs` -- `pq_encode_batch(vectors, centroids)` PyO3
   function: encodes an `[N, D]` f32 array against an `[M, K, sub_dim]` centroid
   table, returns `[N, M]` uint8 codes (`K ≤ 256`, validated).
 
 ### Tests
-- `rust/vectro_lib` — `pq_encode_into_matches_encode_one` (bit-identical to the
+- `rust/vectro_lib` -- `pq_encode_into_matches_encode_one` (bit-identical to the
   per-row reference).
-- `tests/test_pq.py` — `TestPQRustPath`: Rust-vs-NumPy code agreement ≥ 0.999
+- `tests/test_pq.py` -- `TestPQRustPath`: Rust-vs-NumPy code agreement ≥ 0.999
   and identical reconstruction cosine; dep-gated skip when `vectro_py` absent.
 
-## [5.6.0] — 2026-06-18 — INT8 batch path routed through the Rust SIMD kernel
+## [5.6.0] -- 2026-06-18 -- INT8 batch path routed through the Rust SIMD kernel
 
 ### Performance
-- `python/batch_api.py` — `VectroBatchProcessor.quantize_batch` (INT8 profiles)
+- `python/batch_api.py` -- `VectroBatchProcessor.quantize_batch` (INT8 profiles)
   now dispatches to the `vectro_py` Rust SIMD kernel
   (`quantize_int8_batch`) when the extension is installed, falling back to the
   NumPy path otherwise. The processor previously **always** used the NumPy
-  abs-max path even though the compiled kernel was available — leaving a
+  abs-max path even though the compiled kernel was available -- leaving a
   ~15-20× speedup on the table. End-to-end `VectroBatchProcessor` throughput at
   d=1536 rises from ~42K to ~110K vec/s (the Python `list`/`np.stack` wrapper,
   not the kernel at ~730K vec/s, is now the ceiling). This fixes the
@@ -631,32 +688,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NumPy path fell just below the 45K floor.
 
 ### Added
-- `rust/vectro_lib/src/quant/int8.rs` — `batch_encode_into_with_range(input, n,
+- `rust/vectro_lib/src/quant/int8.rs` -- `batch_encode_into_with_range(input, n,
   d, codes, scales, range_factor)`: threads a `range_factor` (rf, `(0, 1]`)
   through the per-row SIMD encode so the effective scale is `abs_max / rf`
   (codes use `127·rf/abs_max`). `batch_encode_into` is now a `rf = 1.0` wrapper.
   This lets the Rust path reproduce the `balanced` (0.95) and `quality` (0.90)
   profiles bit-for-bit modulo round-half-to-even vs round-half-away ties (≤1
-  level), with identical per-row scales — preserving Python-only mode as the
+  level), with identical per-row scales -- preserving Python-only mode as the
   correctness baseline.
-- `rust/vectro_py/src/lib.rs` — `quantize_int8_batch(vectors, range_factor=1.0)`
+- `rust/vectro_py/src/lib.rs` -- `quantize_int8_batch(vectors, range_factor=1.0)`
   gains an optional `range_factor` keyword (validated to `(0, 1]`,
   `ValueError` otherwise). Backward compatible: existing one-arg calls are
   unchanged (`rf = 1.0`).
-- `python/_rust_bridge.py` — `quantize_int8_batch(..., range_factor=1.0)`
+- `python/_rust_bridge.py` -- `quantize_int8_batch(..., range_factor=1.0)`
   passthrough.
 
 ### Tests
-- `rust/vectro_lib` — `batch_encode_with_range_matches_baseline`: rf=1.0 is
+- `rust/vectro_lib` -- `batch_encode_with_range_matches_baseline`: rf=1.0 is
   bit-identical to `batch_encode_into`; rf∈{0.95, 0.90} matches the scalar
   baseline codes/scales exactly.
-- `tests/test_python_api.py` — `test_rust_path_matches_numpy_baseline` (codes
+- `tests/test_python_api.py` -- `test_rust_path_matches_numpy_baseline` (codes
   ≤1 level, scales identical, cosine ≥ 0.9999 for all profiles) and
   `test_numpy_fallback_when_rust_absent`.
-- `tests/test_cross_platform_benchmarks.py` — `test_rust_quantize_int8_batch_range_factor`
+- `tests/test_cross_platform_benchmarks.py` -- `test_rust_quantize_int8_batch_range_factor`
   and `..._validation`; corrected the `test_int8_throughput_minimum_floor`
   docstring to describe the end-to-end wrapper path it actually measures.
-- `tests/test_cross_platform_benchmarks.py` — `test_rust_int8_throughput_1m_floor`
+- `tests/test_cross_platform_benchmarks.py` -- `test_rust_int8_throughput_1m_floor`
   and `test_rust_int8_throughput_cross_dimension` switched from a
   jitter-sensitive mean-of-3 to best-of-5 with warm-up (peak throughput),
   matching the de-jitter statistic already used by
@@ -665,42 +722,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose peak (~1.5-2M vec/s) clears the floor comfortably. Bench data
   (`int8_fused_bench`, n=100k×d=768) confirmed the two-pass kernel (7.7 Gelem/s)
   beats a rayon-fused single-pass (5.2 Gelem/s) at this dimension, so the
-  fused path was *not* promoted — the flake was a measurement statistic, not
+  fused path was *not* promoted -- the flake was a measurement statistic, not
   kernel speed.
 
-## [Unreleased] — 2026-06-15
+## [Unreleased] -- 2026-06-15
 
 ### CI
-- `.github/workflows/ci.yml` — new **`api-tests`** job: installs FastAPI /
-  httpx and runs `pytest api/` on Python 3.12. Closes a coverage gap — the
+- `.github/workflows/ci.yml` -- new **`api-tests`** job: installs FastAPI /
+  httpx and runs `pytest api/` on Python 3.12. Closes a coverage gap -- the
   `api/` suite (44 tests, including the V8 hybrid-search tests) previously
   ran only locally; no workflow collected it. The Rust, Python-package, JS
   addon, and Mojo lanes are unchanged.
 
-## [V8 — Hybrid search] — 2026-06-14
+## [V8 -- Hybrid search] -- 2026-06-14
 
 ### Added
-- `api/store.py` — pure-numpy hybrid retrieval helpers, dependency-free and
+- `api/store.py` -- pure-numpy hybrid retrieval helpers, dependency-free and
   matching the self-contained design of the existing `pca_2d` / `kmeans`:
-  - `cosine_scores(M, q)` — full (N,) cosine vector (factored out of the old
+  - `cosine_scores(M, q)` -- full (N,) cosine vector (factored out of the old
     `cosine_topk`, which is removed as the dense leg now flows through the
     hybrid path).
-  - `tokenize(text)` — lowercase alphanumeric word tokenizer.
-  - `bm25_scores(docs, query, k1=1.5, b=0.75)` — Okapi BM25 relevance of each
+  - `tokenize(text)` -- lowercase alphanumeric word tokenizer.
+  - `bm25_scores(docs, query, k1=1.5, b=0.75)` -- Okapi BM25 relevance of each
     document to the query; all-zero (never NaN) on empty corpus / empty query /
     unmatched terms.
-  - `hybrid_topk(M, docs, query=, text=, k=, alpha=)` — fuses dense cosine and
+  - `hybrid_topk(M, docs, query=, text=, k=, alpha=)` -- fuses dense cosine and
     BM25 via `alpha * minmax(dense) + (1 - alpha) * minmax(bm25)`; `alpha=1.0`
     is dense-only, `alpha=0.0` is BM25-only. Each hit carries the fused `score`
     plus raw `dense_score` and `bm25_score`.
-- `api/app.py` — `POST /index/{name}/search` now accepts an optional `text`
+- `api/app.py` -- `POST /index/{name}/search` now accepts an optional `text`
   param alongside `query` (a vector) and an `alpha` weight (`[0, 1]`, default
   `0.5`). `query` only → dense (backward compatible), `text` only → BM25 over
   each vector's `metadata["text"]`, both → hybrid. The response gains `mode`
   (`dense` / `bm25` / `hybrid`), `alpha`, and per-hit `dense_score` /
   `bm25_score`. Missing both `query` and `text` → 400; out-of-range `alpha` →
   422. FastAPI app version `0.7.0 → 0.8.0`.
-- `api/test_hybrid.py` — 14 tests: dense backward-compat, BM25-only ranking,
+- `api/test_hybrid.py` -- 14 tests: dense backward-compat, BM25-only ranking,
   `alpha=1.0`≡dense and `alpha=0.0`≡BM25 equivalence, blended fusion never
   elevating an unrelated doc, 400/422 guards, empty index, plus unit tests for
   `tokenize`, `bm25_scores` (zero/empty/unmatched), and `hybrid_topk`.
@@ -712,19 +769,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alpha-weighted convention rather than rank-based RRF.
 - 1307 Python tests pass (1263 + 44 API, incl. 14 new); Rust crates unchanged.
 
-## [V7] — 2026-05-09 — Live vector visualization
+## [V7] -- 2026-05-09 -- Live vector visualization
 
 ### Added
-- `api/` — new FastAPI surface (`api.app:app`) hosting an in-memory vector
+- `api/` -- new FastAPI surface (`api.app:app`) hosting an in-memory vector
   index with full CRUD plus two visualization endpoints: `POST
   /index/{name}/project` (PCA-2D coordinates for every vector) and `POST
   /index/{name}/cluster` (k-means labels, k clamped to `[1, N]`).  Backed
   by `api/store.py`, which contains a thread-safe `IndexStore`, a
   textbook SVD-based `pca_2d` (`coords = U[:, :2] * S[:2]` on centred
   data), and `kmeans` with k-means++ initialisation and Lloyd
-  iterations — pure numpy, no sklearn dependency.  Edge cases (empty
+  iterations -- pure numpy, no sklearn dependency.  Edge cases (empty
   index, single vector, `dim < 2`, `k > N`) all return cleanly.
-- `api/test_viz.py` — 10 tests against `fastapi.testclient.TestClient`:
+- `api/test_viz.py` -- 10 tests against `fastapi.testclient.TestClient`:
   `project` returns 2-D coords matching index size, 404s on missing
   index, handles single-vector and empty-index cases, centres the data
   on a balanced pair; `cluster` recovers three well-separated synthetic
@@ -732,7 +789,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dominants), clamps `k > N` to `N`, 404s on missing index, defaults
   `k=3`; `project` and `cluster` agree on id ordering so the frontend
   can join coords and labels by position.
-- `demo/viz.html` — single-file interactive 2-D scatter (vanilla JS +
+- `demo/viz.html` -- single-file interactive 2-D scatter (vanilla JS +
   Canvas, no framework).  Add random Gaussian-blob vectors or paste
   comma-separated vectors manually; auto re-projects and clusters on
   every add; "Random query" injects an fp32 query into the index, runs
@@ -740,23 +797,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hit; "Pick from index" reuses a hovered point as the next query;
   hover tooltip shows id, cluster, and cosine score; legend tracks
   active clusters; status bar surfaces project/cluster latencies.
-- `demo/server.py` — `/viz` and `/viz.html` GET routes serve the new
+- `demo/server.py` -- `/viz` and `/viz.html` GET routes serve the new
   page; `POST /index/{name}/{add,search,project,cluster}`, `GET
   /index/{name}`, `DELETE /index/{name}` mirror the FastAPI surface
   using the same `api.store` helpers, so behaviour is identical
   regardless of which entrypoint a user is running.  Banner advertises
   the new `viz:` URL alongside the existing `open:` and `api:` lines.
 
-## [V6 — REST API] — 2026-05-09
+## [V6 -- REST API] -- 2026-05-09
 
 ### Added
-- `api/main.py` — FastAPI service wrapping `vectro.HNSWIndex`. Endpoints:
+- `api/main.py` -- FastAPI service wrapping `vectro.HNSWIndex`. Endpoints:
   `POST /index`, `POST /index/{name}/add`, `POST /index/{name}/search`,
   `GET /index/{name}/stats`, `DELETE /index/{name}`, plus `GET /health`.
   Per-index `RLock` serialises mutating + reading ops; dim/NaN/Inf
   validation at the boundary; user-supplied IDs flow through
   `HNSWIndex.add_batch(ids=...)`.
-- `api/test_api.py` — 17 happy-path tests via `fastapi.testclient.TestClient`
+- `api/test_api.py` -- 17 happy-path tests via `fastapi.testclient.TestClient`
   covering create / duplicate / add / id-count mismatch / dim mismatch /
   search nearest / search empty / stats / delete / unknown-index 404 /
   raw-body NaN guard / full 50-vector round-trip.
@@ -764,10 +821,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/health` HEALTHCHECK), `api/README.md` (curl quick-start), and
   `render.yaml` (Render Blueprint pointing at the Dockerfile).
 
-## [5.1.0] — 2026-05-05
+## [5.1.0] -- 2026-05-05
 
 ### Added
-- `python/vectro.py` — `QuantizationConfig` dataclass: a validated, structured
+- `python/vectro.py` -- `QuantizationConfig` dataclass: a validated, structured
   configuration container for `Vectro.compress()`.  Fields: `precision_mode`,
   `profile`, `group_size`, `assume_normalized`, `return_quality_metrics`,
   `model_dir`, `seed`.  Validated at construction time (unknown precision_mode,
@@ -776,35 +833,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constructs a config from a named profile.  `to_dict()` returns a
   JSON-serialisable snapshot.  `Vectro.compress(config=...)` kwarg wires it
   into the existing compress path.
-- `python/lora_api.pyi` — type stubs for `compress_lora`, `decompress_lora`,
+- `python/lora_api.pyi` -- type stubs for `compress_lora`, `decompress_lora`,
   `compress_lora_adapter`, and `LoRAResult`.  Previously missing despite
   `lora_api.py` being a public module.
-- `python/vectro.pyi` — rewritten to declare `QuantizationConfig`, the updated
+- `python/vectro.pyi` -- rewritten to declare `QuantizationConfig`, the updated
   `compress(config=...)` signature, `compress_async`/`decompress_async`, and
   all `_VALID_*` module-level constants.
-- `python/__init__.pyi` — full sync with `__init__.py`: added `QuantizationConfig`,
+- `python/__init__.pyi` -- full sync with `__init__.py`: added `QuantizationConfig`,
   `lora_api` symbols, `retriever`, `retrieval`, `ivf_api`, `bf16_api`,
   `profiles`, `embeddings` modules.  Previously the stub was ~20 symbols behind
   the runtime.
-- `tests/test_quantization_config.py` — 36 tests covering: default field values,
+- `tests/test_quantization_config.py` -- 36 tests covering: default field values,
   explicit construction of all precision modes, all validation error paths,
   `from_profile` mapping, `to_dict` JSON round-trip, `Vectro.compress(config=)`
   integration for int8/nf4/binary/balanced profiles and `return_quality_metrics`.
 
 ### Fixed
-- `tests/test_release_candidate.py` — `EXPECTED_VERSION` updated `4.17.1` →
+- `tests/test_release_candidate.py` -- `EXPECTED_VERSION` updated `4.17.1` →
   `5.1.0`.  The test was 3 minor versions stale, causing 3 version-gate failures
   on every run.
-- `tests/test_cross_platform_benchmarks.py` — four correctness fixes:
+- `tests/test_cross_platform_benchmarks.py` -- four correctness fixes:
   1. `test_single_vector_latency_percentiles`: p999 gate widened `<10ms` →
      `<50ms`.  The ADR-002 contract is `p99 < 1ms` on the Rust SIMD path; the
      Python-fallback p999 is ~84ms on a shared runner and the `<10ms` gate was
      always wrong for the Python path.
   2. `test_single_vector_latency_p99_under_1ms`: added
-     `skipif not _has_rust_ext()` — the `<1ms` contract is the Rust/ADR-002
+     `skipif not _has_rust_ext()` -- the `<1ms` contract is the Rust/ADR-002
      gate, not the Python NumPy gate (Python p99 is ~15ms).
   3. `test_int8_throughput_minimum_floor` (all 4 dimensions): added
-     `skipif not _has_rust_ext()` — the floors (45K–120K vec/s) are calibrated
+     `skipif not _has_rust_ext()` -- the floors (45K–120K vec/s) are calibrated
      for the Rust SIMD path; Python NumPy tops out at ~34K for d=1536.
 
 ### Changed
@@ -818,17 +875,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FAILED to SKIPPED via correct skip guards), 132 skipped.  0 failures.
 - Rust crate versions unchanged at 8.0.0.
 
-## [5.0.2] — 2026-05-04
+## [5.0.2] -- 2026-05-04
 
 ### Fixed
-- `reproduce_paper.sh` and `reproduce_paper.ps1` — `BENCH_CMD` now passes
+- `reproduce_paper.sh` and `reproduce_paper.ps1` -- `BENCH_CMD` now passes
   `--reps 1 --warmup 0` to `vectro_paper_benchmark.py`.  Without this flag,
   each outer `--runs 1` iteration ran 4 timed invocations (warmup + 3 reps)
   and appeared to hang (~120 s on NumPy path).  With `--reps 1 --warmup 0`
   each pass takes < 30 s; a `--runs 3` CI job completes in < 90 s.
 
 ### Added
-- `notebooks/vectro_paper_results.ipynb` — real paper-results notebook
+- `notebooks/vectro_paper_results.ipynb` -- real paper-results notebook
   referenced by `make bench-arxiv`.  8 cells:
     * Locates `results/paper/*.json` relative to the repo root.
     * Loads and validates records from both `reproduce_paper` (v2 schema)
@@ -843,7 +900,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     * Runs cleanly with zero records in `results/paper/` (graceful
       no-data state).
 - `tests/test_paper_benchmark.py::TestSingleRepIsQuick.test_reps_1_warmup_0_completes_within_60s`
-  — timing regression guard: asserts `--quick --reps 1 --warmup 0 --json`
+  -- timing regression guard: asserts `--quick --reps 1 --warmup 0 --json`
   exits in < 60 s (28.1 s on Darwin / x86_64 NumPy fallback).
 
 ### Notes
@@ -853,32 +910,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 1020 Python tests total (1019 prior + 1 new).
 - Rust crate versions unchanged at 8.0.0.
 
-## [5.0.1] — 2026-05-03
+## [5.0.1] -- 2026-05-03
 
 ### Fixed
-- **`benchmarks/vectro_paper_benchmark.py`** — closes the v5.0.0
+- **`benchmarks/vectro_paper_benchmark.py`** -- closes the v5.0.0
   reproducibility gap.  v5.0.0 shipped four pieces of CI / scripting
   that all referenced this file (`pyproject.toml` cibuildwheel
   test-command, `reproduce_paper.sh`, `reproduce_paper.ps1`,
-  `bench-cross-platform.yml`), but the script itself didn't exist —
+  `bench-cross-platform.yml`), but the script itself didn't exist --
   every wheel test fell through silently and `reproduce_paper`
   emitted the `{"throughput": 0}` sentinel.
 
 ### Added
-- `benchmarks/vectro_paper_benchmark.py` — real bench harness:
+- `benchmarks/vectro_paper_benchmark.py` -- real bench harness:
   `--quick / --table {int8|nf4|binary|all} / --json / --n / --d /
   --reps / --warmup`.  Calls real `Vectro.compress` at multiple shapes,
   reports best-of-N + p50 throughput in M vec/s + reconstruction
   cosine + memory before/after.  JSON output carries a `throughput`
   headline contract field consumed by `reproduce_paper.{sh,ps1}`.
-- `tests/test_paper_benchmark.py` — 10 unit tests pinning the JSON
+- `tests/test_paper_benchmark.py` -- 10 unit tests pinning the JSON
   shape contract, headline-throughput presence + positivity,
   `--table all` covering every quantisation table, `--n / --d`
   overrides, INT8 cosine ≥ 0.999, binary ratio > 16×, pretty-mode
   marker, unknown-table exit-nonzero.
 
 ### Docs
-- `CLAUDE.md` — added "## The Konjo Way" section defining the KONJO
+- `CLAUDE.md` -- added "## The Konjo Way" section defining the KONJO
   acronym (Know, Outline, Nail, Justify, Optimize) near the top of the
   file.
 
@@ -888,35 +945,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 1019 Python tests pass (1009 prior + 10 new).
 - Rust crate versions unchanged at 8.0.0.
 
-## [5.2.0] — 2026-05-13
+## [5.2.0] -- 2026-05-13
 
 ### Added
-- **Persistent index serialisation (`.npz` format)** — `HNSWIndex.save(path)`
+- **Persistent index serialisation (`.npz` format)** -- `HNSWIndex.save(path)`
   now writes a `numpy.savez_compressed` archive instead of pickle. The format
   is a standard ZIP container: vectors stored as a float32 matrix, graph
   topology / metadata / deleted set / string-ID map stored as JSON byte arrays
   inside the same file. `load(path)` detects the format by magic bytes
   (`PK\x03\x04` for `.npz`, `\x80\x04/05` for pickle); the legacy pickle path
   still loads but emits a `DeprecationWarning` with guidance to re-save.
-  Loading uses `allow_pickle=False` — safe to open untrusted index files.
+  Loading uses `allow_pickle=False` -- safe to open untrusted index files.
   `SearchTrace` and `_id_map` are serialised in the new format.
-- **`HNSWIndex.add_batch(vectors, ids, metadata)`** — batch upsert with
+- **`HNSWIndex.add_batch(vectors, ids, metadata)`** -- batch upsert with
   deduplication by caller-supplied string IDs. Existing IDs trigger an O(1)
   in-place update of the stored vector and metadata (no graph surgery); new IDs
   are inserted via the standard HNSW algorithm. Soft-deleted nodes are
   resurrected on upsert. Returns `{"inserted": n, "updated": m, "node_ids": [...]}`.
   `HNSWIndex._id_map: Dict[str, int]` persists across `save` / `load`.
-- **`HNSWIndex.get_by_id(str_id)`** — O(1) metadata lookup by string ID;
+- **`HNSWIndex.get_by_id(str_id)`** -- O(1) metadata lookup by string ID;
   returns `None` for unknown or deleted IDs.
-- **`HNSWIndex.search(..., trace=False)`** — optional third return value when
+- **`HNSWIndex.search(..., trace=False)`** -- optional third return value when
   `trace=True`. Returns `SearchTrace` alongside `(indices, distances)`, a
   dataclass with: `entry_point` (int), `layer_descents` (per-layer visited
   nodes during greedy descent), `l0_visited` (all nodes examined at layer 0),
   `l0_candidates_final` (sorted ascending result heap). Useful for recall
   debugging and the demo viz search-beam animation.
-- **`SearchTrace` dataclass** — module-level, importable as
+- **`SearchTrace` dataclass** -- module-level, importable as
   `from python.hnsw_api import SearchTrace`.
-- **`tests/test_hnsw_v2.py`** — 39 tests: 12 persistence (empty/full/hyperparams/
+- **`tests/test_hnsw_v2.py`** -- 39 tests: 12 persistence (empty/full/hyperparams/
   recall/metadata/deleted/id_map/magic/legacy-pickle/L2-cosine),
   15 add_batch (insert/upsert/partial/resurrection/metadata/node_ids/errors/
   get_by_id/search-after-upsert), 12 trace (type/contents/filter/empty/
@@ -929,50 +986,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pyproject.toml` merge conflict resolved (kept HEAD/main version 5.5.0 in
   main repo; worktree at 5.2.0).
 
-## [5.1.0] — 2026-05-12
+## [5.1.0] -- 2026-05-12
 
 ### Added
-- **`HNSWIndex.add(..., metadata=)` (v5.1.0 P1)** — per-vector metadata
+- **`HNSWIndex.add(..., metadata=)` (v5.1.0 P1)** -- per-vector metadata
   sidecar.  Each entry is an arbitrary `dict` stored alongside the vector.
   Returns a list of assigned node IDs.  `save`/`load` round-trips the
   sidecar; older saves load cleanly (missing metadata filled with `None`).
-- **`HNSWIndex.delete(node_id)` (v5.1.0 P1)** — O(1) soft-delete via a
+- **`HNSWIndex.delete(node_id)` (v5.1.0 P1)** -- O(1) soft-delete via a
   tombstone `set`.  Tombstoned nodes are excluded from all future search
   results while graph links remain intact so traversal stays connected.
   Raises `IndexError` for out-of-range IDs and `ValueError` on double-delete.
-- **`HNSWIndex.search(..., filter=)` (v5.1.0 P1)** — pre-filter during
+- **`HNSWIndex.search(..., filter=)` (v5.1.0 P1)** -- pre-filter during
   graph walk (not post-filter).  Pass `filter={"field": "value"}` to skip
   non-matching nodes from the result set while still traversing through
   them as graph connectors.  Deleted nodes are always excluded regardless
   of filter.  Compatible with the `filter_fn` parameter added to the
   internal `_search_layer`.
-- **`HNSWIndex.stats()` (v5.1.0 P1)** — returns `n_total`, `n_alive`,
+- **`HNSWIndex.stats()` (v5.1.0 P1)** -- returns `n_total`, `n_alive`,
   `n_deleted`, `orphan_count`, `avg_degree_l0`, `max_level`, `space`.
   `orphan_count` is the number of live nodes with zero live neighbours at
-  layer 0 — the recall-degradation signal before compaction.
-- **`HNSWIndex.compact()` (v5.1.0 P1)** — two-pass graph repair.  Pass 1:
+  layer 0 -- the recall-degradation signal before compaction.
+- **`HNSWIndex.compact()` (v5.1.0 P1)** -- two-pass graph repair.  Pass 1:
   removes tombstone IDs from all neighbour lists, fixes a deleted entry
   point.  Pass 2: reconnects orphaned live nodes via a search-based
   neighbour-finding step.  Returns `{removed: n, repaired: m}`.  Clears
   the tombstone set on completion.
-- **`HNSWIndex.estimate_recall(sample_size, k, ef)` (v5.1.0 P1)** —
+- **`HNSWIndex.estimate_recall(sample_size, k, ef)` (v5.1.0 P1)** --
   brute-force ground truth vs HNSW recall@k on a random sample.  Returns
   `recall`, `ci_95_lower`, `ci_95_upper` (Wilson score interval, z=1.96),
   `sample_size`, `k`, `ef`, `n_alive`.
-- **`demo/server.py` P1 endpoints** — three new endpoints wired to a live
+- **`demo/server.py` P1 endpoints** -- three new endpoints wired to a live
   in-process HNSWIndex seeded from the demo corpus:
-  - `GET /api/recall_estimate` — calls `estimate_recall(sample_size=26)`
+  - `GET /api/recall_estimate` -- calls `estimate_recall(sample_size=26)`
     and adds a plain-English `label` (Excellent / Good / Fair / Poor).
-  - `POST /api/compact` — soft-deletes `delete_n` random vectors (default
+  - `POST /api/compact` -- soft-deletes `delete_n` random vectors (default
     3), runs `compact()`, returns before/after stats + timing.
-  - `GET /api/hnsw-stats` — returns `index.stats()` live.
-  - `POST /api/filtered-search` — pre-filtered HNSW nearest-neighbour
+  - `GET /api/hnsw-stats` -- returns `index.stats()` live.
+  - `POST /api/filtered-search` -- pre-filtered HNSW nearest-neighbour
     search over the demo corpus via the new `filter=` argument.
-- **`demo/viz.html` recall gauge** — glass-morphism panel (bottom-right)
+- **`demo/viz.html` recall gauge** -- glass-morphism panel (bottom-right)
   showing Recall@k as an animated fill bar with a Wilson 95% CI band.
   Polls `/api/recall_estimate` every 30s when `demo/server.py` is running;
   static placeholder when offline.
-- **`tests/test_hnsw_extended.py`** — 40 new unit tests across six
+- **`tests/test_hnsw_extended.py`** -- 40 new unit tests across six
   classes: `TestMetadata`, `TestDelete`, `TestFilteredSearch`, `TestStats`,
   `TestCompact`, `TestEstimateRecall`.
 
@@ -983,55 +1040,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Version bump 5.0.2 → 5.1.0 in `python/__init__.py`, `python/vectro.py`,
   `pyproject.toml`.
 
-## [5.0.0] — 2026-05-02
+## [5.0.0] -- 2026-05-02
 
-### Performance — INT8 hot path (PLAN 1)
-- **Wave 0 — build hygiene.** Workspace `[profile.release]` now uses
+### Performance -- INT8 hot path (PLAN 1)
+- **Wave 0 -- build hygiene.** Workspace `[profile.release]` now uses
   `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `opt-level = 3`,
   `strip = "symbols"`. New `[profile.bench]` keeps debug info + symbols
   for Instruments / flamegraphs. Per-target rustflags in
   `.cargo/config.toml`: `apple-m1` for AArch64 macOS (auto-promotes on
   M2/M3), `x86-64-v3` for x86-64, `neoverse-v1` for AArch64 Linux.
-- **Wave 1.1 — Rayon coarsening.** `batch_encode_into` and
+- **Wave 1.1 -- Rayon coarsening.** `batch_encode_into` and
   `batch_decode_into` now process 64 rows per Rayon task instead of one
   (`const RAYON_BLOCK: usize = 64`). Eliminates the ~25 % scheduling
   overhead seen on small d.
-- **Wave 1.2 — `encode_normalized_into`.** New single-pass kernel for
+- **Wave 1.2 -- `encode_normalized_into`.** New single-pass kernel for
   L2-normalised inputs (`||v||₂ ≤ 1`): skips the abs-max scan entirely
   with `scale = 1/127`. NEON 32-wide + AVX2 + scalar fallbacks. Trade-off
   is documented honestly: 0.99 cosine floor on diverse inputs (vs 0.9999
   for the abs-max path), ~1.4× throughput on memory-bandwidth-bound
   workloads.
-- **Wave 1.3 — `CompressionProfile.assume_normalized` flag.** Off by
+- **Wave 1.3 -- `CompressionProfile.assume_normalized` flag.** Off by
   default; opt-in per profile. `_rust_bridge.quantize_int8_batch(...,
   assume_normalized=True)` dispatches to the normalised kernel when
   available and gracefully falls back to the regular path when the
   installed extension predates the change.
-- **Wave 1.4 — NEON 32-wide unroll.** `encode_neon_into` main loop now
+- **Wave 1.4 -- NEON 32-wide unroll.** `encode_neon_into` main loop now
   processes 32 elements per iteration (8 × `float32x4_t`) so the M-series
   P-core can hide the latency of one multiply-round chain behind the
   throughput of the next. 16-wide and scalar tails handle remainders;
   bit-identical to the prior 16-wide kernel for every parity shape.
-- **Wave 2 — fused single-pass kernel.** `encode_neon_fused_into` and
+- **Wave 2 -- fused single-pass kernel.** `encode_neon_fused_into` and
   `encode_avx2_fused_into` cache the row in a stack buffer (≤ 4096
   elements) so abs-max + quantise both consume from L1. New
   `encode_fast_fused_into` public dispatcher; new
   `benches/int8_fused_bench.rs` compares two-pass vs fused vs normalised
   on n=100k × d=768.
-- **Wave 3 — runtime dispatch restructure.** `encode_fast_into` now has
+- **Wave 3 -- runtime dispatch restructure.** `encode_fast_into` now has
   the full priority order:
     AArch64: SME2 → Accelerate AMX → NEON 32-wide
     x86-64:  AVX-512+VNNI → AVX2 → scalar
   `encode_sme_into` is wired but `todo!()` until M4 is in CI.
   `encode_avx512_vnni_into` is wired and currently routes to the AVX2
-  path until a Sapphire Rapids host is available — flipping it on
+  path until a Sapphire Rapids host is available -- flipping it on
   requires only a kernel implementation, no dispatch change.
-- **Wave 3d — Apple Accelerate / AMX (macOS-only, feature-gated).** New
+- **Wave 3d -- Apple Accelerate / AMX (macOS-only, feature-gated).** New
   `quant/accelerate.rs` calls `vDSP_vsmsa` to route the f32 multiply
   through the AMX coprocessor for d ≥ 256. `vectro_lib_accelerate`
   Cargo feature (default off); `vectro_py/build.rs` links the
   `Accelerate` framework when the feature is on.
-- **Wave 4 — PyO3 zero-copy + f16.** New `quantize_int8_batch_from_f16`
+- **Wave 4 -- PyO3 zero-copy + f16.** New `quantize_int8_batch_from_f16`
   PyO3 entry accepts `PyReadonlyArray2<half::f16>`; widens to f32 once
   in the Rust crate, then encodes in-place. New
   `quantize_int8_batch_normalized` exposes the Wave 1.2 kernel. The
@@ -1046,38 +1103,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`.github/workflows/wheels.yml`** rewritten around `cibuildwheel`:
   builds all five matrix entries plus an sdist, then uploads to PyPI via
   OIDC trusted publishing on `v*` tags.
-- **`.github/workflows/bench-cross-platform.yml`** new — runs the wave-N
+- **`.github/workflows/bench-cross-platform.yml`** new -- runs the wave-N
   bench on macOS-14, macOS-13, ubuntu-latest, windows-latest. Triggered
   by `workflow_dispatch` (with a `wave` input) and a Monday 06:00 UTC
   cron. Aggregates artifacts into `aggregate.csv` + `aggregate.md`.
-- **`reproduce_paper.sh` v2** (POSIX) — clean-tree gate (`git diff
+- **`reproduce_paper.sh` v2** (POSIX) -- clean-tree gate (`git diff
   --quiet`), thermal probe (macOS `pmset -g thermlog`, Linux
   `/sys/class/thermal/thermal_zone*/temp`), background-load gate (load
   average < 1.0), thread pinning (`OMP_NUM_THREADS` = `RAYON_NUM_THREADS`
   = physical core count), CoV gate (5 % with up to 2 retries), `--cold`
   flag for cache-drop runs, JSON schema `vectro/paper/wave-bench/v2`.
-- **`reproduce_paper.ps1`** (Windows) — same flags, same JSON schema.
+- **`reproduce_paper.ps1`** (Windows) -- same flags, same JSON schema.
   Uses `Get-CimInstance Win32_Processor.NumberOfCores` for thread pinning
   and `MSAcpi_ThermalZoneTemperature` for thermal where available.
-- **`scripts/aggregate_paper_tables.py`** — globs the JSON outputs,
+- **`scripts/aggregate_paper_tables.py`** -- globs the JSON outputs,
   buckets by (platform, wave, cold/warm), reports mean / pstdev / CoV %,
   flags any bucket > 5 % CoV, writes `aggregate.csv` and `aggregate.md`.
-- **`Makefile`** — `bench-all`, `bench-darwin-arm64`, `bench-linux-x64`,
+- **`Makefile`** -- `bench-all`, `bench-darwin-arm64`, `bench-linux-x64`,
   `bench-windows`, `bench-arxiv` (renders the paper notebook to PDF
   after collecting bench data).
 
 ### Tests
 - 22 new Rust tests under `quant::int8::tests::*`:
-  - Wave 1.1 — `batch_encode_into_rayon_grain_parity_across_shapes`
+  - Wave 1.1 -- `batch_encode_into_rayon_grain_parity_across_shapes`
     (covers RAYON_BLOCK boundaries n=63/64/65/128/129).
-  - Wave 1.2 — `encode_normalized_matches_encode_fast_on_unit_vectors`,
+  - Wave 1.2 -- `encode_normalized_matches_encode_fast_on_unit_vectors`,
     `encode_normalized_1000_random_vectors_preserves_direction`,
     `encode_normalized_realistic_rag_dim_preserves_direction`,
     `batch_encode_normalized_roundtrip`.
-  - Wave 1.4 — `encode_fast_into_parity_at_unroll_boundaries`.
-  - Wave 2 — `encode_fast_fused_into_adversarial_inputs`,
+  - Wave 1.4 -- `encode_fast_into_parity_at_unroll_boundaries`.
+  - Wave 2 -- `encode_fast_fused_into_adversarial_inputs`,
     `encode_fast_fused_into_matches_two_pass`.
-  - Wave 3 — `encode_fast_into_does_not_panic_on_host`.
+  - Wave 3 -- `encode_fast_into_does_not_panic_on_host`.
 - 4 new Python tests in `tests/test_int8_normalized_and_f16.py` covering
   the `CompressionProfile.assume_normalized` field round-trip and (when
   the Rust extension is built) the `_rust_bridge` Wave 1.3 + Wave 4
@@ -1100,13 +1157,13 @@ quality contract honestly, and `assume_normalized` is opt-in.
 - SME2 (Apple M4 / Cortex-X925) and AVX-512-VNNI dispatch is **wired**
   but the kernel bodies are deferred (`todo!()` and AVX2 fallback
   respectively) until the corresponding hardware is in CI. Flipping
-  them on requires only a kernel implementation — no caller-side
+  them on requires only a kernel implementation -- no caller-side
   change.
 
-## [4.19.0] — 2026-05-02
+## [4.19.0] -- 2026-05-02
 
 ### Added
-- **Embedding-provider bridges** — `python/embeddings/` package shipping
+- **Embedding-provider bridges** -- `python/embeddings/` package shipping
   `BaseEmbeddingProvider` plus four concrete adapters: `OpenAIEmbeddings`,
   `VoyageEmbeddings`, `CohereEmbeddings`, `SentenceTransformersEmbeddings`.
 - Each provider instance is simultaneously a Vectro `embed_fn` callable
@@ -1115,42 +1172,42 @@ quality contract honestly, and `assume_normalized` is opt-in.
   `BaseEmbedding` (`_get_query_embedding` / `_get_text_embedding` /
   `_get_text_embeddings`). A single instance can be passed to any of the
   four Vectro RAG-framework adapters without wrapping.
-- **Auto-batching** — long input lists are split into chunks of size
+- **Auto-batching** -- long input lists are split into chunks of size
   `batch_size` so the underlying API never sees more than its supported
   request size (OpenAI 256, Voyage 64, Cohere 96, SentenceTransformers 32
   by default, all configurable).
-- **On-disk SQLite cache** — when `cache_dir` is set, every text → vector
+- **On-disk SQLite cache** -- when `cache_dir` is set, every text → vector
   is persisted in a single `cache.sqlite` file keyed by
   `SHA-256(provider:model:text)`. Bulk lookup via one SQL `IN (...)` query;
   bulk insert via one `executemany`. Survives process restarts.
-- **Asymmetric retriever cache separation** — Voyage and Cohere v3 cache
+- **Asymmetric retriever cache separation** -- Voyage and Cohere v3 cache
   document and query embeddings under disjoint provider keys (`voyage` vs
   `voyage:query`, `cohere` vs `cohere:query`) so the same text indexed as a
   document never collides with the same text issued as a query.
-- **L2 normalisation** — set `normalize=True` to receive unit-norm vectors;
+- **L2 normalisation** -- set `normalize=True` to receive unit-norm vectors;
   applied uniformly post-batch so a single source of truth.
-- **Cache observability** — `cache_stats()` returns `hits`, `misses`,
+- **Cache observability** -- `cache_stats()` returns `hits`, `misses`,
   `size`. `clear_cache()` empties the table without deleting the file.
-- **Optional-dep safe** — every provider lazy-imports its SDK on first
+- **Optional-dep safe** -- every provider lazy-imports its SDK on first
   use; the `python.embeddings` package itself imports without any of
   `openai`, `voyageai`, `cohere`, or `sentence-transformers` installed.
 - `python/embeddings/{base,openai,voyage,cohere,sentence_transformers}.pyi`
   type stubs.
 - `python/embeddings/__init__.py(.pyi)` package exports.
 - `python/__init__.py` re-exports all five classes at the top level.
-- `tests/test_embeddings_base.py` — 22 unit tests covering construction,
+- `tests/test_embeddings_base.py` -- 22 unit tests covering construction,
   batching (split, single-string, empty, bad shape, dim drift),
   caching (hits/misses, partial, persistence, clear, model-keying,
   provider-keying, concurrency), normalisation (unit norm + zero-vector
   safety), LangChain + LlamaIndex protocol surface, async variants, and
   the Vectro `embed_fn` contract end-to-end with `VectroDSPyRetriever`.
-- `tests/test_embeddings_providers.py` — 17 unit tests with in-process
+- `tests/test_embeddings_providers.py` -- 17 unit tests with in-process
   stub clients (zero network calls) covering each provider's request
   shape, response decoding (object / dict / Cohere v2 by-type),
   asymmetric `input_type` handling, document/query cache separation,
   cache-hit short-circuit, missing-SDK `ImportError`, and end-to-end
   integration with `VectroDSPyRetriever`.
-- README — Embedding-Provider Bridges section + extras hint
+- README -- Embedding-Provider Bridges section + extras hint
   (`pip install "vectro[integrations] openai voyageai cohere sentence-transformers"`).
 
 ### Notes
@@ -1161,60 +1218,60 @@ quality contract honestly, and `assume_normalized` is opt-in.
 - Version bump 4.18.0 → 4.19.0 in `python/__init__.py`, `python/vectro.py`,
   `pyproject.toml`, and `README.md`.
 
-## [4.18.0] — 2026-05-02
+## [4.18.0] -- 2026-05-02
 
 ### Added
-- **DSPy integration** — `python/integrations/dspy_integration.py` ships
+- **DSPy integration** -- `python/integrations/dspy_integration.py` ships
   `VectroDSPyRetriever`, a drop-in DSPy retrieval module backed by Vectro
   INT8/NF4 compression. Implements the `dspy.Retrieve` duck-typing protocol
   (`forward(query_or_queries, k)` and `__call__`) returning
   `dspy.Prediction(passages=[...])`. Falls back to a structurally equivalent
   `_Prediction` object when `dspy-ai` is not installed, so the import is
   always safe.
-- Async retrieval — `aforward()` and `aforward_mmr()` non-blocking variants
+- Async retrieval -- `aforward()` and `aforward_mmr()` non-blocking variants
   for FastAPI / DSPy async pipelines.
-- MMR retrieval — `forward_mmr(query, k, fetch_k, lambda_mult)` for
+- MMR retrieval -- `forward_mmr(query, k, fetch_k, lambda_mult)` for
   diversity-promoting selection, sharing the canonical `mmr_select` utility
   with the LangChain / LlamaIndex / Haystack adapters.
 - Metadata equality filters on `forward()` and `forward_mmr()`.
-- Multi-query aggregation — passing a list of strings sums per-query
+- Multi-query aggregation -- passing a list of strings sums per-query
   cosine scores before top-k, matching the standard DSPy convention for
   `Retrieve(["q1", "q2"])` calls.
-- Pre-computed `query_embedding=` bypass — for pipelines that already
+- Pre-computed `query_embedding=` bypass -- for pipelines that already
   produced the query vector and want to skip `embed_fn` re-encoding.
-- Persistent `save(path)` / `load(path, embed_fn=...)` — retriever
+- Persistent `save(path)` / `load(path, embed_fn=...)` -- retriever
   directory with `meta.json` (passages, metadatas, profile, dims, k) and
   `vectors.npy` (reconstructed float32 embeddings).
-- `compression_stats` property — n_passages, dims, profile, original_mb,
+- `compression_stats` property -- n_passages, dims, profile, original_mb,
   compressed_mb, compression_ratio, memory_saved_mb.
-- `python/integrations/dspy_integration.pyi` — type stub.
+- `python/integrations/dspy_integration.pyi` -- type stub.
 - `python/integrations/__init__.py(.pyi)` exports `VectroDSPyRetriever`.
 - `python/__init__.py` re-exports `VectroDSPyRetriever` at the top level.
-- `tests/test_dspy_integration.py` — 35 unit tests covering construction,
+- `tests/test_dspy_integration.py` -- 35 unit tests covering construction,
   forward/__call__, k override, multi-query, query_embedding bypass,
   empty corpus, filters, async, MMR (relevance/diversity/filters),
   save/load round-trip, store-type validation, compression stats,
   top-level export sanity, and the DSPy-not-installed fallback path.
-- README — DSPy quickstart section and `pip install "vectro[integrations] dspy-ai"` extras hint.
+- README -- DSPy quickstart section and `pip install "vectro[integrations] dspy-ai"` extras hint.
 
 ### Notes
-- Closes the last major RAG framework gap. The "Big Four" — LangChain,
-  LlamaIndex, Haystack 2.x, and DSPy — now have full feature parity in
+- Closes the last major RAG framework gap. The "Big Four" -- LangChain,
+  LlamaIndex, Haystack 2.x, and DSPy -- now have full feature parity in
   Vectro adapters: search, filters, MMR, async, save/load.
 - 1017 Python tests passing (up from 982; 35 new DSPy tests, no regressions).
 - Version bump 4.17.1 → 4.18.0 in `python/__init__.py`, `python/vectro.py`,
   `pyproject.toml`, and `README.md`.
 
-## [4.17.1] — 2026-04-29
+## [4.17.1] -- 2026-04-29
 
 ### Changed
-- `python/retrieval/mmr.py`: added shared `cosine_scores(query_vec, mat)` —
+- `python/retrieval/mmr.py`: added shared `cosine_scores(query_vec, mat)` --
   the canonical cosine-similarity computation used across all framework adapters.
   No behavior change; pure consolidation of three character-identical
   `_cosine_scores` methods previously duplicated in LangChain, LlamaIndex, and
   Haystack adapters, plus an inline copy inside the LangChain MMR scorer.
 - `python/integrations/llamaindex_integration.py`: removed local
-  `_mmr_select_li` (33 lines) — now delegates to the shared `mmr_select`
+  `_mmr_select_li` (33 lines) -- now delegates to the shared `mmr_select`
   from `python.retrieval.mmr`.  Algorithm and return semantics are identical;
   the shared version uses `argpartition` for an O(n) candidate selection
   (vs. O(n log n) full sort) so behavior is asymptotically faster on large stores.
@@ -1224,7 +1281,7 @@ quality contract honestly, and `assume_normalized` is opt-in.
   also collapsed to single shared calls.
 - `python/integrations/llamaindex_integration.pyi`: removed `_mmr_select_li` stub.
 - `python/retrieval/mmr.pyi`: added `cosine_scores` stub.
-- `tests/test_retrieval_mmr.py` (new): 11 tests for the shared utility —
+- `tests/test_retrieval_mmr.py` (new): 11 tests for the shared utility --
   cosine on unit/orthogonal/zero-query vectors, MMR k/fetch_k clamping,
   `lambda_mult=1.0` agreeing with `argmax(cosine)` of the full matrix.
 
@@ -1234,28 +1291,28 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [4.17.0] — 2026-04-29
+## [4.17.0] -- 2026-04-29
 
 ### Added
 - `python/retrieval/mmr.py` (new module): shared `mmr_select()` extracted from
-  `langchain_integration.py` — eliminates duplication, now used by both LangChain
+  `langchain_integration.py` -- eliminates duplication, now used by both LangChain
   and Haystack adapters.
 - `python/retrieval/mmr.pyi`: type stub for `mmr_select`.
 - `python/integrations/haystack_integration.py`:
   - `VectroDocumentStore.max_marginal_relevance_search(query_embedding, k, fetch_k,
-    lambda_mult, filters)` — diversity-promoting retrieval via greedy MMR.
-  - `VectroDocumentStore.async_max_marginal_relevance_search(...)` — non-blocking
+    lambda_mult, filters)` -- diversity-promoting retrieval via greedy MMR.
+  - `VectroDocumentStore.async_max_marginal_relevance_search(...)` -- non-blocking
     async variant via thread-pool executor.
 - `python/retrieval/reranker.py`:
-  - `HaystackReranker(store, top_k, strategy, rrf_k)` — Haystack 2.x `run()`-protocol
+  - `HaystackReranker(store, top_k, strategy, rrf_k)` -- Haystack 2.x `run()`-protocol
     component: `run(query_embedding, documents, top_k)` → `{"documents": [...]}`.
     Async `async_run()` via thread-pool executor.
-  - `_extract_haystack_ids()` — maps Haystack `Document.id` to store-internal ids.
+  - `_extract_haystack_ids()` -- maps Haystack `Document.id` to store-internal ids.
 - `python/retrieval/__init__.py` / `.pyi` / `python/__init__.py`: `HaystackReranker`
   and `mmr_select` added to all export surfaces.
-- `tests/test_haystack_mmr.py` — 18 tests: basic, diversity (`lambda_mult` 0.0/1.0),
+- `tests/test_haystack_mmr.py` -- 18 tests: basic, diversity (`lambda_mult` 0.0/1.0),
   `fetch_k` edge cases, metadata filters, async variants.
-- `tests/test_haystack_reranker.py` — 17 tests: init, `run()`, `top_k` override,
+- `tests/test_haystack_reranker.py` -- 17 tests: init, `run()`, `top_k` override,
   cosine/RRF strategies, empty candidates, async variants.
 
 ### Fixed
@@ -1275,20 +1332,20 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [4.16.0] — 2026-04-28
+## [4.16.0] -- 2026-04-28
 
 ### Added
 - `python/retrieval/reranker.py` (new module): score-based re-ranking layer.
-  - `VectroReranker(store, strategy, rrf_k)` — re-ranks retrieved
+  - `VectroReranker(store, strategy, rrf_k)` -- re-ranks retrieved
     `(doc_id, document, score)` tuples using the store's compressed
     embeddings.  Two strategies: `"cosine"` (pure cosine re-score) and
     `"rrf"` (RRF fusion of original ranks + cosine re-scores).
     Async `arerank()` via thread-pool executor.
-  - `LangChainReranker(store, embedding, top_k, strategy)` — duck-typed
+  - `LangChainReranker(store, embedding, top_k, strategy)` -- duck-typed
     `BaseDocumentCompressor`: `compress_documents(documents, query)`,
     `acompress_documents`, `invoke`, `ainvoke`.  Zero hard LangChain dep.
 - `python/integrations/llamaindex_integration.py`: protocol completions:
-  - `query()` now respects `VectorStoreQuery.filters` (`MetadataFilters`) —
+  - `query()` now respects `VectorStoreQuery.filters` (`MetadataFilters`) --
     equality and NE operators applied to node metadata before ranking.
   - `query()` supports `VectorStoreQuery.query_mode = VectorStoreQueryMode.MMR`
     with `mmr_threshold` (lambda_mult, default 0.5) and `mmr_prefetch_k`
@@ -1296,8 +1353,8 @@ quality contract honestly, and `assume_normalized` is opt-in.
   - Module-level `_apply_meta_filters` and `_mmr_select_li` helpers.
 - `python/integrations/haystack_integration.py`: async variants:
   - `async_embedding_retrieval(query_embedding, top_k, filters, return_embedding)`
-    — non-blocking ANN search via thread-pool executor.
-  - `async_write_documents(documents, policy)` — non-blocking write.
+    -- non-blocking ANN search via thread-pool executor.
+  - `async_write_documents(documents, policy)` -- non-blocking write.
 - `python/retrieval/__init__.py`: `VectroReranker` and `LangChainReranker`
   added to subpackage exports.
 - `python/__init__.py`: `VectroReranker`, `LangChainReranker` added to
@@ -1309,15 +1366,15 @@ quality contract honestly, and `assume_normalized` is opt-in.
   - `python/retrieval/__init__.pyi`
   - `python/retrieval/rrf_retriever.pyi`
   - `python/retrieval/reranker.pyi`
-- `tests/test_llamaindex_filter_mmr.py` (new): 14 tests — metadata filter
+- `tests/test_llamaindex_filter_mmr.py` (new): 14 tests -- metadata filter
   (single-field, multi-field, NE operator, no-match, top-k, ordering),
   MMR (k results, valid nodes, no duplicates, filter+MMR compose, lambda_mult),
   async filter and async MMR propagation.
-- `tests/test_haystack_async.py` (new): 10 tests — `async_embedding_retrieval`
+- `tests/test_haystack_async.py` (new): 10 tests -- `async_embedding_retrieval`
   (top-k, score ordering, metadata filter, return_embedding flag, empty store,
   filter no-match), `async_write_documents` (count, visibility, overwrite
   policy), concurrent async gather.
-- `tests/test_reranker.py` (new): 27 tests — `_cosine_rerank` unit (top-k,
+- `tests/test_reranker.py` (new): 27 tests -- `_cosine_rerank` unit (top-k,
   descending, cosine range, unknown-id skip), `_rrf_rerank` unit (top-k,
   descending, positive scores, no duplicates), `VectroReranker` (cosine +
   rrf, empty candidates, invalid strategy, repr, top-k cap, doc preservation,
@@ -1332,35 +1389,35 @@ quality contract honestly, and `assume_normalized` is opt-in.
 |-----------|--------|---------|-----|-------------|--------------|-----------|
 | LangChain | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | LlamaIndex | ✅ | ✅ | ✅ | ✅ (add+query) | ✅ | ✅ |
-| Haystack 2.x | ✅ | ✅ | — | ✅ | ✅ | ✅ |
+| Haystack 2.x | ✅ | ✅ | -- | ✅ | ✅ | ✅ |
 
 ---
 
-## [4.15.0] — 2026-04-28
+## [4.15.0] -- 2026-04-28
 
 ### Added
 - `python/retrieval/rrf_retriever.py` (new module): pure-Python Reciprocal Rank
-  Fusion hybrid retriever — zero external dependencies.
-  - `reciprocal_rank_fusion(rankings, k=60)` — core RRF algorithm (Cormack 2009).
-  - `rrf_top_k(rankings, k, rrf_k)` — fuse lists and return top-k `(id, score)` pairs.
-  - `RRFRetriever(retrievers, k, fetch_k, rrf_k)` — framework-agnostic: accepts any
+  Fusion hybrid retriever -- zero external dependencies.
+  - `reciprocal_rank_fusion(rankings, k=60)` -- core RRF algorithm (Cormack 2009).
+  - `rrf_top_k(rankings, k, rrf_k)` -- fuse lists and return top-k `(id, score)` pairs.
+  - `RRFRetriever(retrievers, k, fetch_k, rrf_k)` -- framework-agnostic: accepts any
     list of callables returning `(doc_id, text, score)` tuples. Fault-tolerant:
     individual source failures are silently skipped.  `retrieve(query)` + async
     `aretrieve(query)`.
-  - `LangChainRRFRetriever(stores, k, fetch_k, rrf_k)` — duck-typed LangChain
+  - `LangChainRRFRetriever(stores, k, fetch_k, rrf_k)` -- duck-typed LangChain
     `BaseRetriever`: `get_relevant_documents`, `aget_relevant_documents`, `invoke`,
     `ainvoke`.  Works with any `VectroVectorStore` (or any object with
     `similarity_search_with_score`).
-- `python/retrieval/__init__.py` — `python.retrieval` subpackage, all four symbols
+- `python/retrieval/__init__.py` -- `python.retrieval` subpackage, all four symbols
   exported.
 - `python/integrations/langchain_integration.py`: LangChain protocol completions:
-  - `add_documents(documents)` — accepts `List[Document]` with `.page_content` /
+  - `add_documents(documents)` -- accepts `List[Document]` with `.page_content` /
     `.metadata` / optional `.id` (mirrors FAISS/Chroma interface).
-  - `from_documents(cls, documents, embedding, ...)` — classmethod.
-  - `similarity_search_by_vector(embedding, k, filter=None)` — pre-computed query.
+  - `from_documents(cls, documents, embedding, ...)` -- classmethod.
+  - `similarity_search_by_vector(embedding, k, filter=None)` -- pre-computed query.
   - `similarity_search_by_vector_with_score(embedding, k, filter=None)`.
-  - `asimilarity_search_by_vector(embedding, k, filter=None)` — async variant.
-  - `aadd_documents(documents)` — async variant of `add_documents`.
+  - `asimilarity_search_by_vector(embedding, k, filter=None)` -- async variant.
+  - `aadd_documents(documents)` -- async variant of `add_documents`.
   - `filter=` kwarg added to `similarity_search`, `similarity_search_with_score`,
     `_similarity_search_with_relevance_scores`, `asimilarity_search`,
     `asimilarity_search_with_score`, `max_marginal_relevance_search`,
@@ -1368,16 +1425,16 @@ quality contract honestly, and `assume_normalized` is opt-in.
     Supports equality filters on document metadata: `filter={"source": "wiki"}`.
   - `_filtered_indices(metas, filter)` internal helper.
 - `python/integrations/llamaindex_integration.py`: async protocol completions:
-  - `async_add(nodes)` — non-blocking `add` via thread-pool executor.
-  - `aquery(query)` — non-blocking `query` via thread-pool executor.
+  - `async_add(nodes)` -- non-blocking `add` via thread-pool executor.
+  - `aquery(query)` -- non-blocking `query` via thread-pool executor.
 - `python/__init__.py`: `reciprocal_rank_fusion`, `rrf_top_k`, `RRFRetriever`,
   `LangChainRRFRetriever` added to top-level imports and `__all__`.
-- `tests/test_langchain_protocol.py` (new): 20 tests — `add_documents`,
+- `tests/test_langchain_protocol.py` (new): 20 tests -- `add_documents`,
   `from_documents`, `similarity_search_by_vector` (sync + async), and the
   `filter=` kwarg across all seven search methods.
-- `tests/test_llamaindex_async.py` (new): 7 tests — `async_add`, `aquery`,
+- `tests/test_llamaindex_async.py` (new): 7 tests -- `async_add`, `aquery`,
   concurrent async adds, empty store async safety.
-- `tests/test_rrf_retriever.py` (new): 24 tests — RRF algorithm unit tests,
+- `tests/test_rrf_retriever.py` (new): 24 tests -- RRF algorithm unit tests,
   `rrf_top_k`, `RRFRetriever` (fault tolerance, async), `LangChainRRFRetriever`
   (deduplication, async, `invoke`).
 
@@ -1388,30 +1445,30 @@ quality contract honestly, and `assume_normalized` is opt-in.
 | Framework | add / add_texts | add_documents | from_documents | search | search_by_vector | MMR | async | filter= | save/load |
 |-----------|----------------|---------------|----------------|--------|------------------|-----|-------|---------|-----------|
 | LangChain | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| LlamaIndex | ✅ | — | — | ✅ | — | — | ✅ | — | ✅ |
-| Haystack 2.x | ✅ | — | — | ✅ | — | — | — | ✅ | ✅ |
+| LlamaIndex | ✅ | -- | -- | ✅ | -- | -- | ✅ | -- | ✅ |
+| Haystack 2.x | ✅ | -- | -- | ✅ | -- | -- | -- | ✅ | ✅ |
 
 ---
 
-## [4.14.0] — 2026-04-27
+## [4.14.0] -- 2026-04-27
 
 ### Added
-- `python/integrations/haystack_integration.py`: `VectroDocumentStore` — a
+- `python/integrations/haystack_integration.py`: `VectroDocumentStore` -- a
   Haystack 2.x `DocumentStore` backed by Vectro compression.  Full protocol:
   `write_documents` (with `none` / `overwrite` / `fail` duplicate policies),
   `filter_documents` (equality-filter metadata), `delete_documents`,
   `count_documents`, `get_documents_by_id`, and `embedding_retrieval` (top-k
   cosine ANN search with optional metadata filter and `return_embedding` flag).
   `save(path)` / `load(path)` for disk persistence.  No hard haystack-ai import
-  at module load — checked lazily.  Completes the RAG framework trinity
+  at module load -- checked lazily.  Completes the RAG framework trinity
   (LangChain ✅ + LlamaIndex ✅ + Haystack ✅).
 - `python/integrations/langchain_integration.py`: `max_marginal_relevance_search`,
   `max_marginal_relevance_search_with_score`, and `amax_marginal_relevance_search`
-  — MMR retrieval that balances relevance with diversity via greedy selection.
+  -- MMR retrieval that balances relevance with diversity via greedy selection.
   `save(path)` / `load(path, embedding)` persistence using numpy + JSON.
   Module-level `_mmr_select` helper exposed for unit testing.
 - `python/integrations/llamaindex_integration.py`: `save(path)` / `load(path)`
-  persistence — stores node ids, text, metadata as JSON + reconstructed float32
+  persistence -- stores node ids, text, metadata as JSON + reconstructed float32
   embeddings as `.npy`; recompresses on load.
 - `python/integrations/__init__.py`: exports `HaystackDocumentStore`.
 - `python/__init__.py`: `HaystackDocumentStore` added to top-level imports and
@@ -1422,7 +1479,7 @@ quality contract honestly, and `assume_normalized` is opt-in.
 - `tests/test_langchain_mmr.py`: 14 MMR unit tests (`_mmr_select` directly) +
   7 integration tests for `max_marginal_relevance_search` / async variant +
   7 persistence (save/load) tests for `VectroVectorStore`.
-- `tests/test_llamaindex_persistence.py`: 10 persistence tests — save/load
+- `tests/test_llamaindex_persistence.py`: 10 persistence tests -- save/load
   round-trip, node ids, text/metadata preservation, wrong store type error,
   query-after-load, compression profile preserved.
 
@@ -1442,10 +1499,10 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [4.13.0] — 2026-04-28
+## [4.13.0] -- 2026-04-28
 
 ### Added
-- `python/integrations/langchain_integration.py`: `VectroVectorStore` — a
+- `python/integrations/langchain_integration.py`: `VectroVectorStore` -- a
   drop-in LangChain `VectorStore` implementation backed by Vectro compression.
   Full protocol coverage: `add_texts`, `similarity_search`,
   `similarity_search_with_score`, `_similarity_search_with_relevance_scores`,
@@ -1453,12 +1510,12 @@ quality contract honestly, and `assume_normalized` is opt-in.
   `asimilarity_search_with_score` async variants, `compression_stats` property.
   Uses INT8 or NF4 depending on `compression_profile`; respects `model_dir`
   for family-aware method selection. No hard LangChain import at module load.
-- `python/integrations/llamaindex_integration.py`: `VectroVectorStore` — a
+- `python/integrations/llamaindex_integration.py`: `VectroVectorStore` -- a
   LlamaIndex `BasePydanticVectorStore` duck-typed adapter.  Implements `add`,
   `delete`, `query` (returns `VectorStoreQueryResult`), `get_nodes`, and
   `compression_stats`.  Embedding field required on nodes at `add()` time;
   missing embeddings raise `ValueError` with clear message.
-- `python/vectro.py`: `compress_async()` and `decompress_async()` — awaitable
+- `python/vectro.py`: `compress_async()` and `decompress_async()` -- awaitable
   coroutines that delegate to `compress()` / `decompress()` via
   `loop.run_in_executor(None, ...)`.  Safe to call from FastAPI / aiohttp
   request handlers without blocking the event loop.
@@ -1469,13 +1526,13 @@ quality contract honestly, and `assume_normalized` is opt-in.
 - `tests/test_langchain_integration.py`: 34 tests covering construction,
   `add_texts`, `similarity_search`, scoring, delete, `compression_stats`,
   async variants (concurrent adds, concurrent searches), and top-level import.
-  Uses a `_FakeEmbeddings` stub — zero external API dependencies.
+  Uses a `_FakeEmbeddings` stub -- zero external API dependencies.
 - `tests/test_llamaindex_integration.py`: 26 tests covering construction,
   `add`, `query` (top-k, score order, range, empty store), `delete`,
   `get_nodes`, `compression_stats`, and top-level import.  Uses minimal
-  llama-index stubs injected into `sys.modules` — zero external dependencies.
+  llama-index stubs injected into `sys.modules` -- zero external dependencies.
 - `tests/test_async_compress.py`: 12 tests for `compress_async` and
-  `decompress_async` — single/batch, profile/precision forwarding, numerical
+  `decompress_async` -- single/batch, profile/precision forwarding, numerical
   equivalence with sync path, cosine floor assertion, concurrent execution.
 
 ### Changed
@@ -1483,7 +1540,7 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [4.12.0] — 2026-04-28
+## [4.12.0] -- 2026-04-28
 
 ### Added
 - `python/profiles.py`: two new model families:
@@ -1516,7 +1573,7 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [4.11.2] — 2026-04-27 (patch: cross-platform benchmarking)
+## [4.11.2] -- 2026-04-27 (patch: cross-platform benchmarking)
 
 ### Added
 - `benchmarks/platform_detection.py`: hardware and SIMD capability detection
@@ -1540,14 +1597,14 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ### Changed
 - `.github/workflows/cross_platform_benchmark.yml`: rebuilt with three parallel
-  platform jobs — `ubuntu-latest` (Linux AVX2/AVX-512), `macos-latest` (arm64
+  platform jobs -- `ubuntu-latest` (Linux AVX2/AVX-512), `macos-latest` (arm64
   NEON), `macos-13` (Intel x86_64 AVX2); maturin Rust build in all three jobs;
   `aggregate-results` depends on all three; upgraded to actions/upload-artifact@v4
   and actions/setup-python@v5.
 
 ---
 
-## [4.11.2] — 2026-04-22
+## [4.11.2] -- 2026-04-22
 
 ### Added
 - `rust/vectro_lib/src/wasm.rs`: browser test module with 11 `#[wasm_bindgen_test]`
@@ -1576,7 +1633,7 @@ quality contract honestly, and `assume_normalized` is opt-in.
 ### Validation
 - `python3 -m pytest tests/ -q --timeout=120` → **792 passed, 1 skipped, 0 failed**
 
-## [4.11.1] — 2026-04-22
+## [4.11.1] -- 2026-04-22
 
 ### Added
 - `experimental/mojo/vectro_standalone.mojo`: Product Quantization commands and pipe protocol support:
@@ -1586,7 +1643,7 @@ quality contract honestly, and `assume_normalized` is opt-in.
 - `python/_mojo_bridge.py`: new bridge APIs `pq_encode(vectors, centroids)` and `pq_decode(codes, centroids, d=None)`.
 - `python/_mojo_bridge.pyi`: type stubs for the new PQ bridge APIs.
 - `scripts/vectro_quantizer_stub.py`: PQ pipe command support for CI/local smoke paths.
-- `tests/test_batch_api.py`: 3 new binary profile tests — compression ratio ~32x, packed shape,
+- `tests/test_batch_api.py`: 3 new binary profile tests -- compression ratio ~32x, packed shape,
   and cosine similarity roundtrip (spec floor ≥ 0.75).
 - `tests/test_sklearn_subprocess_isolation.py`: subprocess isolation smoke tests for
   `python.rq_api` and `python.v3_api` RQ-path execution (including repeated fresh-interpreter
@@ -1596,7 +1653,7 @@ quality contract honestly, and `assume_normalized` is opt-in.
 ### Fixed
 - `python/batch_api.py` (`VectroBatchProcessor.quantize_batch`): `profile="binary"` now correctly
   routes to `binary_api.quantize_binary()` instead of silently falling back to INT8.
-  Compression ratio is now reported as ~32x (was incorrectly ~3.85x — a 8.3× misrepresentation).
+  Compression ratio is now reported as ~32x (was incorrectly ~3.85x -- a 8.3× misrepresentation).
   Mojo path is explicitly bypassed for binary (Mojo backend is INT8-only).
 - `python/batch_api.py` (`BatchQuantizationResult.reconstruct_vector`): binary mode no longer
   accesses the `scales` array (empty for binary), eliminating `IndexError` on index 0.
@@ -1636,15 +1693,15 @@ quality contract honestly, and `assume_normalized` is opt-in.
   → **All checks passed**.
 - `python3 -m pytest tests/ -q --timeout=120` → **792 passed, 1 skipped, 0 failed**.
 
-## [4.11.0] — 2026-04-18  Sprint 3: SIMD batch encode — encode_fast_into NEON/AVX2
+## [4.11.0] -- 2026-04-18  Sprint 3: SIMD batch encode -- encode_fast_into NEON/AVX2
 
 ### Added
-- `vectro_lib/src/quant/int8.rs` — `encode_fast_into(v, out) -> f32`:
+- `vectro_lib/src/quant/int8.rs` -- `encode_fast_into(v, out) -> f32`:
   in-place NEON/AVX2 encode, no heap allocation, returns abs_max directly.
   Dispatches to `encode_neon_into` (AArch64) or `encode_avx2_into` (x86-64),
   falling back to LLVM-scalar.  Same arch dispatch as existing `encode_fast`.
-- `vectro_lib/src/quant/int8.rs` — `decode_fast_into(codes, scale, out)`:
-  scalar loop — manual NEON widening (i8→f32×scale) was ~3× slower than
+- `vectro_lib/src/quant/int8.rs` -- `decode_fast_into(codes, scale, out)`:
+  scalar loop -- manual NEON widening (i8→f32×scale) was ~3× slower than
   LLVM's auto-vectorised scalar; rejected.  `decode_fast_into` retained as
   a named, tested entry point for future optimisation.
 - 4 new unit tests: `encode_fast_into_matches_encode_fast`,
@@ -1653,7 +1710,7 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ### Changed
 - `batch_encode_into` inner loop now calls `encode_fast_into` (NEON/AVX2) per row
-  instead of the old scalar loop — NEON 16-wide now fires inside every rayon worker.
+  instead of the old scalar loop -- NEON 16-wide now fires inside every rayon worker.
 - `batch_decode_into` inner loop now calls `decode_fast_into` (scalar, same as before).
 - Rust crate `vectro_py` bumped 7.3.0 → 7.4.0.
 
@@ -1666,15 +1723,15 @@ quality contract honestly, and `assume_normalized` is opt-in.
   caused decode regression (rayon internal pool + GIL release contention).
 - 741 tests passing, 19 skipped (no regressions from v4.10.0).
 
-## [4.10.0] — 2026-04-18  Sprint 2: vectro_py INT8 batch backend, eliminate subprocess IPC
+## [4.10.0] -- 2026-04-18  Sprint 2: vectro_py INT8 batch backend, eliminate subprocess IPC
 
 ### Added
-- `vectro_lib/src/quant/int8.rs` — `batch_encode_into()` and `batch_decode_into()`:
+- `vectro_lib/src/quant/int8.rs` -- `batch_encode_into()` and `batch_decode_into()`:
   zero-allocation rayon-parallel row processing with LLVM auto-vectorised inner loop
   (NEON on AArch64, AVX2 on x86-64).  No per-row `Vec<i8>` heap allocation.
-- `vectro_py/src/lib.rs` — `quantize_int8_batch` / `dequantize_int8_batch` PyO3 functions:
+- `vectro_py/src/lib.rs` -- `quantize_int8_batch` / `dequantize_int8_batch` PyO3 functions:
   thin wrappers around the new lib functions, zero-copy on C-contiguous input.
-- `python/interface.py` — `_quantize_with_vectro_py` / `_dequantize_with_vectro_py` helpers;
+- `python/interface.py` -- `_quantize_with_vectro_py` / `_dequantize_with_vectro_py` helpers;
   `vectro_py` backend wired into `quantize_embeddings` and `reconstruct_embeddings`
   at priority above Mojo/Cython/numpy.  Single-vector (1D) reshape handled transparently.
 
@@ -1692,30 +1749,30 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [4.9.0] / [7.3.0] — 2026-04-17  Sprint 1: doc sync, HNSW benchmark validation, GloVe benchmark
+## [4.9.0] / [7.3.0] -- 2026-04-17  Sprint 1: doc sync, HNSW benchmark validation, GloVe benchmark
 
 ### Changed
 - `pyproject.toml` version `4.8.0 → 4.9.0`
-- `README.md` — badge updated `tests-741_passing`
-- `AGENTS.md` — project identity and test count synced to `v4.8.0 / v7.3.0 / 741`
-- `PLAN.md` — header version synced to `v4.8.0 / v7.3.0 / 741`
-- `CLAUDE.md` — project identity, planning section, and roadmap table updated to current sprint plan
+- `README.md` -- badge updated `tests-741_passing`
+- `AGENTS.md` -- project identity and test count synced to `v4.8.0 / v7.3.0 / 741`
+- `PLAN.md` -- header version synced to `v4.8.0 / v7.3.0 / 741`
+- `CLAUDE.md` -- project identity, planning section, and roadmap table updated to current sprint plan
 
 ### Validated
-- **HNSW benchmark** — `ef_search=200`, `n=10,000`, `d=128`: R@10=**0.978** ✓ (gate: ≥0.90)
+- **HNSW benchmark** -- `ef_search=200`, `n=10,000`, `d=128`: R@10=**0.978** ✓ (gate: ≥0.90)
   - Root cause investigated: greedy `_select_neighbors` performs correctly at `ef_search=200`; diversity heuristic (Algorithm 4) was trialled but found unnecessary at the validated ef setting
-- **GloVe-100d benchmark** — `n=10,000`: fast=202,942 vec/s cosine=1.0000, ultra=170,223 vec/s, binary=171,865 vec/s ✓
+- **GloVe-100d benchmark** -- `n=10,000`: fast=202,942 vec/s cosine=1.0000, ultra=170,223 vec/s, binary=171,865 vec/s ✓
 
 ### Infrastructure
-- 19 skipped tests confirmed as legitimate optional-dependency guards (`onnx`, `onnxruntime`, `zstandard`, `pyarrow`) — no fix needed
+- 19 skipped tests confirmed as legitimate optional-dependency guards (`onnx`, `onnxruntime`, `zstandard`, `pyarrow`) -- no fix needed
 
 ---
 
-## [4.8.0] / [7.3.0] — 2026-04-17  Distribution: bundled Mojo binary, Homebrew tap, MANIFEST.in
+## [4.8.0] / [7.3.0] -- 2026-04-17  Distribution: bundled Mojo binary, Homebrew tap, MANIFEST.in
 
 ### Added
-- `MANIFEST.in` — proper sdist: includes Mojo source (`src/*.mojo`), excludes compiled binary
-- `.github/workflows/homebrew-tap.yml` — auto-updates `Formula/vectro.rb` SHA256 on every `release: published` event via `HOMEBREW_TAP_PAT` secret
+- `MANIFEST.in` -- proper sdist: includes Mojo source (`src/*.mojo`), excludes compiled binary
+- `.github/workflows/homebrew-tap.yml` -- auto-updates `Formula/vectro.rb` SHA256 on every `release: published` event via `HOMEBREW_TAP_PAT` secret
 - `pixi.toml`: `linux-64` platform added alongside `osx-arm64` so Mojo binary can be built on GitHub Linux runners
 - `python/_mojo_bridge.py`: bundled-wheel binary path (`pathlib.Path(__file__).parent / _BINARY_NAME`) prepended as first candidate in `_find_binary()`, ahead of repo-root and cwd paths
 - `.github/workflows/wheels.yml`: `bundle_mojo: true` matrix flag on macOS ARM64 + Linux x86_64 entries; two new steps (`Install pixi`, `Build and stage Mojo quantizer binary`) gate on that flag; smoke-test asserts `_mojo_bridge.is_available()` in the installed wheel
@@ -1734,21 +1791,21 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [7.2.0] — 2026-04-16  JS Bindings Phase 2: VQZ N-API addon, 15 JS tests, Node 18+20 CI
+## [7.2.0] -- 2026-04-16  JS Bindings Phase 2: VQZ N-API addon, 15 JS tests, Node 18+20 CI
 
 ### Added
-- `js/src/vectro_napi.cpp` — 507-line C++ N-API addon implementing the full v4.7.0 JS surface:
-  - `parseHeader(buffer)` — validates 64-byte VQZ magic + extracts version, compFlag, nVectors, dims, nSubspaces, metadataLen.
-  - `parseBody(buffer, n, dims)` — splits decompressed body into `Int8Array` (quantized codes) + `Float32Array` (per-vector scales) sharing one `ArrayBuffer`.
-  - `dequantize(quantized, scales, dims)` — INT8 → float32; ARM NEON SIMD on arm64, scalar auto-vectorized on x86-64.
-  - `readVqz(path)` — full pipeline: open file, parse header, decompress (zstd/zlib/none), split body.
-  - `VqzReader` class — object-style handle: `constructor(path)`, `read()`, `close()`.
-- `js/index.d.ts` — TypeScript declarations for `VqzHeader`, `VqzData`, `parseHeader`, `parseBody`, `dequantize`, `readVqz`, `VqzReader`.
-- `js/test/basic.js` — 15-test suite: header parse, body split, numeric correctness, file roundtrip, VqzReader lifecycle. All 15 pass.
-- `.github/workflows/js-ci.yml` — Node 18+20 CI matrix on `ubuntu-latest` + `macos-latest`; `libzstd-dev` on Linux, `brew install zstd` on macOS; `--ignore-scripts` install + explicit `npm run build` + `npm test`.
+- `js/src/vectro_napi.cpp` -- 507-line C++ N-API addon implementing the full v4.7.0 JS surface:
+  - `parseHeader(buffer)` -- validates 64-byte VQZ magic + extracts version, compFlag, nVectors, dims, nSubspaces, metadataLen.
+  - `parseBody(buffer, n, dims)` -- splits decompressed body into `Int8Array` (quantized codes) + `Float32Array` (per-vector scales) sharing one `ArrayBuffer`.
+  - `dequantize(quantized, scales, dims)` -- INT8 → float32; ARM NEON SIMD on arm64, scalar auto-vectorized on x86-64.
+  - `readVqz(path)` -- full pipeline: open file, parse header, decompress (zstd/zlib/none), split body.
+  - `VqzReader` class -- object-style handle: `constructor(path)`, `read()`, `close()`.
+- `js/index.d.ts` -- TypeScript declarations for `VqzHeader`, `VqzData`, `parseHeader`, `parseBody`, `dequantize`, `readVqz`, `VqzReader`.
+- `js/test/basic.js` -- 15-test suite: header parse, body split, numeric correctness, file roundtrip, VqzReader lifecycle. All 15 pass.
+- `.github/workflows/js-ci.yml` -- Node 18+20 CI matrix on `ubuntu-latest` + `macos-latest`; `libzstd-dev` on Linux, `brew install zstd` on macOS; `--ignore-scripts` install + explicit `npm run build` + `npm test`.
 
 ### Changed
-- `js/binding.gyp` — macOS condition: explicit zstd include path (`<!(brew --prefix zstd)/include`) and dylib link (`<!(brew --prefix zstd)/lib/libzstd.dylib`); Linux condition with system `libzstd-dev`.
+- `js/binding.gyp` -- macOS condition: explicit zstd include path (`<!(brew --prefix zstd)/include`) and dylib link (`<!(brew --prefix zstd)/lib/libzstd.dylib`); Linux condition with system `libzstd-dev`.
 - `js/package.json` version `6.0.0 → 7.2.0`.
 - Python package version `4.6.0 → 4.7.0`.
 - `rust/vectro_py` version `7.1.0 → 7.2.0`.
@@ -1757,18 +1814,18 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 
 ### Added
-- `python/ivf_api.py` — `IVFIndex` and `IVFPQIndex`: Python wrappers for `PyIvfIndex` / `PyIvfPqIndex`; full method surface: `train`, `train_np`, `add`, `add_np`, `delete`, `vacuum`, `search`, `search_np`, `search_with_probe`, `search_filtered_np` (IVFIndex only), `search_for_recall`, `save`, `load`. `_BINDINGS_AVAILABLE` guard pattern; `np.ascontiguousarray` dtype enforcement on all `_np` paths.
-- `python/bf16_api.py` — `Bf16Encoder`: Python wrapper for `PyBf16Encoder`; methods: `encode`, `encode_np`, `decode`, `cosine_dist`, `__len__`, `__repr__`.
-- `python/ivf_api.pyi` + `python/bf16_api.pyi` — complete PEP 561 type stubs for both new modules.
-- `python/__init__.py` — added `IVFIndex`, `IVFPQIndex`, `Bf16Encoder` to imports and `__all__`; version bumped `4.4.0 → 4.5.0`.
-- `python/retriever.py` — `VectroRetriever.from_file(path, embed_fn, alpha)` classmethod: loads a saved `EmbeddingDataset` from disk and builds a retriever; `VectroRetriever.from_jsonl(jsonl_path, texts, ids, embed_fn, alpha)` classmethod: builds a retriever from a JSONL embedding file.
-- `python/examples/konjos_integration.py` — end-to-end integration demo for three surface areas: `VectroRetriever.from_jsonl`, `IVFIndex` (train/add/search), `Bf16Encoder` (encode/decode). `_BINDINGS` guard; graceful skip when native bindings absent.
-- `tests/test_ivf.py` — `TestIVFIndexUnit`, `TestIVFPQIndexUnit`, `TestBindingsGuard`, `TestIVFIndexIntegration`, `TestIVFPQIndexIntegration`.
-- `tests/test_bf16.py` — `TestBf16EncoderUnit`, `TestBf16EncoderGuard`, `TestBf16EncoderIntegration`.
+- `python/ivf_api.py` -- `IVFIndex` and `IVFPQIndex`: Python wrappers for `PyIvfIndex` / `PyIvfPqIndex`; full method surface: `train`, `train_np`, `add`, `add_np`, `delete`, `vacuum`, `search`, `search_np`, `search_with_probe`, `search_filtered_np` (IVFIndex only), `search_for_recall`, `save`, `load`. `_BINDINGS_AVAILABLE` guard pattern; `np.ascontiguousarray` dtype enforcement on all `_np` paths.
+- `python/bf16_api.py` -- `Bf16Encoder`: Python wrapper for `PyBf16Encoder`; methods: `encode`, `encode_np`, `decode`, `cosine_dist`, `__len__`, `__repr__`.
+- `python/ivf_api.pyi` + `python/bf16_api.pyi` -- complete PEP 561 type stubs for both new modules.
+- `python/__init__.py` -- added `IVFIndex`, `IVFPQIndex`, `Bf16Encoder` to imports and `__all__`; version bumped `4.4.0 → 4.5.0`.
+- `python/retriever.py` -- `VectroRetriever.from_file(path, embed_fn, alpha)` classmethod: loads a saved `EmbeddingDataset` from disk and builds a retriever; `VectroRetriever.from_jsonl(jsonl_path, texts, ids, embed_fn, alpha)` classmethod: builds a retriever from a JSONL embedding file.
+- `python/examples/konjos_integration.py` -- end-to-end integration demo for three surface areas: `VectroRetriever.from_jsonl`, `IVFIndex` (train/add/search), `Bf16Encoder` (encode/decode). `_BINDINGS` guard; graceful skip when native bindings absent.
+- `tests/test_ivf.py` -- `TestIVFIndexUnit`, `TestIVFPQIndexUnit`, `TestBindingsGuard`, `TestIVFIndexIntegration`, `TestIVFPQIndexIntegration`.
+- `tests/test_bf16.py` -- `TestBf16EncoderUnit`, `TestBf16EncoderGuard`, `TestBf16EncoderIntegration`.
 
 ### Fixed
-- `rust/vectro_py/src/lib.rs` — `PyEmbeddingDataset` lacked `name = "EmbeddingDataset"` PyO3 alias; all Python code importing `EmbeddingDataset` from `vectro_py` would fail with `AttributeError`. Fixed: `#[pyclass(name = "EmbeddingDataset")]`.
-- `rust/vectro_py/src/lib.rs` — `PyEmbeddingDataset` was missing three staticmethods required by `python/retriever.py`: `empty()`, `from_embeddings(ids, vectors)`, `load(path)`. All three now implemented and exposed.
+- `rust/vectro_py/src/lib.rs` -- `PyEmbeddingDataset` lacked `name = "EmbeddingDataset"` PyO3 alias; all Python code importing `EmbeddingDataset` from `vectro_py` would fail with `AttributeError`. Fixed: `#[pyclass(name = "EmbeddingDataset")]`.
+- `rust/vectro_py/src/lib.rs` -- `PyEmbeddingDataset` was missing three staticmethods required by `python/retriever.py`: `empty()`, `from_embeddings(ids, vectors)`, `load(path)`. All three now implemented and exposed.
 
 ### Changed
 - Rust crates `vectro_lib`, `vectro_cli`, `vectro_py` bumped `6.0.0 → 7.0.0`.
@@ -1776,32 +1833,32 @@ quality contract honestly, and `assume_normalized` is opt-in.
 - `js/package.json` version `1.0.0 → 6.0.0`; `remote_path` owner corrected `wesleyscholl → konjoai`.
 - Python package version `4.4.0 → 4.5.0`.
 
-## [7.1.0] — 2026  ONNX runtime: fix _HAVE_ONNX flag and descriptor bug; 691/691 tests
+## [7.1.0] -- 2026  ONNX runtime: fix _HAVE_ONNX flag and descriptor bug; 691/691 tests
 
 ### Fixed
-- `python/onnx_export.py` — removed `import onnx.TensorProto as _tp` (invalid: `TensorProto` is a class, not a submodule); the line caused an `ImportError` that silently set `_HAVE_ONNX = False` even when `onnx` was installed, breaking all onnx-gated tests. All code already referenced `onnx.TensorProto.*` via the `onnx` module directly — no usage of the alias existed.
-- `tests/test_onnx_runtime.py` — `setUpClass` stored `to_onnx_model` as a plain class attribute (`cls._to_onnx_model = to_onnx_model`); Python's descriptor protocol then passed `self` as the first argument when called as `self._to_onnx_model(result)`, causing `TypeError: takes 1 positional argument but 2 were given` on all 10 runtime tests. Fixed: `cls._to_onnx_model = staticmethod(to_onnx_model)`.
+- `python/onnx_export.py` -- removed `import onnx.TensorProto as _tp` (invalid: `TensorProto` is a class, not a submodule); the line caused an `ImportError` that silently set `_HAVE_ONNX = False` even when `onnx` was installed, breaking all onnx-gated tests. All code already referenced `onnx.TensorProto.*` via the `onnx` module directly -- no usage of the alias existed.
+- `tests/test_onnx_runtime.py` -- `setUpClass` stored `to_onnx_model` as a plain class attribute (`cls._to_onnx_model = to_onnx_model`); Python's descriptor protocol then passed `self` as the first argument when called as `self._to_onnx_model(result)`, causing `TypeError: takes 1 positional argument but 2 were given` on all 10 runtime tests. Fixed: `cls._to_onnx_model = staticmethod(to_onnx_model)`.
 
 ### Changed
 - Python package version `4.5.0 → 4.6.0`.
 - `rust/vectro_py` version `7.0.0 → 7.1.0`.
 - Test suite: **691 passed, 0 failed, 61 skipped** (up from 677 passed; 14 previously-skipped ONNX tests now active and passing).
 
-## [7.0.0] — 2026  EmbeddingDataset PyO3 fix, IVF/BF16 Python surface, Retriever from_file
+## [7.0.0] -- 2026  EmbeddingDataset PyO3 fix, IVF/BF16 Python surface, Retriever from_file
 
 ### Added
-- `python/ivf_api.py` — `IVFIndex` and `IVFPQIndex`: Python wrappers for `PyIvfIndex` / `PyIvfPqIndex`; full method surface: `train`, `train_np`, `add`, `add_np`, `delete`, `vacuum`, `search`, `search_np`, `search_with_probe`, `search_filtered_np` (IVFIndex only), `search_for_recall`, `save`, `load`. `_BINDINGS_AVAILABLE` guard pattern; `np.ascontiguousarray` dtype enforcement on all `_np` paths.
-- `python/bf16_api.py` — `Bf16Encoder`: Python wrapper for `PyBf16Encoder`; methods: `encode`, `encode_np`, `decode`, `cosine_dist`, `__len__`, `__repr__`.
-- `python/ivf_api.pyi` + `python/bf16_api.pyi` — complete PEP 561 type stubs for both new modules.
-- `python/__init__.py` — added `IVFIndex`, `IVFPQIndex`, `Bf16Encoder` to imports and `__all__`; version bumped `4.4.0 → 4.5.0`.
-- `python/retriever.py` — `VectroRetriever.from_file(path, embed_fn, alpha)` classmethod: loads a saved `EmbeddingDataset` from disk and builds a retriever; `VectroRetriever.from_jsonl(jsonl_path, texts, ids, embed_fn, alpha)` classmethod: builds a retriever from a JSONL embedding file.
-- `python/examples/konjos_integration.py` — end-to-end integration demo for three surface areas: `VectroRetriever.from_jsonl`, `IVFIndex` (train/add/search), `Bf16Encoder` (encode/decode). `_BINDINGS` guard; graceful skip when native bindings absent.
-- `tests/test_ivf.py` — `TestIVFIndexUnit`, `TestIVFPQIndexUnit`, `TestBindingsGuard`, `TestIVFIndexIntegration`, `TestIVFPQIndexIntegration`.
-- `tests/test_bf16.py` — `TestBf16EncoderUnit`, `TestBf16EncoderGuard`, `TestBf16EncoderIntegration`.
+- `python/ivf_api.py` -- `IVFIndex` and `IVFPQIndex`: Python wrappers for `PyIvfIndex` / `PyIvfPqIndex`; full method surface: `train`, `train_np`, `add`, `add_np`, `delete`, `vacuum`, `search`, `search_np`, `search_with_probe`, `search_filtered_np` (IVFIndex only), `search_for_recall`, `save`, `load`. `_BINDINGS_AVAILABLE` guard pattern; `np.ascontiguousarray` dtype enforcement on all `_np` paths.
+- `python/bf16_api.py` -- `Bf16Encoder`: Python wrapper for `PyBf16Encoder`; methods: `encode`, `encode_np`, `decode`, `cosine_dist`, `__len__`, `__repr__`.
+- `python/ivf_api.pyi` + `python/bf16_api.pyi` -- complete PEP 561 type stubs for both new modules.
+- `python/__init__.py` -- added `IVFIndex`, `IVFPQIndex`, `Bf16Encoder` to imports and `__all__`; version bumped `4.4.0 → 4.5.0`.
+- `python/retriever.py` -- `VectroRetriever.from_file(path, embed_fn, alpha)` classmethod: loads a saved `EmbeddingDataset` from disk and builds a retriever; `VectroRetriever.from_jsonl(jsonl_path, texts, ids, embed_fn, alpha)` classmethod: builds a retriever from a JSONL embedding file.
+- `python/examples/konjos_integration.py` -- end-to-end integration demo for three surface areas: `VectroRetriever.from_jsonl`, `IVFIndex` (train/add/search), `Bf16Encoder` (encode/decode). `_BINDINGS` guard; graceful skip when native bindings absent.
+- `tests/test_ivf.py` -- `TestIVFIndexUnit`, `TestIVFPQIndexUnit`, `TestBindingsGuard`, `TestIVFIndexIntegration`, `TestIVFPQIndexIntegration`.
+- `tests/test_bf16.py` -- `TestBf16EncoderUnit`, `TestBf16EncoderGuard`, `TestBf16EncoderIntegration`.
 
 ### Fixed
-- `rust/vectro_py/src/lib.rs` — `PyEmbeddingDataset` lacked `name = "EmbeddingDataset"` PyO3 alias; all Python code importing `EmbeddingDataset` from `vectro_py` would fail with `AttributeError`. Fixed: `#[pyclass(name = "EmbeddingDataset")]`.
-- `rust/vectro_py/src/lib.rs` — `PyEmbeddingDataset` was missing three staticmethods required by `python/retriever.py`: `empty()`, `from_embeddings(ids, vectors)`, `load(path)`. All three now implemented and exposed.
+- `rust/vectro_py/src/lib.rs` -- `PyEmbeddingDataset` lacked `name = "EmbeddingDataset"` PyO3 alias; all Python code importing `EmbeddingDataset` from `vectro_py` would fail with `AttributeError`. Fixed: `#[pyclass(name = "EmbeddingDataset")]`.
+- `rust/vectro_py/src/lib.rs` -- `PyEmbeddingDataset` was missing three staticmethods required by `python/retriever.py`: `empty()`, `from_embeddings(ids, vectors)`, `load(path)`. All three now implemented and exposed.
 
 ### Changed
 - Rust crates `vectro_lib`, `vectro_cli`, `vectro_py` bumped `6.0.0 → 7.0.0`.
@@ -1809,15 +1866,15 @@ quality contract honestly, and `assume_normalized` is opt-in.
 - `js/package.json` version `1.0.0 → 6.0.0`; `remote_path` owner corrected `wesleyscholl → konjoai`.
 - Python package version `4.4.0 → 4.5.0`.
 
-## [6.0.0] — 2026  BM25+dense hybrid search, VectroRetriever, RetrieverProtocol
+## [6.0.0] -- 2026  BM25+dense hybrid search, VectroRetriever, RetrieverProtocol
 
 ### Added
-- `rust/vectro_lib/src/index/bm25.rs` — `BM25Index`: Okapi BM25 inverted-index with `build_from_texts()`, `build_with_params()` (custom k1/b), `top_k()`, `score_doc()`, `idf() -> Option<f32>`, `len()`. 12 unit tests.
-- `rust/vectro_lib/src/lib.rs` — `search::hybrid_search`: min-max normalized BM25+dense cosine fusion. `alpha` (0.0=pure BM25, 1.0=pure dense, clamped) controls the blend; returns `Vec<(&str, f32)>` sorted descending.
-- `rust/vectro_py/src/lib.rs` — `PyBM25Index` Python class: `build()`, `build_with_params()`, `top_k()`, `idf()`, `__len__()`; `hybrid_search_py` Python function (default alpha=0.7).
-- `python/retriever.py` — `VectroRetriever`, `@runtime_checkable RetrieverProtocol`, `@dataclass RetrievalResult`; `embed_fn=None` coerces to BM25-only mode.
-- `tests/test_hybrid_search.py` — comprehensive Rust-binding tests: list contract, k, types, score range, sort order, alpha=1.0/0.0 pure modes, BM25Index bindings, edge cases.
-- `tests/test_retriever.py` — Python retriever tests: Protocol compliance, return types, ordering, k param, BM25-only mode, property accessors, constructor validation.
+- `rust/vectro_lib/src/index/bm25.rs` -- `BM25Index`: Okapi BM25 inverted-index with `build_from_texts()`, `build_with_params()` (custom k1/b), `top_k()`, `score_doc()`, `idf() -> Option<f32>`, `len()`. 12 unit tests.
+- `rust/vectro_lib/src/lib.rs` -- `search::hybrid_search`: min-max normalized BM25+dense cosine fusion. `alpha` (0.0=pure BM25, 1.0=pure dense, clamped) controls the blend; returns `Vec<(&str, f32)>` sorted descending.
+- `rust/vectro_py/src/lib.rs` -- `PyBM25Index` Python class: `build()`, `build_with_params()`, `top_k()`, `idf()`, `__len__()`; `hybrid_search_py` Python function (default alpha=0.7).
+- `python/retriever.py` -- `VectroRetriever`, `@runtime_checkable RetrieverProtocol`, `@dataclass RetrievalResult`; `embed_fn=None` coerces to BM25-only mode.
+- `tests/test_hybrid_search.py` -- comprehensive Rust-binding tests: list contract, k, types, score range, sort order, alpha=1.0/0.0 pure modes, BM25Index bindings, edge cases.
+- `tests/test_retriever.py` -- Python retriever tests: Protocol compliance, return types, ordering, k param, BM25-only mode, property accessors, constructor validation.
 
 ### Changed
 - Bumped Rust crate versions to 6.0.0 (`vectro_lib`, `vectro_py`, `vectro_cli`).
@@ -1827,38 +1884,38 @@ quality contract honestly, and `assume_normalized` is opt-in.
 - `idf()` PyO3 binding: added `.unwrap_or(0.0)` to convert `Option<f32> → f32`.
 - NF4 identity roundtrip test tolerance tightened to float32 precision floor (`atol=2e-4`; pre-existing).
 
-## [5.0.0] — 2026  RQ quantization, auto_select_format, PQSTREAM1/RQSTREAM1 load
+## [5.0.0] -- 2026  RQ quantization, auto_select_format, PQSTREAM1/RQSTREAM1 load
 
 ### Added
-- `rust/vectro_lib/src/quant/rq.rs` — Residual Quantization: `RQCodebook` (Serialize/Deserialize), `train_rq_codebook` (chains `n_passes` PQ codebooks, each trained on the residual from the previous pass), `rq_encode` / `rq_encode_flat` (flat layout = `n_passes × n_subspaces` bytes/vector), `rq_decode` / `rq_decode_flat` (parallel via rayon). 7 tests: shape, quality (avg cosine ≥ 0.90 on 300 vecs d=64), nested/flat decode parity, error paths.
-- `rust/vectro_lib/src/lib.rs` — `EmbeddingDataset::load()` now detects and reads `VECTRO+PQSTREAM1\n` and `VECTRO+RQSTREAM1\n` binary formats. `pub fn auto_select_format(target_cosine, target_compression) -> &'static str` selects "int8" / "nf4" / "pq" / "rq" based on accuracy and compression targets.
-- `rust/vectro_cli/src/lib.rs` — `compress_rq` promoted from stub to full implementation: reads JSONL, trains on up to 10 000 vectors, encodes all, writes `VECTRO+RQSTREAM1\n` header + 4-byte LE codebook blob length + bincode codebook + length-prefixed bincode records. `compress_auto` promoted: delegates to `vectro_lib::auto_select_format` and dispatches to `compress_stream` / `compress_nf4` / `compress_pq` / `compress_rq`.
+- `rust/vectro_lib/src/quant/rq.rs` -- Residual Quantization: `RQCodebook` (Serialize/Deserialize), `train_rq_codebook` (chains `n_passes` PQ codebooks, each trained on the residual from the previous pass), `rq_encode` / `rq_encode_flat` (flat layout = `n_passes × n_subspaces` bytes/vector), `rq_decode` / `rq_decode_flat` (parallel via rayon). 7 tests: shape, quality (avg cosine ≥ 0.90 on 300 vecs d=64), nested/flat decode parity, error paths.
+- `rust/vectro_lib/src/lib.rs` -- `EmbeddingDataset::load()` now detects and reads `VECTRO+PQSTREAM1\n` and `VECTRO+RQSTREAM1\n` binary formats. `pub fn auto_select_format(target_cosine, target_compression) -> &'static str` selects "int8" / "nf4" / "pq" / "rq" based on accuracy and compression targets.
+- `rust/vectro_cli/src/lib.rs` -- `compress_rq` promoted from stub to full implementation: reads JSONL, trains on up to 10 000 vectors, encodes all, writes `VECTRO+RQSTREAM1\n` header + 4-byte LE codebook blob length + bincode codebook + length-prefixed bincode records. `compress_auto` promoted: delegates to `vectro_lib::auto_select_format` and dispatches to `compress_stream` / `compress_nf4` / `compress_pq` / `compress_rq`.
 
 ### Notes
 - RQ quality target: avg cosine ≥ 0.90 with 2 passes, M=8, K=16 on random d=64 data. Higher-dimensional production data typically reaches ≥ 0.97 with 2–4 passes.
 - `auto_select_format` thresholds: cosine ≥ 0.9999 → int8; cosine ≥ 0.98 ∧ compression ≤ 8× → nf4; compression ≤ 16× → pq; else → rq.
 
-## [4.4.0] — 2026  vectro-plus merge — NF4/PQ compress formats + full Pipeline command
+## [4.4.0] -- 2026  vectro-plus merge -- NF4/PQ compress formats + full Pipeline command
 
 ### Added
-- `rust/vectro_cli/src/pipeline.rs` — new `pipeline` module: `run_pipeline()` orchestrates compress → HNSW index build → optional query evaluation in a single command; `run_queries()` maps HNSW `usize` result indices to embedding IDs via the loaded `Vec<Embedding>`.
-- `rust/vectro_cli/src/lib.rs` — four new public compress functions ported from vectro-plus v2.1.0 and adapted to vectro_lib v4.0.0 API: `compress_nf4` (writes `VECTRO+NF4STREAM1\n` header + bincode records via `Nf4Vector::encode_fast`), `compress_pq` (trains codebook via `train_pq_codebook` + `pq_encode`; writes `VECTRO+PQSTREAM1\n` header), `compress_rq` (stub: warns + falls back to `compress_stream` pending RQ support in vectro_lib), `compress_auto` (stub: delegates to `compress_nf4` pending `auto_select_format` in vectro_lib); private `read_jsonl` helper parses JSONL `{"id","vector"}` or CSV records.
-- `rust/vectro_cli/src/main.rs` — `Pipeline` CLI command expanded from 3-field stub to 9-field production command: `--input`, `--out-dir`, `--format`, `--m`, `--ef-construction`, `--ef-search`, `--query-file`, `--top-k`, `--quiet`; delegates to `pipeline::run_pipeline`.
+- `rust/vectro_cli/src/pipeline.rs` -- new `pipeline` module: `run_pipeline()` orchestrates compress → HNSW index build → optional query evaluation in a single command; `run_queries()` maps HNSW `usize` result indices to embedding IDs via the loaded `Vec<Embedding>`.
+- `rust/vectro_cli/src/lib.rs` -- four new public compress functions ported from vectro-plus v2.1.0 and adapted to vectro_lib v4.0.0 API: `compress_nf4` (writes `VECTRO+NF4STREAM1\n` header + bincode records via `Nf4Vector::encode_fast`), `compress_pq` (trains codebook via `train_pq_codebook` + `pq_encode`; writes `VECTRO+PQSTREAM1\n` header), `compress_rq` (stub: warns + falls back to `compress_stream` pending RQ support in vectro_lib), `compress_auto` (stub: delegates to `compress_nf4` pending `auto_select_format` in vectro_lib); private `read_jsonl` helper parses JSONL `{"id","vector"}` or CSV records.
+- `rust/vectro_cli/src/main.rs` -- `Pipeline` CLI command expanded from 3-field stub to 9-field production command: `--input`, `--out-dir`, `--format`, `--m`, `--ef-construction`, `--ef-search`, `--query-file`, `--top-k`, `--quiet`; delegates to `pipeline::run_pipeline`.
 
 ### Notes
 - `compress_rq` and `compress_auto` are functional stubs. Full RQ and format-selection support targeting vectro_lib v5.0.
 - HNSW result mapping updated for v4.0.0 API: `search()` returns `Vec<(usize, f32)>` indices, resolved to IDs via loaded embeddings slice.
 
-## [4.3.0] — 2025  Mojo IPC Hardening + CLI Pipeline
+## [4.3.0] -- 2025  Mojo IPC Hardening + CLI Pipeline
 
 ### Added
-- `.github/workflows/ci.yml` — `mojo-ipc-smoke` job: runs `scripts/vectro_quantizer_stub.py` on `ubuntu-latest` to verify `_mojo_bridge._run_pipe` round-trips without a live Mojo binary; 25/26 bridge tests pass.
-- `scripts/vectro_quantizer_stub.py` — CI stub implementing the full 6-subcommand Mojo pipe protocol (`quantize_int8`, `encode_nf4`, `decode_nf4`, `quantize_binary`, `encode_pq`, `encode_rq`) with correct NF4 codebook; replacement for `vectro_quantizer` binary in CI.
-- `python/nf4_api.py` — `encode_nf4_fast` 3-tier dispatch chain: Mojo binary → `vectro_py.encode_nf4_fast` SIMD → NumPy fallback; delegation now routes to the fastest available tier at runtime.
-- `rust/vectro_cli/src/main.rs` — `vectro pipeline` CLI subcommand (`Commands::Pipeline`) with `--input`, `--query`, `--top-k` flags; `execute_pipeline_command()` helper; 2 new CLI parsing tests.
+- `.github/workflows/ci.yml` -- `mojo-ipc-smoke` job: runs `scripts/vectro_quantizer_stub.py` on `ubuntu-latest` to verify `_mojo_bridge._run_pipe` round-trips without a live Mojo binary; 25/26 bridge tests pass.
+- `scripts/vectro_quantizer_stub.py` -- CI stub implementing the full 6-subcommand Mojo pipe protocol (`quantize_int8`, `encode_nf4`, `decode_nf4`, `quantize_binary`, `encode_pq`, `encode_rq`) with correct NF4 codebook; replacement for `vectro_quantizer` binary in CI.
+- `python/nf4_api.py` -- `encode_nf4_fast` 3-tier dispatch chain: Mojo binary → `vectro_py.encode_nf4_fast` SIMD → NumPy fallback; delegation now routes to the fastest available tier at runtime.
+- `rust/vectro_cli/src/main.rs` -- `vectro pipeline` CLI subcommand (`Commands::Pipeline`) with `--input`, `--query`, `--top-k` flags; `execute_pipeline_command()` helper; 2 new CLI parsing tests.
 
 ### Fixed
-- `scripts/eval_profiles.py` line 100 — removed spurious `dim` argument from `vectro_py.PyNf4Encoder()` constructor call (Rust `#[new]` takes no args); fixes runtime `TypeError` during fixture sweep.
+- `scripts/eval_profiles.py` line 100 -- removed spurious `dim` argument from `vectro_py.PyNf4Encoder()` constructor call (Rust `#[new]` takes no args); fixes runtime `TypeError` during fixture sweep.
 - Version string consistency: bumped from `4.2.1` → `4.3.0` across all 6 version-bearing files (`pyproject.toml`, `pixi.toml`, `python/__init__.py`, `python/vectro.py`, `tests/test_release_candidate.py`, `rust/vectro_py/src/lib.rs`).
 
 ### Validated
@@ -1867,54 +1924,54 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [4.2.0] — 2026-04-15  Distribution & CI Hardening — WASM npm publish, eval harness, latency gate
+## [4.2.0] -- 2026-04-15  Distribution & CI Hardening -- WASM npm publish, eval harness, latency gate
 
 ### Added
-- `.github/workflows/npm-publish.yml` — `build-wasm` job (inline `wasm-pack build --target web --release`, version-stamps from tag, uploads artifact) + `publish-wasm` job (downloads artifact, publishes `@vectro/wasm` to npm with `--access public`); pre-release tags (rc/alpha/beta) skip publish.
-- `js/wasm/package.json` — package manifest for `@vectro/wasm`: main entry `vectro_lib.js`, types `vectro_lib.d.ts`, `publishConfig.access = "public"`, files list for WASM binary + JS glue.
-- `scripts/eval_profiles.py` — end-to-end profile accuracy harness: loads each `tests/fixtures/<family>/config.json`, runs `get_profile()` → encode → decode roundtrip, asserts mean cosine ≥ per-method gate (int8 ≥ 0.9999, nf4 ≥ 0.9800, auto ≥ 0.9999); CLI flags `--dim`, `--n`, `--quiet`; exit 0/1/2.
-- `.github/workflows/ci.yml` — `latency-gate` job: builds `vectro_py` on `ubuntu-latest` and runs `tests/test_latency_singleshot.py`; verifies p99 < 1 ms holds outside M3.
+- `.github/workflows/npm-publish.yml` -- `build-wasm` job (inline `wasm-pack build --target web --release`, version-stamps from tag, uploads artifact) + `publish-wasm` job (downloads artifact, publishes `@vectro/wasm` to npm with `--access public`); pre-release tags (rc/alpha/beta) skip publish.
+- `js/wasm/package.json` -- package manifest for `@vectro/wasm`: main entry `vectro_lib.js`, types `vectro_lib.d.ts`, `publishConfig.access = "public"`, files list for WASM binary + JS glue.
+- `scripts/eval_profiles.py` -- end-to-end profile accuracy harness: loads each `tests/fixtures/<family>/config.json`, runs `get_profile()` → encode → decode roundtrip, asserts mean cosine ≥ per-method gate (int8 ≥ 0.9999, nf4 ≥ 0.9800, auto ≥ 0.9999); CLI flags `--dim`, `--n`, `--quiet`; exit 0/1/2.
+- `.github/workflows/ci.yml` -- `latency-gate` job: builds `vectro_py` on `ubuntu-latest` and runs `tests/test_latency_singleshot.py`; verifies p99 < 1 ms holds outside M3.
 
 ### Fixed
-- `.github/workflows/ci.yml` — added `--ignore=tests/test_latency_singleshot.py` to upload-coverage step; previously the coverage job would attempt to time WASM encode without the latency-gate runner profile, causing intermittent CI failures.
-- `python/profiles.py` — `bge` discriminator tightened to `BGEModel` only (was previously sharing `BertModel`, causing `bert` fixtures to mis-classify as `bge`); `get_profile()` now catches `(FileNotFoundError, PermissionError)` and returns `QuantProfile(family="generic", method="auto")` instead of raising.
+- `.github/workflows/ci.yml` -- added `--ignore=tests/test_latency_singleshot.py` to upload-coverage step; previously the coverage job would attempt to time WASM encode without the latency-gate runner profile, causing intermittent CI failures.
+- `python/profiles.py` -- `bge` discriminator tightened to `BGEModel` only (was previously sharing `BertModel`, causing `bert` fixtures to mis-classify as `bge`); `get_profile()` now catches `(FileNotFoundError, PermissionError)` and returns `QuantProfile(family="generic", method="auto")` instead of raising.
 
 ---
 
-## [4.1.0] — 2026-04-14  First Implementation Sprint — Sub-1ms encode, WASM, AutoQuantize, CLI quantize subcommand
+## [4.1.0] -- 2026-04-14  First Implementation Sprint -- Sub-1ms encode, WASM, AutoQuantize, CLI quantize subcommand
 
 ### Added
-- `rust/vectro_py/src/lib.rs` — `encode_int8_fast` and `encode_nf4_fast` `#[pyfunction]` exports: normalise → packed INT8/NF4 → cosine-ready output in a single Rust→Python hop.
-- `tests/test_latency_singleshot.py` — p99 < 1 ms latency gate for both fast-encode paths; shape/dtype contracts, determinism, zero-vector, and round-trip cosine ≥ 0.9999 checks.
-- `rust/vectro_lib/src/wasm.rs` — six `#[wasm_bindgen]` exports (`encode_int8`, `encode_int8_scale`, `encode_int8_full`, `encode_nf4`, `encode_nf4_scale`, `encode_nf4_dim`) gated by `#[cfg(target_arch = "wasm32")]`.
-- `rust/vectro_lib/Cargo.toml` — `[lib] crate-type = ["cdylib", "rlib"]` and `wasm-bindgen = "0.2"` target dependency for WASM builds.
-- `.github/workflows/wasm.yml` — CI: `wasm-pack build --target web --release`; asserts brotli-compressed `.wasm` < 500 KB; uploads `vectro-wasm` artifact (14-day retention).
-- `python/profiles.py` — `QuantProfile(family, method)` frozen dataclass + `_FAMILY_TABLE` ordered matcher + `get_profile(model_dir)` reading `config.json` architectures; families: gte→int8, bge→nf4, e5→int8, bert→nf4, unknown→generic/auto.
-- `tests/fixtures/{gte,e5,bert,bge,unknown}/config.json` — five model fixture configs for AutoQuantize profile tests.
-- `tests/test_auto_quantize_profiles.py` — 5 parametrized family tests + 4 edge-case tests (invalid method, frozen dataclass, missing config, malformed config).
-- `rust/vectro_cli/src/main.rs` — `Quantize { input, output, profile }` subcommand with `--profile auto|int8|nf4`; `execute_quantize_command()` mirrors `profiles.py` family-detection logic in Rust; two `test_cli_parsing_quantize_*` tests.
+- `rust/vectro_py/src/lib.rs` -- `encode_int8_fast` and `encode_nf4_fast` `#[pyfunction]` exports: normalise → packed INT8/NF4 → cosine-ready output in a single Rust→Python hop.
+- `tests/test_latency_singleshot.py` -- p99 < 1 ms latency gate for both fast-encode paths; shape/dtype contracts, determinism, zero-vector, and round-trip cosine ≥ 0.9999 checks.
+- `rust/vectro_lib/src/wasm.rs` -- six `#[wasm_bindgen]` exports (`encode_int8`, `encode_int8_scale`, `encode_int8_full`, `encode_nf4`, `encode_nf4_scale`, `encode_nf4_dim`) gated by `#[cfg(target_arch = "wasm32")]`.
+- `rust/vectro_lib/Cargo.toml` -- `[lib] crate-type = ["cdylib", "rlib"]` and `wasm-bindgen = "0.2"` target dependency for WASM builds.
+- `.github/workflows/wasm.yml` -- CI: `wasm-pack build --target web --release`; asserts brotli-compressed `.wasm` < 500 KB; uploads `vectro-wasm` artifact (14-day retention).
+- `python/profiles.py` -- `QuantProfile(family, method)` frozen dataclass + `_FAMILY_TABLE` ordered matcher + `get_profile(model_dir)` reading `config.json` architectures; families: gte→int8, bge→nf4, e5→int8, bert→nf4, unknown→generic/auto.
+- `tests/fixtures/{gte,e5,bert,bge,unknown}/config.json` -- five model fixture configs for AutoQuantize profile tests.
+- `tests/test_auto_quantize_profiles.py` -- 5 parametrized family tests + 4 edge-case tests (invalid method, frozen dataclass, missing config, malformed config).
+- `rust/vectro_cli/src/main.rs` -- `Quantize { input, output, profile }` subcommand with `--profile auto|int8|nf4`; `execute_quantize_command()` mirrors `profiles.py` family-detection logic in Rust; two `test_cli_parsing_quantize_*` tests.
 
 ---
 
-## [4.0.0] — 2026-04-13  Architecture ADR — v4.0 Design Decisions
+## [4.0.0] -- 2026-04-13  Architecture ADR -- v4.0 Design Decisions
 
 ### Added
-- `docs/adr-002-v4-architecture.md` — v4.0 Architecture ADR covering four decisions:
+- `docs/adr-002-v4-architecture.md` -- v4.0 Architecture ADR covering four decisions:
   (1) sub-1 ms encode via PyO3 `vectro_py` path; (2) `wasm-pack` WASM target for
   `vectro_lib` → `@vectro/wasm`; (3) model-type-aware AutoQuantize profiles
   (`profiles.py`); (4) Rust CLI kept as sole primary CLI.
 
-## [3.9.0] — 2026-07-14  Distribution — PyPI Wheels, CLI Binaries, Homebrew, npm
+## [3.9.0] -- 2026-07-14  Distribution -- PyPI Wheels, CLI Binaries, Homebrew, npm
 
 ### Added
-- `scripts/build_wheels.sh` — local helper to build all Python wheels via maturin
+- `scripts/build_wheels.sh` -- local helper to build all Python wheels via maturin
   (`--out`, `--python` flags; iterates 3.10 / 3.11 / 3.12 by default).
-- `.github/workflows/wheels.yml` — new `cli-binary` job: builds `vectro` standalone
+- `.github/workflows/wheels.yml` -- new `cli-binary` job: builds `vectro` standalone
   binary for Linux x86-64, macOS ARM64, and macOS x86-64 on every version tag;
   binaries are attached to the GitHub Release alongside wheels and the sdist.
-- `.github/workflows/npm-publish.yml` — publishes `@vectro/core` to npm on `v*`
+- `.github/workflows/npm-publish.yml` -- publishes `@vectro/core` to npm on `v*`
   tags (requires `NPM_TOKEN` repository secret); pre-release tags are skipped.
-- `Formula/vectro.rb` — Homebrew formula template; copy to
+- `Formula/vectro.rb` -- Homebrew formula template; copy to
   `wesleyscholl/homebrew-tap/Formula/vectro.rb` to enable
   `brew tap wesleyscholl/tap && brew install vectro`.
 
@@ -1925,28 +1982,28 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [3.8.0] — 2026-06-02  JS Bindings Phase 2 — Full VQZ Parser + NEON Dequantize
+## [3.8.0] -- 2026-06-02  JS Bindings Phase 2 -- Full VQZ Parser + NEON Dequantize
 
 ### Added
-- `js/src/vectro_napi.cpp` (298 lines) — complete N-API Phase 2 implementation:
-  - `parseHeader(buffer)` — validates 64-byte magic and returns header fields.
-  - `parseBody(buffer, n, dims)` — splits raw body bytes into `Int8Array` + `Float32Array`;
+- `js/src/vectro_napi.cpp` (298 lines) -- complete N-API Phase 2 implementation:
+  - `parseHeader(buffer)` -- validates 64-byte magic and returns header fields.
+  - `parseBody(buffer, n, dims)` -- splits raw body bytes into `Int8Array` + `Float32Array`;
     applies 4-byte alignment padding so the `Float32Array` offset is always valid.
-  - `dequantize(quantized, scales, dims)` — ARM NEON 16-wide INT8→float32 kernel;
+  - `dequantize(quantized, scales, dims)` -- ARM NEON 16-wide INT8→float32 kernel;
     `-O3` auto-vectorized scalar fallback for x86-64 / non-NEON targets.
-  - `readVqz(path)` — reads an entire `.vqz` file, decompresses (NONE/ZSTD/ZLIB), and
+  - `readVqz(path)` -- reads an entire `.vqz` file, decompresses (NONE/ZSTD/ZLIB), and
     returns a `VqzData` object.
-  - `VqzReader` class — constructor, `read()`, `close()` lifecycle handle.
-- `js/binding.gyp` — updated with `-O3`, `-std=c++17`, `libzstd`/`zlib` linkage, macOS
+  - `VqzReader` class -- constructor, `read()`, `close()` lifecycle handle.
+- `js/binding.gyp` -- updated with `-O3`, `-std=c++17`, `libzstd`/`zlib` linkage, macOS
   `xcode_settings`, and Windows `msvs_settings` conditions.
-- `js/index.js` — `node-gyp-build` entry point; handles prebuilt and source-built layouts.
-- `js/index.d.ts` — `VqzHeader` interface, `parseHeader`, `parseBody` signatures added;
+- `js/index.js` -- `node-gyp-build` entry point; handles prebuilt and source-built layouts.
+- `js/index.d.ts` -- `VqzHeader` interface, `parseHeader`, `parseBody` signatures added;
   all `@throws Not yet implemented` annotations removed.
-- `js/package.json` — `node-addon-api ^3.0.0` dev dependency; engines bumped to `>=18.0.0`.
-- `js/test/basic.js` — 14-test integration harness covering all five exported symbols,
+- `js/package.json` -- `node-addon-api ^3.0.0` dev dependency; engines bumped to `>=18.0.0`.
+- `js/test/basic.js` -- 14-test integration harness covering all five exported symbols,
   including a COMP_NONE round-trip via a temp file, numeric dequantize correctness, and
   class lifecycle checks.
-- `.github/workflows/js-ci.yml` — matrix CI: ubuntu-latest + macos-latest × Node 18 + 20;
+- `.github/workflows/js-ci.yml` -- matrix CI: ubuntu-latest + macos-latest × Node 18 + 20;
   installs `libzstd-dev` on Linux, `zstd` via Homebrew on macOS.
 
 ### Ship Gate
@@ -1955,10 +2012,10 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [3.7.0] — 2026-04-13  Hardening, ONNX Promotion, Benchmark Validation
+## [3.7.0] -- 2026-04-13  Hardening, ONNX Promotion, Benchmark Validation
 
 ### Added
-- `.github/workflows/release.yml` — automated PyPI publish workflow triggered on `v*` tags,
+- `.github/workflows/release.yml` -- automated PyPI publish workflow triggered on `v*` tags,
   using `secrets.PYPI_API_TOKEN` via twine. Skips pre-release tags (rc/alpha/beta).
 
 ### Changed
@@ -1971,20 +2028,20 @@ quality contract honestly, and `assume_normalized` is opt-in.
   - GloVe-100 real-embedding INT8: **210,174 vec/s**, cosine=0.9999, ratio=3.85x
 
 ### Fixed
-- `benchmarks/benchmark_ann_comparison.py` — wrong `HNSWIndex` constructor args and method
+- `benchmarks/benchmark_ann_comparison.py` -- wrong `HNSWIndex` constructor args and method
   names; fixed `_build_vectro` and `_query_vectro` to match actual `hnsw_api.py` API.
-- `benchmarks/benchmark_real_embeddings_v2.py` — three bugs fixed:
+- `benchmarks/benchmark_real_embeddings_v2.py` -- three bugs fixed:
   - `decompress_result` → `decompress_vectors` (correct export name from `python/vectro.py`)
   - Removed invalid `n=`/`d=` kwargs from `decompress_vectors` call
   - Default mode list `["int8","nf4","binary","auto"]` → `["fast","binary"]` (valid profile names)
 
 ### Known
-- Binary batch mode reports incorrect compression ratio (~3.85x instead of ~32x) — pre-existing
+- Binary batch mode reports incorrect compression ratio (~3.85x instead of ~32x) -- pre-existing
   issue in the batch path; single-item binary encode/decode produces correct 32x result.
 
 ---
 
-## [3.6.0] — 2026-03-12  Full Optimization + Multi-Benchmark Suite
+## [3.6.0] -- 2026-03-12  Full Optimization + Multi-Benchmark Suite
 
 ### Performance Optimizations
 
@@ -2007,7 +2064,7 @@ quality contract honestly, and `assume_normalized` is opt-in.
 #### Pipe IPC Bitcast Optimization (B4)
 - Replaced element-by-element bit-shifting serialization with `unsafe_ptr().bitcast[UInt8]()`
   bulk copy. LLVM autovectorizes the resulting memcpy-shaped loops.
-- Pre-sized single output buffer for INT8 quantize pipe — eliminates append reallocation.
+- Pre-sized single output buffer for INT8 quantize pipe -- eliminates append reallocation.
 
 #### `vectro_api.mojo` INT8 Compress/Decompress (B5)
 - `_int8_compress`: `resize()` init, `unsafe_ptr()` extraction, SIMD vector accumulator
@@ -2032,7 +2089,7 @@ quality contract honestly, and `assume_normalized` is opt-in.
   vs hnswlib vs annoy vs usearch. Graceful degradation, exact BF ground truth.
 - **`benchmarks/benchmark_real_embeddings_v2.py`** (new): Actual GloVe-100 download (cached
   at `~/.cache/vectro_benchmarks/`). SIFT1M via `--dataset sift1m`. Replaces synthetic v1.
-- **`benchmarks/benchmark_faiss_comparison.py`**: `benchmark_int8_multidim()` added —
+- **`benchmarks/benchmark_faiss_comparison.py`**: `benchmark_int8_multidim()` added --
   d=128/384/768/1536 at n=50K. Results in `all_results["int8_multidim"]`.
 
 ### Dependency Updates
@@ -2059,17 +2116,17 @@ quality contract honestly, and `assume_normalized` is opt-in.
 
 ---
 
-## [3.5.0] — 2026-03-12  Mojo Outperforms FAISS (v3.5.0)
+## [3.5.0] -- 2026-03-12  Mojo Outperforms FAISS (v3.5.0)
 
 ### Added / Changed
 
 #### Three Root-Cause Fixes
-- **Mislabeled backend** — stdout parser crashed on `"Benchmark n= …"` header; silently fell back
+- **Mislabeled backend** -- stdout parser crashed on `"Benchmark n= …"` header; silently fell back
   to Python/NumPy and reported it as "Mojo SIMD". Fix: scan each line for `"INT8 quantize"` substring.
-- **Scalar init loops replaced by `resize()`** — `for _ in range(n*d): q.append(Int8(0))` was
+- **Scalar init loops replaced by `resize()`** -- `for _ in range(n*d): q.append(Int8(0))` was
   writing 7.7 MB element-by-element per call. `q.resize(n*d, Int8(0))` (memset) is ~6× faster.
   Applied to all six quantize/reconstruct paths in both `vectro_standalone.mojo` and `quantizer_simd.mojo`.
-- **Pipe IPC replaces temp-file IPC** — `_mojo_bridge.py` previously wrote 300 MB+ to `/tmp` on
+- **Pipe IPC replaces temp-file IPC** -- `_mojo_bridge.py` previously wrote 300 MB+ to `/tmp` on
   every call. New `pipe` subcommand uses `subprocess.run(input=data, capture_output=True)`,
   eliminating all disk I/O. Removed `os`, `tempfile`, `math` imports.
 
@@ -2115,7 +2172,7 @@ Vectro Mojo is **4.85× faster than FAISS C++** at INT8 quantization.
 
 ---
 
-## [3.4.0] — 2026-03-12  Mojo Dominance (Phase 14)
+## [3.4.0] -- 2026-03-12  Mojo Dominance (Phase 14)
 
 ### Added
 
@@ -2158,11 +2215,11 @@ Vectro Mojo is **4.85× faster than FAISS C++** at INT8 quantization.
 | v3.3.0  | 575           |
 | v3.4.0  | 575           |
 
-## [3.3.0] — 2026-03-11  Runtime Hardening & Test Completeness (Phase 13)
+## [3.3.0] -- 2026-03-11  Runtime Hardening & Test Completeness (Phase 13)
 
 ### Added
 
-#### Test Coverage — Previously Untested Modules
+#### Test Coverage -- Previously Untested Modules
 - **`tests/test_batch_api.py`** (18 tests): covers `VectroBatchProcessor`, `BatchQuantizationResult`,
   `BatchCompressionAnalyzer`, and module-level convenience functions. Key: all three profiles,
   silent unknown-profile fallback to "balanced", `IndexError` on OOB `get_vector`,
@@ -2186,11 +2243,11 @@ Vectro Mojo is **4.85× faster than FAISS C++** at INT8 quantization.
 
 #### JavaScript N-API Scaffold (ADR-001 Phase 1)
 - **`js/`** directory established per `docs/adr-001-javascript-bindings.md`:
-  - `js/package.json` — `@vectro/core` npm package (1.0.0), `node-gyp-build` dep
-  - `js/index.d.ts` — TypeScript definitions for `dequantize`, `readVqz`, `VqzReader`
-  - `js/binding.gyp` — node-gyp build config (darwin/linux/win32, arm64+x64)
-  - `js/src/vectro_napi.cpp` — N-API C++ stub throwing "not yet implemented — see ADR-001"
-  - `js/README.md` — installation, API reference, phase roadmap
+  - `js/package.json` -- `@vectro/core` npm package (1.0.0), `node-gyp-build` dep
+  - `js/index.d.ts` -- TypeScript definitions for `dequantize`, `readVqz`, `VqzReader`
+  - `js/binding.gyp` -- node-gyp build config (darwin/linux/win32, arm64+x64)
+  - `js/src/vectro_napi.cpp` -- N-API C++ stub throwing "not yet implemented -- see ADR-001"
+  - `js/README.md` -- installation, API reference, phase roadmap
 
 #### pyproject.toml
 - Added `inference = ["onnxruntime>=1.17"]` optional dep group.
@@ -2205,12 +2262,12 @@ Vectro Mojo is **4.85× faster than FAISS C++** at INT8 quantization.
 | v3.2.0  | 506   |
 | v3.3.0  | 575   |
 
-## [3.2.0] — 2026-03-11  Performance & Research (Phase 12)
+## [3.2.0] -- 2026-03-11  Performance & Research (Phase 12)
 
 ### Added
 
 #### ONNX Export
-- **`python/onnx_export.py`** — `to_onnx_model(result)` and `export_onnx(result, path)`.
+- **`python/onnx_export.py`** -- `to_onnx_model(result)` and `export_onnx(result, path)`.
   Produces a portable three-node ONNX opset-17 graph (Cast INT8→FLOAT, Unsqueeze axes=[1],
   Mul) that reproduces the INT8 dequantization path from `interface.py`.
 - **`vectro export-onnx <input> <output>`** CLI subcommand; supports `.npz` and `.vqz` inputs.
@@ -2227,7 +2284,7 @@ Vectro Mojo is **4.85× faster than FAISS C++** at INT8 quantization.
 - `"pinecone-client>=3.0"` added to `integrations` optional dep group in `pyproject.toml`.
 
 #### GPU Equivalence Tests
-- **`tests/test_gpu_equivalence.py`** — 10 CPU-safe tests verifying `python/gpu_api.py`
+- **`tests/test_gpu_equivalence.py`** -- 10 CPU-safe tests verifying `python/gpu_api.py`
   produces numerically identical output to `python/interface.py` reference path.
   Tests cover scale matching (atol=1e-5), code byte-equivalence, reconstruction (atol=1e-6),
   round-trip cosine similarity (> 0.999), zero-vector NaN safety, `gpu_benchmark()` key
@@ -2236,7 +2293,7 @@ Vectro Mojo is **4.85× faster than FAISS C++** at INT8 quantization.
   job, ready to uncomment when a GPU runner is provisioned).
 
 #### JavaScript Bindings ADR
-- **`docs/adr-001-javascript-bindings.md`** — Architecture Decision Record evaluating
+- **`docs/adr-001-javascript-bindings.md`** -- Architecture Decision Record evaluating
   WASM, N-API, pure-JS, and REST approaches.  Decision: adopt N-API native addon as
   Phase 1 (v3.3.0) for Node.js server-side `.vqz` reader; WASM deferred to Phase 2
   pending Mojo toolchain maturity; pure-JS explicitly rejected.
@@ -2256,7 +2313,7 @@ Vectro Mojo is **4.85× faster than FAISS C++** at INT8 quantization.
 | v3.1.0  | 471   |
 | v3.2.0  | 506   |
 
-## [3.1.0] — 2026-03-11  Enterprise & Ecosystem Expansion (Phase 11)
+## [3.1.0] -- 2026-03-11  Enterprise & Ecosystem Expansion (Phase 11)
 
 ### Added
 
@@ -2323,7 +2380,7 @@ Deleted 8 experimental/scratch Mojo files from `src/`:
 
 ---
 
-## [3.0.1] — 2026-03-11  Mojo-First Runtime Fix
+## [3.0.1] -- 2026-03-11  Mojo-First Runtime Fix
 
 ### Problem Resolved
 
@@ -2332,12 +2389,12 @@ fell through to Python/NumPy at runtime:
 
 - `_quantize_with_mojo()` in `interface.py` called `_quantize_vectorized()` (NumPy) directly
 - `_quantize_batch_mojo()` in `batch_api.py` called `_quantize_batch_python()` directly
-- `quantize_nf4` / `dequantize_nf4` in `nf4_api.py` — pure NumPy, no Mojo dispatch
-- `quantize_binary` / `dequantize_binary` in `binary_api.py` — pure NumPy, no Mojo dispatch
+- `quantize_nf4` / `dequantize_nf4` in `nf4_api.py` -- pure NumPy, no Mojo dispatch
+- `quantize_binary` / `dequantize_binary` in `binary_api.py` -- pure NumPy, no Mojo dispatch
 
 ### Changes
 
-#### `src/vectro_standalone.mojo` — Unified CLI binary (v3.0.1)
+#### `src/vectro_standalone.mojo` -- Unified CLI binary (v3.0.1)
 
 Rewrote the file as a complete data-exchange CLI compiled to `vectro_quantizer`:
 
@@ -2348,38 +2405,38 @@ Rewrote the file as a complete data-exchange CLI compiled to `vectro_quantizer`:
 - NF4 codebook aligned to Python `NF4_LEVELS` float32 values (QLoRA / nf4_api.py compatible)
 - Self-test passes: INT8 MAE < 0.02, NF4 MAE < 0.10, Binary decode all ±1, file round-trip exact
 
-#### `python/_mojo_bridge.py` — New unified subprocess helper
+#### `python/_mojo_bridge.py` -- New unified subprocess helper
 
 Single module that all Python hot paths use to call `vectro_quantizer`:
 
-- `is_available()` — discovers binary at project root or CWD
-- `int8_quantize(vectors)` / `int8_reconstruct(q, scales)` — INT8 round-trip via Mojo
-- `nf4_encode(vectors)` / `nf4_decode(packed, scales, d)` — NF4 round-trip via Mojo
-- `bin_encode(vectors)` / `bin_decode(packed, d)` — Binary round-trip via Mojo
+- `is_available()` -- discovers binary at project root or CWD
+- `int8_quantize(vectors)` / `int8_reconstruct(q, scales)` -- INT8 round-trip via Mojo
+- `nf4_encode(vectors)` / `nf4_decode(packed, scales, d)` -- NF4 round-trip via Mojo
+- `bin_encode(vectors)` / `bin_decode(packed, d)` -- Binary round-trip via Mojo
 - Data exchange: raw little-endian binary tempfiles (numpy-compatible `tofile` / `fromfile`)
 
-#### `python/interface.py` — Mojo hot path wired
+#### `python/interface.py` -- Mojo hot path wired
 
 - `_quantize_with_mojo()` now calls `_mojo_bridge.int8_quantize()`
 - `_reconstruct_with_mojo()` now calls `_mojo_bridge.int8_reconstruct()`
 - `reconstruct_embeddings()` auto-selection: squish_quant > **Mojo** > Cython > NumPy
 
-#### `python/batch_api.py` — Mojo hot path wired
+#### `python/batch_api.py` -- Mojo hot path wired
 
 - `_quantize_batch_mojo()` now calls `_mojo_bridge.int8_quantize()` instead of falling to Python
 
-#### `python/nf4_api.py` — Mojo hot path wired
+#### `python/nf4_api.py` -- Mojo hot path wired
 
 - `quantize_nf4()` calls `_mojo_bridge.nf4_encode()` when binary is available
 - `dequantize_nf4()` calls `_mojo_bridge.nf4_decode()` when binary is available
 - Import pattern handles both package import and direct `python/` path import
 
-#### `python/binary_api.py` — Mojo hot path wired
+#### `python/binary_api.py` -- Mojo hot path wired
 
 - `quantize_binary()` calls `_mojo_bridge.bin_encode()` after optional L2 normalisation
 - `dequantize_binary()` calls `_mojo_bridge.bin_decode()` when binary is available
 
-#### `pixi.toml` — Build tasks added
+#### `pixi.toml` -- Build tasks added
 
 ```toml
 [tasks]
@@ -2388,7 +2445,7 @@ selftest    = { cmd = "./vectro_quantizer selftest", depends-on = ["build-mojo"]
 benchmark   = { cmd = "./vectro_quantizer benchmark 10000 768", depends-on = ["build-mojo"] }
 ```
 
-#### `tests/test_mojo_bridge.py` — New test file (26 tests)
+#### `tests/test_mojo_bridge.py` -- New test file (26 tests)
 
 Covers binary availability, INT8/NF4/Binary shapes, accuracy, edge cases,
 and end-to-end dispatch verification through the high-level Python APIs.
@@ -2400,9 +2457,9 @@ and end-to-end dispatch verification through the high-level Python APIs.
 | INT8 quantize | ~427k vec/s |
 | INT8 reconstruct | ~1.19M vec/s |
 
-## [3.0.0] — 2026-03-11  Vectro 3.0 — SIMD Core + Advanced Quantization
+## [3.0.0] -- 2026-03-11  Vectro 3.0 -- SIMD Core + Advanced Quantization
 
-### Phase 0 — Correctness Bug Fixes (7 bugs)
+### Phase 0 -- Correctness Bug Fixes (7 bugs)
 
 - **`src/quantizer.mojo` (F2):** Removed interleaved merge artifact where two function
   bodies were interleaved line-by-line; replaced with a clean two-pass (abs-max scan +
@@ -2423,7 +2480,7 @@ and end-to-end dispatch verification through the high-level Python APIs.
 - **`python/vectro.py` (F10):** `_compress_individually()` always processed vectors
   one-at-a-time even for large batches; added batch fast-path delegation.
 
-### Phase 1 — SIMD Acceleration
+### Phase 1 -- SIMD Acceleration
 
 - **`src/vector_ops.mojo` (F1):** All six distance/similarity functions
   (`cosine_similarity`, `euclidean_distance`, `manhattan_distance`, `dot_product`,
@@ -2434,7 +2491,7 @@ and end-to-end dispatch verification through the high-level Python APIs.
   abs-max reduction pass + quantize pass with symmetric abs-max scaling;
   `perf_counter_ns` benchmark included.
 
-### Phase 2 — NF4 Normal Float 4-bit Quantization
+### Phase 2 -- NF4 Normal Float 4-bit Quantization
 
 - **`src/nf4_quantizer.mojo` (new):** Mojo NF4 encode/decode using the 16 QLoRA
   quantiles of N(0,1); SIMD abs-max normalisation before nearest-level lookup; two
@@ -2445,24 +2502,24 @@ and end-to-end dispatch verification through the high-level Python APIs.
   highest-variance ("outlier") dimensions as FP16 and the remainder as NF4 (SpQR-style).
   Helpers: `select_outlier_dims`, `quantize_mixed`, `dequantize_mixed`,
   `nf4_cosine_sim`, `compression_ratio`.
-- **`tests/test_nf4.py` (new):** 19 tests — level monotonicity, identity roundtrip,
+- **`tests/test_nf4.py` (new):** 19 tests -- level monotonicity, identity roundtrip,
   `cosine_sim >= 0.985` at d=768, odd-dimension, zero vector, mixed-precision quality
   `>= 0.990`, compression ratio.
 
-### Phase 3 — Product Quantization (PQ)
+### Phase 3 -- Product Quantization (PQ)
 
 - **`src/product_quantizer.mojo` (new):** Mojo PQ encode with SIMD inner L2 distance
   loop (`vectorize[_l2, SIMD_W]`); batch encode, batch decode (centroid lookup),
   query ADC distance-table computation, ADC batch distance accumulation.
-- **`python/pq_api.py` (new):** `train_pq_codebook` — per-subspace
-  `MiniBatchKMeans`; `pq_encode` / `pq_decode` — vectorised NumPy with broadcasted
-  L2 distances; `pq_distance_table` + `pq_search` — Asymmetric Distance Computation
-  (ADC); `opq_rotation` — alternating SVD-based OPQ for +5–10 pp recall vs plain PQ.
+- **`python/pq_api.py` (new):** `train_pq_codebook` -- per-subspace
+  `MiniBatchKMeans`; `pq_encode` / `pq_decode` -- vectorised NumPy with broadcasted
+  L2 distances; `pq_distance_table` + `pq_search` -- Asymmetric Distance Computation
+  (ADC); `opq_rotation` -- alternating SVD-based OPQ for +5–10 pp recall vs plain PQ.
   Compression at d=768, M=96: 32× vs FP32.
-- **`tests/test_pq.py` (new):** 12 tests — codebook shape, invalid inputs, code range,
+- **`tests/test_pq.py` (new):** 12 tests -- codebook shape, invalid inputs, code range,
   decode shape, reconstruction quality, ADC search ordering, compression ratio.
 
-### Phase 4 — Binary (1-bit) Quantization
+### Phase 4 -- Binary (1-bit) Quantization
 
 - **`src/binary_quantizer.mojo` (new):** `sign(v) → 1-bit`, 8 dims packed per byte;
   `hamming_distance` (XOR + Kernighan bit-count); `hamming_batch` over n DB vectors;
@@ -2471,27 +2528,27 @@ and end-to-end dispatch verification through the high-level Python APIs.
   Hamming via `numpy.unpackbits`; `binary_search` top-k; `matryoshka_encode` for
   Matryoshka-model prefix-length variants (e.g. d=64/128/256/512/768 from one call);
   `binary_compression_ratio`.  Compression: 32× vs FP32.
-- **`tests/test_binary.py` (new):** 19 tests — pack/unpack bit patterns, all-pos/neg,
+- **`tests/test_binary.py` (new):** 19 tests -- pack/unpack bit patterns, all-pos/neg,
   Hamming identity, flipped-all-bits, self-search recall, Matryoshka shapes,
   compression ratio.
 
-### Phase 5 — HNSW Approximate Nearest-Neighbour Index
+### Phase 5 -- HNSW Approximate Nearest-Neighbour Index
 
 - **`src/hnsw_index.mojo` (new):** Full HNSW implementation (Malkov & Yashunin 2018)
   in Mojo; INT8 quantised internal storage with per-vector abs-max scales (4×
   memory reduction); cosine distance via pre-normalised inner product; configurable
   M / ef_construction / ef_search; `perf_counter_ns` timing; save/load via Python
   pickle interop.
-- **`python/hnsw_api.py` (new):** `HNSWIndex(M, ef_construction, space)` —
+- **`python/hnsw_api.py` (new):** `HNSWIndex(M, ef_construction, space)` --
   `add(vector | vectors)`, `search(query, k, ef)` → `(indices, distances)`,
   `save(path)`, `HNSWIndex.load(path)`; helpers `build_hnsw_index`,
   `hnsw_search`, `recall_at_k`, `hnsw_compression_info`.
-- **`tests/test_hnsw.py` (new):** 28 tests — construction defaults, single/batch
+- **`tests/test_hnsw.py` (new):** 28 tests -- construction defaults, single/batch
   add, shape assertions, recall@1 ≥ 0.90 on 200 × 64 Gaussian vectors,
   persistence round-trip, `recall_at_k` ≥ 0.65 at k=5 ef=50,
   `hnsw_compression_info` keys.
 
-### Phase 6 — GPU / MAX Engine Quantization
+### Phase 6 -- GPU / MAX Engine Quantization
 
 - **`src/gpu_quantizer.mojo` (new):** GPU-aware batch INT8 quantizer dispatched
   through Mojo's MAX Engine; graceful CPU SIMD fallback when no GPU is present;
@@ -2502,36 +2559,36 @@ and end-to-end dispatch verification through the high-level Python APIs.
   `batch_cosine_similarity`, `batch_cosine_int8`, `batch_cosine_query`;
   `batch_topk_int8`; `gpu_benchmark()` (throughput vec/s, latency_us,
   cosine_sim, backend).
-- **`tests/test_gpu.py` (new):** 26 tests — device detection types, quantize
+- **`tests/test_gpu.py` (new):** 26 tests -- device detection types, quantize
   shape/dtype/range, roundtrip cosine ≥ 0.98, zero-vector safety, top-k
   ordering, benchmark dict keys.
 
-### Phase 7 — Learned Quantization (RQ · Codebook · AutoQuantize)
+### Phase 7 -- Learned Quantization (RQ · Codebook · AutoQuantize)
 
 - **`python/rq_api.py` (new):** `ResidualQuantizer(n_passes, n_subspaces,
-  n_centroids)` — chains *n* PQ codebooks, each encoding the residual left by
+  n_centroids)` -- chains *n* PQ codebooks, each encoding the residual left by
   the previous pass; `train`, `encode` → list of per-pass code arrays,
   `decode`, `mean_cosine`.  Requires `scikit-learn`.
-- **`python/codebook_api.py` (new):** `Codebook(target_dim, hidden, l2_reg)` —
+- **`python/codebook_api.py` (new):** `Codebook(target_dim, hidden, l2_reg)` --
   pure-NumPy autoencoder (Encoder d→hidden→target_dim, Decoder symmetric);
   mini-batch SGD with cosine loss and L2 regularisation; Xavier init; encoder
   output scaled and rounded to INT8; `train`, `encode`, `decode`, `mean_cosine`,
   `save`/`load`.
 - **`python/auto_quantize_api.py` (new):** `auto_quantize(embeddings,
-  target_cosine, target_compression)` — strategy cascade NF4 → NF4-mixed →
+  target_cosine, target_compression)` -- strategy cascade NF4 → NF4-mixed →
   PQ-96 → PQ-48 → binary; short-circuits on first strategy that satisfies both
   quality and compression constraints; uses `scipy.stats.kurtosis` to route
   heavy-tailed inputs to NF4-mixed before the generic sequence.
-- **`tests/test_rq.py` (new):** 20 tests — train / encode / decode shapes,
+- **`tests/test_rq.py` (new):** 20 tests -- train / encode / decode shapes,
   cosine ≥ 0.80 at 3-pass d=64, untrained guard, single-pass consistency.
-- **`tests/test_codebook.py` (new):** 22 tests — train returns self, encode
+- **`tests/test_codebook.py` (new):** 22 tests -- train returns self, encode
   dtype INT8, decode shape, untrained guards, cosine ≥ 0.60 at d=64
   target_dim=16, save/load round-trip.
-- **`tests/test_auto_quantize.py` (new):** 26 tests — `_cosine_sim_mean` on
+- **`tests/test_auto_quantize.py` (new):** 26 tests -- `_cosine_sim_mean` on
   identical inputs = 1, `_compute_kurtosis` Gaussian ≈ 3, strategy selection
   under various constraints, fallback path, result dict keys.
 
-### Phase 8 — Storage v3: VQZ Container + mmap Bulk I/O
+### Phase 8 -- Storage v3: VQZ Container + mmap Bulk I/O
 
 - **`src/storage_v3.mojo` (new):** Mojo VQZ reader/writer; 64-byte header
   (magic `VECTRO\x03\x00`, version uint16, comp_flag uint16, n_vectors uint64,
@@ -2542,35 +2599,35 @@ and end-to-end dispatch verification through the high-level Python APIs.
   compression, metadata, level, n_subspaces)` / `load_vqz(path)` with blake2b
   checksum verification on load; `S3Backend`, `GCSBackend`, `AzureBlobBackend`
   using `fsspec` (optional dep; `ImportError` raised with install hint when absent).
-- **`tests/test_storage_v3.py` (new):** 35 tests — magic mismatch, header
+- **`tests/test_storage_v3.py` (new):** 35 tests -- magic mismatch, header
   parse round-trip, checksum verification and corruption detection, zlib/zstd
   compression round-trips, metadata bytes preservation, shape + dtype assertions,
   cloud backend ImportError guard.
 
-### Phase 9 — Unified v3 API (PQCodebook · HNSWIndex · VectroV3)
+### Phase 9 -- Unified v3 API (PQCodebook · HNSWIndex · VectroV3)
 
 - **`python/v3_api.py` (new, 864 lines):** Public surface of the entire v3
   stack:
   - `PQCodebook.train(vectors, n_subspaces, n_centroids)` / `.encode` /
-    `.decode` / `.save` / `.load` — thin wrapper around `pq_api` with VQZ
+    `.decode` / `.save` / `.load` -- thin wrapper around `pq_api` with VQZ
     persistence.
-  - `HNSWIndex(dim, quantization, M, ef_construction)` — wraps `hnsw_api`
+  - `HNSWIndex(dim, quantization, M, ef_construction)` -- wraps `hnsw_api`
     with VQZ persistence and cloud URI support.
-  - `V3Result` dataclass — `quantized`, `scales`, `codes`, `profile`,
+  - `V3Result` dataclass -- `quantized`, `scales`, `codes`, `profile`,
     `compression_ratio`, `mean_cosine`.
-  - `VectroV3(profile)` — single compressed-embedding entry-point; profiles:
+  - `VectroV3(profile)` -- single compressed-embedding entry-point; profiles:
     `"int8"`, `"nf4"`, `"nf4-mixed"`, `"pq-96"`, `"pq-48"`, `"binary"`,
     `"rq-3pass"`.  Methods: `compress`, `decompress`, `save`, `load` (local
     path or cloud URI).
-- **`tests/test_v3_api.py` (new, 439 lines):** 80 tests — `PQCodebook`
+- **`tests/test_v3_api.py` (new, 439 lines):** 80 tests -- `PQCodebook`
   round-trip quality ≥ 0.90, `HNSWIndex` add/search/recall ≥ 0.65, `VectroV3`
   compress/decompress cosine ≥ 0.98 for int8/nf4/pq-96/binary, VQZ save/load,
   cloud URI helper, profile listing, `V3Result` field checks.
 
-### Phase 10 — v3.0.0 Release Hardening
+### Phase 10 -- v3.0.0 Release Hardening
 
 - **`python/vectro.py`:** Removed `enable_experimental_precisions` parameter and its
-  gate — INT4 is GA in v3.0.0.  INT4 now passes directly to the backend availability
+  gate -- INT4 is GA in v3.0.0.  INT4 now passes directly to the backend availability
   check (squish_quant); on machines where squish_quant is not present it falls back to
   INT8 with a warning.  `Vectro.__init__` signature simplified to `(backend, profile,
   enable_batch_optimization)`.
@@ -2595,16 +2652,16 @@ and end-to-end dispatch verification through the high-level Python APIs.
 
 ---
 
-## [2.0.0] — 2026-03-10  Vectro 2.0 Overdrive
+## [2.0.0] -- 2026-03-10  Vectro 2.0 Overdrive
 
 ### Phase 4: Trust, Reproducibility, and Developer Experience
 
 #### Migration Tooling
-- **`python/migration.py`** — artifact inspection, validation, and version upgrade CLI:
-  - `inspect_artifact(path)` — returns version, type, dimensions, precision, compression
+- **`python/migration.py`** -- artifact inspection, validation, and version upgrade CLI:
+  - `inspect_artifact(path)` -- returns version, type, dimensions, precision, compression
     ratio, and provenance metadata for any `.npz` artifact
-  - `validate_artifact(path)` — structural integrity check with actionable error messages
-  - `upgrade_artifact(src, dst, *, dry_run=False)` — upgrades v1 → v2 format, writing a
+  - `validate_artifact(path)` -- structural integrity check with actionable error messages
+  - `upgrade_artifact(src, dst, *, dry_run=False)` -- upgrades v1 → v2 format, writing a
     `migration` record into `metadata_json` with timestamps and source field inventory
   - CLI: `python -m python.migration inspect / upgrade / validate [--dry-run] [--json]`
   - v1 artifacts are detected by the absence of `storage_format_version`
@@ -2614,26 +2671,26 @@ and end-to-end dispatch verification through the high-level Python APIs.
     `python` package
 
 #### Docs Hub
-- **`docs/getting-started.md`** — installation, compression quickstart, save/load,
+- **`docs/getting-started.md`** -- installation, compression quickstart, save/load,
   profile selection, streaming, backend selection
-- **`docs/migration-guide.md`** — v1 → v2 breaking-change table, migration tool usage,
+- **`docs/migration-guide.md`** -- v1 → v2 breaking-change table, migration tool usage,
   bulk upgrade script, API compatibility table
-- **`docs/integrations.md`** — Qdrant, Weaviate, PyTorch, HuggingFace, Arrow/Parquet,
+- **`docs/integrations.md`** -- Qdrant, Weaviate, PyTorch, HuggingFace, Arrow/Parquet,
   StreamingDecompressor, INT2/adaptive quantization examples
-- **`docs/benchmark-methodology.md`** — metrics explained, reproducibility keys,
+- **`docs/benchmark-methodology.md`** -- metrics explained, reproducibility keys,
   performance regression gates, dataset recommendations
-- **`docs/api-reference.md`** — complete public API: Vectro class, all free functions,
+- **`docs/api-reference.md`** -- complete public API: Vectro class, all free functions,
   data classes, integration symbols, benchmark harness, compression profiles
 
 #### Onboarding Examples
-- **`examples/rag_quickstart.py`** — end-to-end RAG demo: encode → compress → store in
+- **`examples/rag_quickstart.py`** -- end-to-end RAG demo: encode → compress → store in
   `InMemoryVectorDBConnector` → cosine search → artifact inspection
-- **`examples/vector_search_quickstart.py`** — dataset compression across profiles,
+- **`examples/vector_search_quickstart.py`** -- dataset compression across profiles,
   Recall@K comparison, streaming decompression, artifact validation,
   and benchmark harness integration
 
 #### Release Automation
-- **`.github/workflows/release.yml`** — tagged release workflow (`v*`):
+- **`.github/workflows/release.yml`** -- tagged release workflow (`v*`):
   - Verifies tag version matches `pyproject.toml`
   - Builds `sdist` + `wheel` with `python -m build`
   - Validates distributions with `twine check`
@@ -2645,24 +2702,24 @@ and end-to-end dispatch verification through the high-level Python APIs.
   - Pre-release tags (`rc`, `alpha`, `beta`) are marked as pre-release on GitHub and
     skipped for PyPI publication
 
-#### Phase 5: Launch Readiness — v2.0.0 Release Package
+#### Phase 5: Launch Readiness -- v2.0.0 Release Package
 
 ##### CLI Entry Point
-- **`python/cli.py`** — `vectro` command-line tool registered as a package script:
+- **`python/cli.py`** -- `vectro` command-line tool registered as a package script:
   - `vectro compress <input.npy> <output.npz> [--profile PROFILE]`
   - `vectro decompress <input.npz> <output.npy>`
   - `vectro inspect <artifact.npz> [--json]`
   - `vectro upgrade <src> <dst> [--dry-run]`
   - `vectro validate <artifact.npz>`
   - `vectro benchmark [--n N] [--dim D] [--runs R] [--seed S] [--output PATH]`
-  - `vectro info` — backend + environment summary
+  - `vectro info` -- backend + environment summary
   - Lazy imports; `main(argv=None)` callable from test harnesses
 
 ##### Version Bump: 1.2.0 → 2.0.0
 - `pyproject.toml`, `pixi.toml`, `python/__init__.py`, `python/vectro.py`
 
 ##### RC Hardening Test Suite
-- **`tests/test_release_candidate.py`** — 7 verification gates:
+- **`tests/test_release_candidate.py`** -- 7 verification gates:
   1. Quantization quality gates (cosine sim ≥ threshold per profile)
   2. Compression ratio gates (≥ 3.5× per profile)
   3. Throughput gates (≥ 50K vec/s compress + streaming)
@@ -2675,7 +2732,7 @@ and end-to-end dispatch verification through the high-level Python APIs.
 - `.github/workflows/ci.yml` now runs `tests.test_migration` in the Python matrix
 
 ### Tests
-- **`tests/test_migration.py`** — 28 tests covering:
+- **`tests/test_migration.py`** -- 28 tests covering:
   - v1 single and batch detection, v2 current detection
   - `needs_upgrade` flag, default field values for v1
   - Validation pass/fail with shape mismatch and missing field cases
@@ -2692,15 +2749,15 @@ and end-to-end dispatch verification through the high-level Python APIs.
 
 #### Arrow / Parquet Bridge
   for compressed vector batches:
-  - `result_to_table(result, ids)` — converts any Vectro result to a `pa.Table`
-  - `table_to_result(table)` — restores a `BatchQuantizationResult` from Arrow
+  - `result_to_table(result, ids)` -- converts any Vectro result to a `pa.Table`
+  - `table_to_result(table)` -- restores a `BatchQuantizationResult` from Arrow
   - `write_parquet(result, path, compression="snappy")` / `read_parquet(path)`
-  - `to_arrow_bytes(result)` / `from_arrow_bytes(data)` — IPC stream wire encoding
+  - `to_arrow_bytes(result)` / `from_arrow_bytes(data)` -- IPC stream wire encoding
   - Optional dep: `pyarrow>=12.0` (lazy-imported with a clear error when absent)
   - Install via `pip install "vectro[data]"`
 
 #### Streaming Decompressor
-- **`python/streaming.py`** — `StreamingDecompressor` — memory-efficient iterator
+- **`python/streaming.py`** -- `StreamingDecompressor` -- memory-efficient iterator
   that reconstructs float32 vectors from a compressed artifact one chunk at a time.
   - Accepts `BatchQuantizationResult` or `QuantizationResult` as input
   - `chunk_size` controls peak memory; fully compatible with INT4 and INT8 modes
@@ -2708,57 +2765,57 @@ and end-to-end dispatch verification through the high-level Python APIs.
   - Exported from top-level `python` package
 
 #### INT2 and Adaptive Quantization
-- **`python/quantization_extra.py`** — two new NumPy-only quantization methods:
-  - `quantize_int2(embeddings, group_size=32)` / `dequantize_int2(...)` — symmetric
+- **`python/quantization_extra.py`** -- two new NumPy-only quantization methods:
+  - `quantize_int2(embeddings, group_size=32)` / `dequantize_int2(...)` -- symmetric
     ternary {-1, 0, +1} with 4 values packed per byte (8× smaller than float32)
-  - `quantize_adaptive(embeddings, bits=8, clip_ratio=3.0)` — MAD-based outlier
+  - `quantize_adaptive(embeddings, bits=8, clip_ratio=3.0)` -- MAD-based outlier
     clipping before INT8. Protects precision when embeddings have heavy tails.
   - All three functions (`quantize_int2`, `dequantize_int2`, `quantize_adaptive`)
     exported from top-level `python` package
 
 #### Benchmark Harness
-- **`python/benchmark.py`** — `BenchmarkSuite` and `BenchmarkReport`:
+- **`python/benchmark.py`** -- `BenchmarkSuite` and `BenchmarkReport`:
   - Captures throughput (vec/s, MB/s), compression ratio, cosine similarity,
     median/p95 latency, and environment metadata (Python, NumPy, platform)
-  - `BenchmarkReport.save(path)` — writes JSON or CSV (format inferred from ext)
+  - `BenchmarkReport.save(path)` -- writes JSON or CSV (format inferred from ext)
   - `python -m python.benchmark --n 5000 --dim 384 --output results.json`
 
 #### Package Exports
 - `python/integrations/__init__.py`: arrow_bridge functions added to namespace
 - `python/__init__.py`: `StreamingDecompressor`, `quantize_int2`, `dequantize_int2`,
   `quantize_adaptive`, and all arrow_bridge functions exported from top level
-- `pyproject.toml`: new `[data]` optional extra — `pyarrow>=12.0`
+- `pyproject.toml`: new `[data]` optional extra -- `pyarrow>=12.0`
 
 #### CI
 - `.github/workflows/ci.yml` now runs `tests.test_arrow_bridge`,
   `tests.test_streaming`, and `tests.test_quantization_extra` in the Python matrix
 
 ### Tests
-- **`tests/test_arrow_bridge.py`** — 18 tests: column structure, IDs, binary
-  round-trips, IPC bytes — uses a zero-dependency pyarrow mock
-- **`tests/test_streaming.py`** — 14 tests: chunk shapes, total count, dtype,
+- **`tests/test_arrow_bridge.py`** -- 18 tests: column structure, IDs, binary
+  round-trips, IPC bytes -- uses a zero-dependency pyarrow mock
+- **`tests/test_streaming.py`** -- 14 tests: chunk shapes, total count, dtype,
   reconstruction accuracy, iterator reuse, `QuantizationResult` path
-- **`tests/test_quantization_extra.py`** — 27 tests: pack/unpack losslessness,
+- **`tests/test_quantization_extra.py`** -- 27 tests: pack/unpack losslessness,
   INT2 cosine quality, adaptive scales, outlier handling
 - Total: **~88 tests · all passing**
 
 ---
 
 
-- **`python/integrations/weaviate_connector.py`** — `WeaviateConnector` for storing
+- **`python/integrations/weaviate_connector.py`** -- `WeaviateConnector` for storing
   Vectro-compressed vectors as Weaviate v4 object properties. Supports INT8 and
   INT4 (uint8-packed) payloads. Optional dep: `weaviate-client>=4.0`.
-- **`python/integrations/torch_bridge.py`** — PyTorch and HuggingFace Transformers
+- **`python/integrations/torch_bridge.py`** -- PyTorch and HuggingFace Transformers
   integration helpers:
-  - `compress_tensor(tensor)` — accepts a `torch.Tensor`, returns `QuantizationResult`
-  - `reconstruct_tensor(result)` — returns a `float32 torch.Tensor`
-  - `HuggingFaceCompressor.from_model(name)` — mean-pool encoder + compressor in one call
+  - `compress_tensor(tensor)` -- accepts a `torch.Tensor`, returns `QuantizationResult`
+  - `reconstruct_tensor(result)` -- returns a `float32 torch.Tensor`
+  - `HuggingFaceCompressor.from_model(name)` -- mean-pool encoder + compressor in one call
 - `WeaviateConnector`, `compress_tensor`, `reconstruct_tensor`, and
   `HuggingFaceCompressor` exported from `python.integrations` and top-level `python`
   package.
 
-#### Mojo Storage — Real I/O
-- **`src/storage_mojo.mojo`** — replaced TODO stubs in `save_quantized_binary` /
+#### Mojo Storage -- Real I/O
+- **`src/storage_mojo.mojo`** -- replaced TODO stubs in `save_quantized_binary` /
   `load_quantized_binary` with working numpy-backed implementations using Mojo's
   Python interop. Files are written as compressed NPZ archives aligned with the
   Python layer's `vectro_npz` v2 format contract.
@@ -2779,10 +2836,10 @@ and end-to-end dispatch verification through the high-level Python APIs.
   `tests.test_torch_bridge` in the Python matrix (3.10 / 3.11 / 3.12)
 
 ### Tests
-- **`tests/test_weaviate_connector.py`** — 7 tests covering upsert/fetch/delete,
-  INT4 payload, missing-ID handling, shape mismatch, and metadata merging — all
+- **`tests/test_weaviate_connector.py`** -- 7 tests covering upsert/fetch/delete,
+  INT4 payload, missing-ID handling, shape mismatch, and metadata merging -- all
   using a fake Weaviate v4 client stub (no weaviate-client required in CI)
-- **`tests/test_torch_bridge.py`** — 6 tests using a lightweight `_MockTensor`  
+- **`tests/test_torch_bridge.py`** -- 6 tests using a lightweight `_MockTensor`  
   (no torch install required in CI)
 - Total: **63 tests · all passing**
 
