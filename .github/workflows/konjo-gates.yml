@@ -50,7 +50,7 @@ jobs:
           shared-key: "konjo-gates-${{ github.repository }}"
 
       - name: Install cargo gate tools
-        run: cargo install cargo-deny cargo-mutants --locked
+        run: cargo install cargo-deny cargo-mutants cargo-audit --locked
 
       - name: Set up Python
         uses: actions/setup-python@v5

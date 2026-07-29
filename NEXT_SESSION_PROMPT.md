@@ -64,6 +64,22 @@ vectro feature/perf work"):**
    defaults, not fail-open gates, but the engine doesn't yet recognize them
    as the same class of false negative its own docstring already carves out
    for `until_satisfied`-style domain checks.
+9. **`longrun` checkpoint/resume contract for `scripts/bench_l2_headtohead.py`
+   and `scripts/bench_scale.py`** -- new gate at the `v1.9.0` pin, not
+   present before this sprint. `bench_scale.py`'s natural checkpoint unit is
+   its chunked `add_np` build loop; a real (non-decorative) implementation
+   needs `PyHnswIndex`/`PyIvfPqIndex.save()`/`.load()` between chunks, which
+   needs `vectro_py` actually built (`maturin develop`, item 2 above) to
+   write and verify against. Do not hand-write this blind against an
+   uninstalled extension module. See `LEDGER.md`'s `Gates-CI-Triage-1`.
+10. **Human confirm needed on PR #112**: `konjo-oneway confirm` /
+    `konjo-threat record` / a `konjo-prove` MERGE verdict (or waiver) for
+    change id `ad1af49d35f3` -- see `LEDGER.md`'s `Gates-CI-Triage-1` for the
+    exact commands and the false-positive analysis (the matched
+    "publish"/"truncate" text is prose and a `Vec::truncate` call, not a
+    real publish or delete action; the diff is still genuinely hard to
+    revert cleanly for other reasons, so the acknowledgment is real, not a
+    detector bug to route around).
 
 ## Original audit-sprint carry (below -- a different, still-open track)
 
