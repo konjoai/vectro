@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (kiban pin — two sites reconciled, dormancy recorded)
+- `.konjo/kiban.ref` was `v1.1.0` while `.github/workflows/konjo-gates.yml`'s
+  `KIBAN_REF` was `v1.1.5` — the two pin sites had disagreed since the `v1.1.5`
+  bump (commit `b1d60df`) touched only the workflow file, not `.konjo/kiban.ref`.
+  Reconciled both to `v1.1.5`, matching what CI has actually been installing.
+- **This does not bump vectro to kiban's current release (`v1.19.0`, 18 minor
+  versions ahead).** Cross-repo "kiban adoption and enforcement" audit
+  (2026-08-19) confirmed vectro has had no commits since 2026-07-11 and is
+  parked deliberately — not a repo anyone is actively developing against right
+  now. A same-day CI triage on a repo nobody is watching costs real time for no
+  one to benefit from; reconciling the two pins to stop them silently
+  disagreeing is the honest, proportionate fix, not a full bump. **Before the
+  next real vectro sprint:** bump `KIBAN_REF` and `.konjo/kiban.ref` to
+  kiban's then-current tag together, run the reconciled `konjo-gates` profile
+  against a real vectro CI run (the same closing step `Lopi-Gate-Reconciliation-1`
+  used for lopi), and triage whatever comes back before merging any other work.
+  vectro has no `LEDGER.md`; this note is the durable record of the decision
+  until one exists.
+
 ### Added (benchmarks — recall-matched percentile harness, audit item 5.2)
 - `benchmarks/harness/` — the measurement gate every later optimization sprint
   merges through (the audit's binding pre-flight; ships before any optimization
